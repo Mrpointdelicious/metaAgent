@@ -27,9 +27,7 @@
 ## 启动
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python -m pip install -e .
-Copy-Item .env.example .env
+D:\APP\ANACONDA\envs\metaAgent\python.exe -m pip install -e .
 ```
 
 最少需要补：
@@ -58,15 +56,19 @@ Copy-Item .env.example .env
 启动服务式进程：
 
 ```powershell
-.\.venv\Scripts\python Demo\main.py
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\main.py
 ```
 
 交互命令：
 
 ```text
-review-patient --plan-id 6 --days 7
-screen-risk --therapist-id 1623 --days 30
-weekly-report --therapist-id 1623 --days 30
+review-patient --plan-id 6 --days 30
+screen-risk --therapist-id 56 --days 30
+weekly-report --therapist-id 56 --days 30
+帮我复核计划 6
+看一下医生 56 最近 30 天的高风险患者
+给我这个医生最近 7 天的周报
+换成最近 7 天
 ```
 
 运行时切换 provider，不用重启服务：
@@ -89,32 +91,40 @@ clear-llm
 使用默认 provider：
 
 ```powershell
-.\.venv\Scripts\python Demo\cli.py review-patient --plan-id 6 --days 7
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py review-patient --plan-id 6 --days 30
 ```
 
 临时切换到 Qwen：
 
 ```powershell
-.\.venv\Scripts\python Demo\cli.py --llm-provider qwen --use-agent-sdk review-patient --plan-id 6 --days 7
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider qwen --use-agent-sdk review-patient --plan-id 6 --days 30
 ```
 
 临时切换到 DeepSeek：
 
 ```powershell
-.\.venv\Scripts\python Demo\cli.py --llm-provider deepseek --use-agent-sdk weekly-report --therapist-id 1623 --days 30
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider deepseek --use-agent-sdk weekly-report --therapist-id 56 --days 30
 ```
 
 覆盖模型名或 base URL：
 
 ```powershell
-.\.venv\Scripts\python Demo\cli.py --llm-provider qwen --llm-model qwen-max --llm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 --use-agent-sdk review-patient --plan-id 6 --days 7
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider qwen --llm-model qwen-max --llm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 --use-agent-sdk review-patient --plan-id 6 --days 30
 ```
 
 输出 JSON：
 
 ```powershell
-.\.venv\Scripts\python Demo\cli.py --json --llm-provider deepseek --use-agent-sdk review-patient --plan-id 6 --days 7
+D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --json review-patient --plan-id 6 --days 30
 ```
+
+## 稳定样本
+
+当前建议用于 demo 回归的稳定样本：
+
+- `therapist_id=56`
+- `plan_id=6`
+- `patient_id=146`
 
 ## 当前工具
 

@@ -1,4 +1,11 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda"
+  "python.defaultInterpreterPath": "D:\\APP\\ANACONDA\\envs\\metaAgent\\python.exe",
+  "python.envFile": "${workspaceFolder}/.env",
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}"
+  ],
+  "python.terminal.activateEnvironment": false,
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda",
+  "terminal.integrated.cwd": "${workspaceFolder}"
 }

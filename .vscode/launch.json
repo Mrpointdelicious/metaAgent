@@ -1,0 +1,66 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Demo: Main Service",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/Demo/main.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "justMyCode": true
+    },
+    {
+      "name": "Demo: CLI Review",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/Demo/cli.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "review-patient",
+        "--plan-id",
+        "6",
+        "--days",
+        "7"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Demo: CLI Weekly Report",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/Demo/cli.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "weekly-report",
+        "--therapist-id",
+        "56",
+        "--days",
+        "30"
+      ],
+      "justMyCode": true
+    },
+    {
+      "name": "Demo: CLI Risk Screen",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/Demo/cli.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "args": [
+        "screen-risk",
+        "--therapist-id",
+        "56",
+        "--days",
+        "30"
+      ],
+      "justMyCode": true
+    }
+  ]
+}

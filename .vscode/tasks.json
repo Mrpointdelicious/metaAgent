@@ -1,0 +1,72 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Demo: CLI Help",
+      "type": "shell",
+      "command": "D:\\APP\\ANACONDA\\envs\\metaAgent\\python.exe",
+      "args": [
+        "Demo\\cli.py",
+        "--help"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Review Patient",
+      "type": "shell",
+      "command": "D:\\APP\\ANACONDA\\envs\\metaAgent\\python.exe",
+      "args": [
+        "Demo\\cli.py",
+        "review-patient",
+        "--plan-id",
+        "6",
+        "--days",
+        "7"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Demo: Weekly Report",
+      "type": "shell",
+      "command": "D:\\APP\\ANACONDA\\envs\\metaAgent\\python.exe",
+      "args": [
+        "Demo\\cli.py",
+        "weekly-report",
+        "--therapist-id",
+        "56",
+        "--days",
+        "30"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: Compile",
+      "type": "shell",
+      "command": "D:\\APP\\ANACONDA\\envs\\metaAgent\\python.exe",
+      "args": [
+        "-m",
+        "compileall",
+        "config",
+        "models",
+        "repositories",
+        "services",
+        "tools",
+        "agent",
+        "Demo"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

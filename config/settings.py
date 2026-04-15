@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     app_name: str = "rehab-execution-deviation-demo"
 
-    llm_provider: LLMProvider = "openai"
+    llm_provider: LLMProvider = "qwen"
     agents_tracing_enabled: bool = False
 
     openai_api_key: str | None = None
@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     use_mock_when_db_unavailable: bool = True
     default_time_window_days: int = 30
     default_weekly_report_days: int = 7
+    demo_default_therapist_id: int = 56
+    demo_default_plan_id: int = 6
+    demo_default_patient_id: int = 146
 
     high_risk_threshold: float = 75.0
     medium_risk_threshold: float = 45.0
