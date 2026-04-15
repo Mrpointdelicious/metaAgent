@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "meta-agent-rehab-demo"
+version = "0.1.0"
+description = "Therapist-facing rehab execution deviation review demo."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai-agents>=0.13.6",
+  "pydantic>=2.13.0",
+  "pydantic-settings>=2.13.1",
+  "pymysql>=1.1.2",
+  "python-dotenv>=1.2.2",
+]
