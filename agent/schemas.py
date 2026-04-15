@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from config import LLMProvider
-from models import PatientRiskSummary
+from models import AnalyticsResultRow, PatientRiskSummary, PatientSet, LastVisitInfo, PlanStatus, RankedPatients
 from models.common import TimeRange
 
 
@@ -15,6 +15,7 @@ class OrchestrationTaskType(str, Enum):
     SCREEN_RISK = "screen_risk"
     WEEKLY_REPORT = "weekly_report"
     GAIT_REVIEW = "gait_review"
+    OPEN_ANALYTICS_QUERY = "open_analytics_query"
     UNKNOWN = "unknown"
 
 
@@ -24,6 +25,7 @@ TaskType = Literal[
     "screen_risk",
     "weekly_report",
     "gait_review",
+    "open_analytics_query",
     "unknown",
     "single_review",
     "risk_screen",
@@ -43,6 +45,7 @@ _NORMALIZED_TO_LEGACY: dict[OrchestrationTaskType, str] = {
     OrchestrationTaskType.SCREEN_RISK: "risk_screen",
     OrchestrationTaskType.WEEKLY_REPORT: "weekly_report",
     OrchestrationTaskType.GAIT_REVIEW: "unsupported",
+    OrchestrationTaskType.OPEN_ANALYTICS_QUERY: "unsupported",
     OrchestrationTaskType.UNKNOWN: "unsupported",
 }
 
@@ -106,6 +109,51 @@ class OrchestrationIntent(BaseModel):
     response_style: str = Field(default="standard", description="响应风格提示。")
     confidence: float | None = Field(default=None, description="路由阶段的置信度分数。")
     missing_slots: list[str] = Field(default_factory=list, description="完成任务仍缺失的关键槽位。")
+
+
+AnalyticsIntentName = Literal[
+    "single_patient_review",
+    "risk_screening",
+    "weekly_report",
+    "open_analytics_query",
+]
+
+
+class IntentDecision(BaseModel):
+    intent: AnalyticsIntentName = Field(description="路由器判定的顶层意图。")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="规则路由置信度。")
+    rationale: str = Field(default="", description="路由原因说明。")
+
+
+class QueryPlanStep(BaseModel):
+    step_id: str = Field(description="查询计划步骤 ID。")
+    intent: str = Field(description="该步骤的分析意图。")
+    tool_name: str = Field(description="本步骤调用的 primitive tool 名称。")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="工具参数。")
+    rationale: str = Field(default="", description="该步骤存在的原因。")
+
+
+class QueryPlan(BaseModel):
+    normalized_question: str = Field(default="", description="归一化后的分析问题。")
+    doctor_id: int | None = Field(default=None, description="当前分析使用的医生 ID。")
+    start_date: str | None = Field(default=None, description="分析窗口起始日期。")
+    end_date: str | None = Field(default=None, description="分析窗口结束日期。")
+    steps: list[QueryPlanStep] = Field(default_factory=list, description="顺序查询计划。")
+
+
+class AnalyticsStructuredOutput(BaseModel):
+    question: str = Field(default="", description="原始问题。")
+    doctor_id: int | None = Field(default=None, description="本次分析对应的医生 ID。")
+    time_range: TimeRange | None = Field(default=None, description="实际采用的分析时间窗。")
+    source_backend: str = Field(default="", description="底层数据来源，例如 mysql 或 mock。")
+    query_plan: QueryPlan = Field(description="实际执行的查询计划。")
+    historical_seen_set: PatientSet | None = Field(default=None, description="历史到训患者集合。")
+    recent_seen_set: PatientSet | None = Field(default=None, description="最近窗口到训患者集合。")
+    absent_set: PatientSet | None = Field(default=None, description="以前来过但最近未到训的患者集合。")
+    ranked_patients: RankedPatients | None = Field(default=None, description="排序结果。")
+    result_rows: list[AnalyticsResultRow] = Field(default_factory=list, description="面向训练师的结果行。")
+    evidence_basis: list[str] = Field(default_factory=list, description="本次分析引用的数据依据摘要。")
+    summary: str = Field(default="", description="结果摘要。")
 
 
 class PlanStep(BaseModel):

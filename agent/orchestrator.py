@@ -7,6 +7,7 @@ from config import ResolvedLLMConfig, Settings, get_settings
 from models import GaitExplanationSummary, ReviewCard, WeeklyRiskReport
 from repositories import RehabRepository
 from services import (
+    AnalyticsService,
     DeviationService,
     ExecutionService,
     GaitService,
@@ -17,6 +18,7 @@ from services import (
 )
 from tools import (
     ToolSpec,
+    build_analytics_tools,
     build_execution_tools,
     build_gait_tools,
     build_outcome_tools,
@@ -25,6 +27,8 @@ from tools import (
     build_report_tools,
     build_tool_registry,
 )
+from .analytics_manager import AnalyticsManager
+from .intent_router import IntentRouter
 
 from .schemas import (
     ExecutionMode,
@@ -54,8 +58,10 @@ UNRELIABLE_PHRASES = ("根据数据库推测", "大概", "猜测", "可能是数
 class RehabAgentOrchestrator:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
+        self.intent_router = IntentRouter()
 
         self.repository = RehabRepository(self.settings)
+        self.analytics_service = AnalyticsService(self.repository, self.settings)
         self.plan_service = PlanService(self.repository, self.settings)
         self.execution_service = ExecutionService(self.repository, self.settings)
         self.outcome_service = OutcomeService(self.repository, self.settings)
@@ -83,13 +89,20 @@ class RehabAgentOrchestrator:
         self.gait_tools = build_gait_tools(self.gait_service)
         self.report_tools = build_report_tools(self.report_service)
         self.reflection_tools = build_reflection_tools(self.report_service)
+        self.analytics_tools = build_analytics_tools(self.analytics_service)
         self.tool_registry = build_tool_registry(
+            self.analytics_tools,
             self.plan_tools,
             self.execution_tools,
             self.outcome_tools,
             self.gait_tools,
             self.report_tools,
             self.reflection_tools,
+        )
+        self.analytics_manager = AnalyticsManager(
+            analytics_service=self.analytics_service,
+            analytics_tool_registry=build_tool_registry(self.analytics_tools),
+            settings=self.settings,
         )
 
     def run(self, request: OrchestratorRequest) -> OrchestratorResponse:
@@ -99,13 +112,32 @@ class RehabAgentOrchestrator:
             base_url=request.llm_base_url,
         )
         mode, execution_mode, mode_issues = self._resolve_mode(request, llm_config)
+        decision = self.intent_router.route(request)
+        if decision.intent == "open_analytics_query":
+            response = self.analytics_manager.run(
+                request,
+                decision,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+            )
+            response.validation_issues = list(mode_issues) + list(response.validation_issues)
+            return response
+
+        direct_request = request.model_copy(deep=True)
+        if decision.intent == "single_patient_review" and direct_request.task_type is None:
+            direct_request.task_type = OrchestrationTaskType.REVIEW_PATIENT.value
+        elif decision.intent == "risk_screening" and direct_request.task_type is None:
+            direct_request.task_type = OrchestrationTaskType.SCREEN_RISK.value
+        elif decision.intent == "weekly_report" and direct_request.task_type is None:
+            direct_request.task_type = OrchestrationTaskType.WEEKLY_REPORT.value
         state = OrchestrationState(
-            user_query=request.raw_text or "",
+            user_query=direct_request.raw_text or "",
             mode=mode,
             validation_issues=list(mode_issues),
         )
 
-        intent = self.route_intent(request)
+        intent = self.route_intent(direct_request)
         state.intent = intent
         if intent.task_type == OrchestrationTaskType.UNKNOWN:
             state.final_text = self._render_unsupported(intent)

@@ -9,7 +9,7 @@ from agent.schemas import OrchestrationTaskType, normalize_task_type
 from config import Settings
 
 
-COMMAND_NAMES = {"review-patient", "screen-risk", "weekly-report"}
+COMMAND_NAMES = {"review-patient", "screen-risk", "weekly-report", "ask"}
 SCRIPT_NAMES = {"main.py", "cli.py"}
 PYTHON_NAMES = {"python", "python.exe", "py", "py.exe"}
 WEEKLY_KEYWORDS = ("周报", "weekly", "summary", "摘要")
@@ -44,12 +44,14 @@ def build_welcome(settings: Settings) -> str:
   review-patient --plan-id {settings.demo_default_plan_id} --days 30
   screen-risk --therapist-id {settings.demo_default_therapist_id} --days 30
   weekly-report --therapist-id {settings.demo_default_therapist_id} --days 30
+  ask "查看医生这30天有哪些以前来过的患者没有来"
 
 自然语言:
   帮我复核计划 {settings.demo_default_plan_id}
   看一下医生 {settings.demo_default_therapist_id} 最近 30 天的高风险患者
   给我这个医生最近 7 天的周报
   换成最近 7 天
+  查看医生这30天有哪些以前来过的患者没有来
 
 运行时 LLM 切换:
   set-provider openai|qwen|deepseek
@@ -88,6 +90,7 @@ def demo_sample_text(settings: Settings) -> str:
     return (
         f"稳定 Demo 样本: therapist_id={settings.demo_default_therapist_id}, "
         f"plan_id={settings.demo_default_plan_id}, patient_id={settings.demo_default_patient_id}。"
+        f" 开放分析示例：查看医生这30天有哪些以前来过的患者没有来。"
     )
 
 
@@ -200,6 +203,30 @@ def parse_natural_language_request(
             note,
         )
 
+    if task_type == OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value:
+        therapist_id = therapist_id or state.therapist_id or settings.demo_default_therapist_id
+        days = days or (state.days if follow_up else None) or settings.default_time_window_days
+        top_k = top_k or state.top_k or 20
+        if therapist_id == settings.demo_default_therapist_id and state.therapist_id is None and _extract_identifier(text, ("医生", "治疗师", "doctor", "therapist")) is None:
+            note = f"未提供医生 ID，已使用稳定 Demo 医生 {settings.demo_default_therapist_id}。"
+        return (
+            OrchestratorRequest(
+                task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+                therapist_id=therapist_id,
+                days=days,
+                top_k=top_k,
+                raw_text=text,
+                use_agent_sdk=use_agent_sdk,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                llm_base_url=llm_base_url,
+                response_style=response_style,
+                need_gait_evidence=False,
+                context=context,
+            ),
+            note,
+        )
+
     plan_id = plan_id or (state.plan_id if follow_up else None)
     patient_id = patient_id or (state.patient_id if follow_up else None)
     therapist_id = therapist_id or (state.therapist_id if follow_up else None)
@@ -255,6 +282,8 @@ def update_state_from_response(
         state.therapist_id = payload.get("therapist_id") or state.therapist_id
     if normalized_task == OrchestrationTaskType.GAIT_REVIEW.value and isinstance(payload, dict):
         state.patient_id = payload.get("patient_id") or state.patient_id
+    if normalized_task == OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value and isinstance(payload, dict):
+        state.therapist_id = payload.get("doctor_id") or state.therapist_id
 
 
 def _basename(token: str) -> str:
@@ -278,6 +307,8 @@ def _infer_task_type(text: str, state: ConversationState) -> str | None:
         return OrchestrationTaskType.SCREEN_RISK.value
     if any(keyword in text or keyword in lowered for keyword in GAIT_KEYWORDS) and _extract_identifier(text, ("患者", "病人", "patient")) is not None:
         return OrchestrationTaskType.GAIT_REVIEW.value
+    if _looks_like_open_analytics_query(text, state):
+        return OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value
     if _extract_identifier(text, ("计划", "plan")) is not None or _extract_identifier(text, ("患者", "病人", "patient")) is not None:
         return OrchestrationTaskType.REVIEW_PATIENT.value
     if any(keyword in text or keyword in lowered for keyword in REVIEW_KEYWORDS):
@@ -289,6 +320,19 @@ def _infer_task_type(text: str, state: ConversationState) -> str | None:
     if _is_follow_up(text):
         return state.task_type
     return None
+
+
+def _looks_like_open_analytics_query(text: str, state: ConversationState) -> bool:
+    lowered = text.lower()
+    analytics_keywords = ("以前来过", "之前来过", "曾经来过", "没有来", "没来", "未到训", "哪些", "多少", "名单", "比较", "统计")
+    has_signal = any(keyword in text or keyword in lowered for keyword in analytics_keywords)
+    has_scope = any(keyword in text or keyword in lowered for keyword in ("医生", "治疗师", "doctor", "therapist", "最近", "本周", "本月"))
+    has_time = _extract_days(text) is not None
+    if has_signal and (has_scope or has_time):
+        return True
+    if _is_follow_up(text) and state.task_type == OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value:
+        return True
+    return False
 
 
 def _extract_identifier(text: str, labels: tuple[str, ...]) -> int | None:

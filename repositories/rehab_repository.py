@@ -317,3 +317,128 @@ class RehabRepository:
             get_mock_walk_detail_rows,
             mock_kwargs={"patient_id": patient_id, "walk_plan_ids": walk_plan_ids},
         )
+
+    def get_patients_seen_by_doctor(
+        self,
+        *,
+        doctor_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        source: str = "attendance",
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        if source != "attendance":
+            return []
+        rows = self.get_execution_logs(
+            therapist_id=doctor_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+        patient_ids: list[int] = []
+        for row in rows:
+            patient_id = row.get("UserId")
+            if patient_id is None or patient_id in patient_ids:
+                continue
+            patient_ids.append(patient_id)
+        return [{"patient_id": patient_id} for patient_id in sorted(patient_ids)]
+
+    def get_patients_with_active_plans(
+        self,
+        *,
+        doctor_id: int,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        rows = self.get_plan_records(
+            therapist_id=doctor_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+        grouped: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            patient_id = row.get("UserId")
+            if patient_id is None:
+                continue
+            anchor = row.get("BookingTime") or row.get("CreateTime")
+            current = grouped.get(patient_id)
+            if current is None:
+                grouped[patient_id] = {
+                    "patient_id": patient_id,
+                    "plan_count": 1,
+                    "latest_plan_time": anchor,
+                }
+                continue
+            current["plan_count"] += 1
+            if anchor and (current["latest_plan_time"] is None or anchor > current["latest_plan_time"]):
+                current["latest_plan_time"] = anchor
+        return [grouped[key] for key in sorted(grouped)]
+
+    def get_patient_last_visit(
+        self,
+        *,
+        patient_id: int,
+        doctor_id: int | None = None,
+    ) -> dict[str, Any] | None:
+        rows = self.get_execution_logs(
+            patient_id=patient_id,
+            therapist_id=doctor_id,
+            limit=500,
+        )
+        if not rows:
+            return None
+        latest = max(rows, key=lambda item: item.get("StartTime") or datetime.min)
+        return {
+            "patient_id": patient_id,
+            "doctor_id": latest.get("DoctorId"),
+            "last_visit_time": latest.get("StartTime"),
+            "last_plan_id": latest.get("PlanId"),
+            "last_device_id": latest.get("DeviceId"),
+            "last_task_name": latest.get("Name"),
+        }
+
+    def get_patient_plan_status(
+        self,
+        *,
+        patient_id: int,
+        doctor_id: int | None = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> dict[str, Any]:
+        plan_rows = self.get_plan_records(
+            patient_id=patient_id,
+            therapist_id=doctor_id,
+            start=start,
+            end=end,
+            limit=1000,
+        )
+        plan_ids = [row["Id"] for row in plan_rows if row.get("Id") is not None]
+        execution_rows = self.get_execution_logs(
+            patient_id=patient_id,
+            therapist_id=doctor_id,
+            plan_ids=plan_ids,
+            start=start,
+            end=end,
+            limit=2000,
+        )
+        attended_plan_ids = {
+            row.get("PlanId")
+            for row in execution_rows
+            if row.get("PlanId") is not None
+        }
+        latest_plan_time = None
+        for row in plan_rows:
+            anchor = row.get("BookingTime") or row.get("CreateTime")
+            if anchor and (latest_plan_time is None or anchor > latest_plan_time):
+                latest_plan_time = anchor
+        return {
+            "patient_id": patient_id,
+            "doctor_id": doctor_id,
+            "has_active_plan": bool(plan_rows),
+            "planned_sessions": len(plan_rows),
+            "attended_sessions": len(attended_plan_ids),
+            "missed_planned_sessions": max(len(plan_rows) - len(attended_plan_ids), 0),
+            "latest_plan_time": latest_plan_time,
+        }

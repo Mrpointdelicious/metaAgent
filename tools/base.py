@@ -42,6 +42,36 @@ class ReflectOnOutputInput(BaseModel):
     days: int = Field(default=30, ge=1, le=3650, description="时间窗口天数。")
 
 
+class DoctorWindowInput(BaseModel):
+    doctor_id: int = Field(description="医生或治疗师 ID。")
+    start_date: str | None = Field(default=None, description="时间窗口开始日期。")
+    end_date: str | None = Field(default=None, description="时间窗口结束日期。")
+    source: str = Field(default="attendance", description="患者集合来源，当前仅支持 attendance。")
+
+
+class PatientSetDiffInput(BaseModel):
+    base_set_id: str = Field(description="被减集合 ID。")
+    subtract_set_id: str = Field(description="用于做差的集合 ID。")
+
+
+class LastVisitInput(BaseModel):
+    patient_id: int = Field(description="患者 ID。")
+    doctor_id: int | None = Field(default=None, description="医生或治疗师 ID。")
+
+
+class PatientPlanStatusInput(BaseModel):
+    patient_id: int = Field(description="患者 ID。")
+    doctor_id: int | None = Field(default=None, description="医生或治疗师 ID。")
+    start_date: str = Field(description="计划状态窗口开始日期。")
+    end_date: str = Field(description="计划状态窗口结束日期。")
+
+
+class RankPatientsInput(BaseModel):
+    patient_ids: list[int] = Field(default_factory=list, description="待排序患者 ID 列表。")
+    strategy: str = Field(description="排序策略。")
+    top_k: int | None = Field(default=None, ge=1, le=1000, description="返回数量上限。")
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     tool_name: str

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .analytics_tools import build_analytics_tools
 from .base import ToolSpec
 from .execution_tools import build_execution_tools
 from .gait_tools import build_gait_tools
@@ -19,6 +20,7 @@ def build_tool_registry(*tool_groups: list[ToolSpec]) -> dict[str, ToolSpec]:
 
 __all__ = [
     "ToolSpec",
+    "build_analytics_tools",
     "build_execution_tools",
     "build_gait_tools",
     "build_outcome_tools",

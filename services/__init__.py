@@ -1,3 +1,4 @@
+from .analytics_service import AnalyticsService
 from .deviation_service import DeviationService
 from .execution_service import ExecutionService
 from .gait_service import GaitService
@@ -7,6 +8,7 @@ from .reflection_service import ReflectionService
 from .report_service import ReportService
 
 __all__ = [
+    "AnalyticsService",
     "DeviationService",
     "ExecutionService",
     "GaitService",

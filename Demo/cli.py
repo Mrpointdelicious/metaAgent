@@ -42,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     weekly.add_argument("--days", type=int, default=7)
     weekly.add_argument("--top-k", type=int, default=10)
 
+    ask = subparsers.add_parser("ask", help="执行开放式分析问句", parents=[common])
+    ask.add_argument("question")
+    ask.add_argument("--therapist-id", type=int)
+    ask.add_argument("--days", type=int, default=30)
+    ask.add_argument("--top-k", type=int, default=20)
+
     return parser
 
 
@@ -89,6 +95,19 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
             days=args.days,
             top_k=args.top_k,
             raw_text="cli screen-risk",
+            use_agent_sdk=should_use_agent_sdk,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+            llm_base_url=args.llm_base_url,
+            context={},
+        )
+    if args.command == "ask":
+        return OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            therapist_id=args.therapist_id,
+            days=args.days,
+            top_k=args.top_k,
+            raw_text=args.question,
             use_agent_sdk=should_use_agent_sdk,
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
