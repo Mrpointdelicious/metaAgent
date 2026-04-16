@@ -29,6 +29,7 @@ from tools import (
 )
 from .analytics_manager import AnalyticsManager
 from .intent_router import IntentRouter
+from .llm_router import LLMRouter, merge_rule_and_llm
 
 from .schemas import (
     ExecutionMode,
@@ -40,6 +41,7 @@ from .schemas import (
     OrchestratorResponse,
     PlanStep,
     RiskScreenOutput,
+    RoutedDecision,
     StepExecutionResult,
     normalize_task_type,
 )
@@ -59,6 +61,7 @@ class RehabAgentOrchestrator:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self.intent_router = IntentRouter()
+        self.llm_router = LLMRouter(settings=self.settings)
 
         self.repository = RehabRepository(self.settings)
         self.analytics_service = AnalyticsService(self.repository, self.settings)
@@ -112,30 +115,39 @@ class RehabAgentOrchestrator:
             base_url=request.llm_base_url,
         )
         mode, execution_mode, mode_issues = self._resolve_mode(request, llm_config)
-        decision = self.intent_router.route(request)
-        if decision.intent == "open_analytics_query":
+        rule_decision = self.intent_router.route(request)
+        routed = self._refine_intent_with_llm_if_needed(
+            request=request,
+            rule_decision=rule_decision,
+            llm_config=llm_config,
+            mode=mode,
+        )
+        route_trace = self._build_route_trace(routed)
+        if routed.final_intent == "open_analytics_query":
             response = self.analytics_manager.run(
                 request,
-                decision,
+                routed,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
             )
             response.validation_issues = list(mode_issues) + list(response.validation_issues)
+            response.execution_trace = [route_trace] + list(response.execution_trace)
             return response
 
         direct_request = request.model_copy(deep=True)
-        if decision.intent == "single_patient_review" and direct_request.task_type is None:
+        if routed.final_intent == "single_patient_review":
             direct_request.task_type = OrchestrationTaskType.REVIEW_PATIENT.value
-        elif decision.intent == "risk_screening" and direct_request.task_type is None:
+        elif routed.final_intent == "risk_screening":
             direct_request.task_type = OrchestrationTaskType.SCREEN_RISK.value
-        elif decision.intent == "weekly_report" and direct_request.task_type is None:
+        elif routed.final_intent == "weekly_report":
             direct_request.task_type = OrchestrationTaskType.WEEKLY_REPORT.value
         state = OrchestrationState(
             user_query=direct_request.raw_text or "",
             mode=mode,
             validation_issues=list(mode_issues),
         )
+        state.step_results.append(route_trace)
 
         intent = self.route_intent(direct_request)
         state.intent = intent
@@ -153,6 +165,42 @@ class RehabAgentOrchestrator:
             for issue in state.validation_issues
         )
         return self._build_response(state, llm_config, execution_mode, success=success)
+
+    def _refine_intent_with_llm_if_needed(
+        self,
+        *,
+        request: OrchestratorRequest,
+        rule_decision,
+        llm_config: ResolvedLLMConfig,
+        mode: ExecutionMode,
+    ) -> RoutedDecision:
+        should_refine = self.llm_router.should_refine(request, rule_decision)
+        llm_decision = None
+        if should_refine:
+            llm_decision = self.llm_router.refine(
+                request,
+                rule_decision,
+                llm_config=llm_config,
+                mode=mode,
+            )
+        routed = merge_rule_and_llm(rule_decision, llm_decision)
+        return routed
+
+    def _build_route_trace(self, routed: RoutedDecision) -> StepExecutionResult:
+        llm_called = routed.llm_decision is not None
+        return StepExecutionResult(
+            step_id="route_intent",
+            tool_name="llm_router" if llm_called else "rule_router",
+            success=True,
+            args={},
+            output_summary=(
+                f"final_intent={routed.final_intent}; "
+                f"final_subtype={routed.final_subtype or 'none'}; "
+                f"final_scope={routed.final_scope or 'none'}; "
+                f"llm_refined={llm_called}"
+            ),
+            raw_output=routed.model_dump(mode="json"),
+        )
 
     def route_intent(self, request: OrchestratorRequest) -> OrchestrationIntent:
         raw_query = (request.raw_text or "").strip()

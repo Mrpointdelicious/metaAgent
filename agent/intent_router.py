@@ -5,6 +5,7 @@ import re
 
 from .schemas import (
     AnalyticsScope,
+    DoctorIdSource,
     IntentDecision,
     OpenAnalyticsSubtype,
     OrchestrationTaskType,
@@ -115,6 +116,7 @@ class IntentRouter:
             rationale=rationale or fallback_rationale,
             analytics_subtype=subtype,
             analysis_scope=scope,
+            doctor_id_source=self._doctor_id_source(request, raw_text, scope),
         )
         logger.info(
             "open analytics routed subtype=%s scope=%s confidence=%.2f question=%r",
@@ -183,3 +185,27 @@ class IntentRouter:
         if subtype in {"absent_old_patients_recent_window", "absent_from_baseline_window"}:
             return "single_doctor"
         return None
+
+    def _doctor_id_source(
+        self,
+        request: OrchestratorRequest,
+        text: str,
+        scope: AnalyticsScope | None,
+    ) -> DoctorIdSource | None:
+        if scope == "doctor_aggregate":
+            return "none"
+        if self._extract_doctor_id(text) is not None:
+            return "explicit"
+        if scope == "single_doctor" and (request.therapist_id is not None or (request.context or {}).get("therapist_id") is not None):
+            return "session"
+        if scope == "single_doctor":
+            return "session"
+        return None
+
+    def _extract_doctor_id(self, text: str) -> int | None:
+        match = re.search(
+            r"(?:医生|治疗师|康复师|doctor|therapist)\s*(?:id)?\s*[:：]?\s*(\d+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        return int(match.group(1)) if match else None

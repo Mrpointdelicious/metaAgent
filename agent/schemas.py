@@ -46,8 +46,9 @@ OpenAnalyticsSubtype = Literal[
     "absent_from_baseline_window",
     "doctors_with_active_plans",
 ]
-AnalyticsScope = Literal["single_doctor", "doctor_aggregate"]
+AnalyticsScope = Literal["single_doctor", "doctor_aggregate", "patient_single"]
 AnalyticsParseMode = Literal["single_window", "dual_window", "fallback"]
+DoctorIdSource = Literal["explicit", "session", "none"]
 
 AnalyticsIntentName = Literal[
     "single_patient_review",
@@ -168,6 +169,27 @@ class IntentDecision(BaseModel):
     rationale: str = Field(default="", description="Why the router chose this intent.")
     analytics_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Open analytics subtype.")
     analysis_scope: AnalyticsScope | None = Field(default=None, description="Open analytics scope.")
+    doctor_id_source: DoctorIdSource | None = Field(default=None, description="Rule-derived doctor ID source.")
+
+
+class LLMRouteDecision(BaseModel):
+    intent: AnalyticsIntentName = Field(description="LLM-refined top-level intent.")
+    analytics_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="LLM-refined open analytics subtype.")
+    scope: AnalyticsScope | None = Field(default=None, description="LLM-refined task scope.")
+    doctor_id_source: DoctorIdSource | None = Field(default=None, description="Source used for doctor ID resolution.")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="LLM routing confidence.")
+    rationale: str = Field(default="", description="Why the LLM chose this route.")
+
+
+class RoutedDecision(BaseModel):
+    rule_decision: IntentDecision = Field(description="Deterministic rule router decision.")
+    llm_decision: LLMRouteDecision | None = Field(default=None, description="Optional LLM refinement decision.")
+    final_intent: AnalyticsIntentName = Field(description="Merged final intent.")
+    final_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Merged final open analytics subtype.")
+    final_scope: AnalyticsScope | None = Field(default=None, description="Merged final scope.")
+    doctor_id_source: DoctorIdSource | None = Field(default=None, description="Merged doctor ID source.")
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Merged confidence.")
+    rationale: str = Field(default="", description="Merged routing rationale.")
 
 
 class QueryPlanStep(BaseModel):

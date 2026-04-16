@@ -24,6 +24,7 @@ from .schemas import (
     RelativeWindow,
     ResolvedAnalyticsRanges,
     ResolvedWindow,
+    RoutedDecision,
     StepExecutionResult,
 )
 
@@ -55,25 +56,26 @@ class AnalyticsManager:
     def run(
         self,
         request: OrchestratorRequest,
-        decision: IntentDecision,
+        decision: IntentDecision | RoutedDecision,
         *,
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
-        subtype = decision.analytics_subtype
+        effective_decision = self._effective_intent_decision(decision)
+        subtype = effective_decision.analytics_subtype
         logger.info(
             "open analytics execute subtype=%s scope=%s question=%r",
             subtype,
-            decision.analysis_scope,
+            effective_decision.analysis_scope,
             question,
         )
 
         if subtype == "absent_old_patients_recent_window":
             return self._run_absent_old_patients_recent_window(
                 request,
-                decision,
+                effective_decision,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
@@ -81,7 +83,7 @@ class AnalyticsManager:
         if subtype == "absent_from_baseline_window":
             return self._run_absent_from_baseline_window(
                 request,
-                decision,
+                effective_decision,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
@@ -89,17 +91,29 @@ class AnalyticsManager:
         if subtype == "doctors_with_active_plans":
             return self._run_doctors_with_active_plans(
                 request,
-                decision,
+                effective_decision,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
             )
         return self._build_not_supported_response(
             request,
-            decision,
+            effective_decision,
             llm_config=llm_config,
             execution_mode=execution_mode,
             reason="Unable to stably classify this open analytics question into a supported subtype.",
+        )
+
+    def _effective_intent_decision(self, decision: IntentDecision | RoutedDecision) -> IntentDecision:
+        if isinstance(decision, IntentDecision):
+            return decision
+        return IntentDecision(
+            intent=decision.final_intent,
+            confidence=decision.confidence,
+            rationale=decision.rationale,
+            analytics_subtype=decision.final_subtype,
+            analysis_scope=decision.final_scope,
+            doctor_id_source=decision.doctor_id_source,
         )
 
     def _run_absent_old_patients_recent_window(

@@ -16,6 +16,7 @@ from tools import build_analytics_tools, build_tool_registry
 
 from agent.analytics_manager import AnalyticsManager
 from agent.intent_router import IntentRouter
+from agent.llm_router import LLMRouter, merge_rule_and_llm
 from agent.schemas import OrchestrationTaskType, OrchestratorRequest
 
 CASE_1_QUESTION = "查看医生56这30天有哪些以前来过的患者没有来"
@@ -76,6 +77,12 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertIsNotNone(payload["query_plan"]["recent_start_date"])
         self.assertIsNone(payload["query_plan"]["baseline_start_date"])
 
+        routed = merge_rule_and_llm(decision, None)
+        self.assertEqual(routed.final_intent, "open_analytics_query")
+        self.assertEqual(routed.final_subtype, "absent_old_patients_recent_window")
+        self.assertEqual(routed.final_scope, "single_doctor")
+        self.assertEqual(routed.doctor_id_source, "explicit")
+
     def test_dual_window_absent(self) -> None:
         question = CASE_2_QUESTION
         request = OrchestratorRequest(
@@ -101,6 +108,12 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertIsNotNone(payload["query_plan"]["recent_start_date"])
         self.assertIsNotNone(payload["query_plan"]["baseline_start_date"])
         self.assertIsNotNone(payload["query_plan"]["baseline_end_date"])
+
+        routed = merge_rule_and_llm(decision, None)
+        self.assertEqual(routed.final_intent, "open_analytics_query")
+        self.assertEqual(routed.final_subtype, "absent_from_baseline_window")
+        self.assertEqual(routed.final_scope, "single_doctor")
+        self.assertEqual(routed.doctor_id_source, "explicit")
 
     def test_doctor_aggregate(self) -> None:
         question = CASE_3_QUESTION
@@ -128,6 +141,12 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertIsNone(payload["doctor_id"])
         self.assertTrue(payload["result_rows"])
         self.assertEqual(payload["result_rows"][0]["doctor_id"], 30001)
+
+        routed = merge_rule_and_llm(decision, None)
+        self.assertEqual(routed.final_intent, "open_analytics_query")
+        self.assertEqual(routed.final_subtype, "doctors_with_active_plans")
+        self.assertEqual(routed.final_scope, "doctor_aggregate")
+        self.assertEqual(routed.doctor_id_source, "none")
 
     def test_unclassified_question_does_not_fall_back(self) -> None:
         question = "帮我做一个开放分析，看看最近的整体情况"
@@ -158,6 +177,18 @@ class OpenAnalyticsTests(unittest.TestCase):
                 "doctors_with_active_plans",
             ],
         )
+
+    def test_fixed_screen_risk_does_not_trigger_llm_router(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.SCREEN_RISK.value,
+            therapist_id=56,
+            days=30,
+            raw_text="screen-risk --therapist-id 56 --days 30",
+        )
+        decision = self.router.route(request)
+
+        self.assertEqual(decision.intent, "risk_screening")
+        self.assertFalse(LLMRouter().should_refine(request, decision))
 
 
 if __name__ == "__main__":
