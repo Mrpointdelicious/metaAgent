@@ -11,14 +11,20 @@ from services import AnalyticsService
 from services.shared import build_time_range, parse_datetime_flexible, resolve_time_anchor
 from tools import ToolSpec
 
+from .llm_planner import LLMPlanner
+from .plan_validator import PlanValidator
 from .schemas import (
     AnalyticsScope,
     AnalyticsStructuredOutput,
     AnalyticsTimeSlots,
     IntentDecision,
+    LLMPlannedQuery,
+    LLMPlannedStep,
     OpenAnalyticsSubtype,
     OrchestratorRequest,
     OrchestratorResponse,
+    PlannedQuerySource,
+    PlanValidationResult,
     QueryPlan,
     QueryPlanStep,
     RelativeWindow,
@@ -48,10 +54,14 @@ class AnalyticsManager:
         analytics_service: AnalyticsService,
         analytics_tool_registry: dict[str, ToolSpec],
         settings: Settings | None = None,
+        llm_planner: LLMPlanner | None = None,
+        plan_validator: PlanValidator | None = None,
     ):
         self.analytics_service = analytics_service
         self.analytics_tool_registry = analytics_tool_registry
         self.settings = settings or get_settings()
+        self.llm_planner = llm_planner or LLMPlanner(settings=self.settings)
+        self.plan_validator = plan_validator or PlanValidator(tool_registry=self.analytics_tool_registry)
 
     def run(
         self,
@@ -61,6 +71,24 @@ class AnalyticsManager:
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
+    ) -> OrchestratorResponse:
+        return self.run_template(
+            request,
+            decision,
+            mode=mode,
+            llm_config=llm_config,
+            execution_mode=execution_mode,
+        )
+
+    def run_template(
+        self,
+        request: OrchestratorRequest,
+        decision: IntentDecision | RoutedDecision,
+        *,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        source_note: str | None = None,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
         effective_decision = self._effective_intent_decision(decision)
@@ -79,6 +107,7 @@ class AnalyticsManager:
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
+                planned_query_source=PlannedQuerySource(source="fixed_template", note=source_note),
             )
         if subtype == "absent_from_baseline_window":
             return self._run_absent_from_baseline_window(
@@ -87,6 +116,7 @@ class AnalyticsManager:
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
+                planned_query_source=PlannedQuerySource(source="fixed_template", note=source_note),
             )
         if subtype == "doctors_with_active_plans":
             return self._run_doctors_with_active_plans(
@@ -95,6 +125,7 @@ class AnalyticsManager:
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
+                planned_query_source=PlannedQuerySource(source="fixed_template", note=source_note),
             )
         return self._build_not_supported_response(
             request,
@@ -102,7 +133,106 @@ class AnalyticsManager:
             llm_config=llm_config,
             execution_mode=execution_mode,
             reason="Unable to stably classify this open analytics question into a supported subtype.",
+            planned_query_source=PlannedQuerySource(source="fixed_template", note=source_note),
         )
+
+    def run_agent_planned(
+        self,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        *,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+    ) -> OrchestratorResponse:
+        planner_trace: list[StepExecutionResult] = []
+        fallback_note: str | None = None
+        try:
+            tool_catalog = self._tool_catalog(routed_decision)
+            planned = self.llm_planner.plan(
+                request=request,
+                routed_decision=routed_decision,
+                tool_catalog=tool_catalog,
+                llm_config=llm_config,
+                mode=mode,
+            )
+            normalized_plan, query_plan, explicit_doctor = self._normalize_llm_plan(
+                request=request,
+                routed_decision=routed_decision,
+                planned=planned,
+            )
+            planner_trace.append(
+                StepExecutionResult(
+                    step_id="llm_plan",
+                    tool_name="llm_planner",
+                    success=True,
+                    args={"tool_catalog_size": len(tool_catalog)},
+                    output_summary=f"planner returned {len(normalized_plan.steps)} steps",
+                    raw_output=normalized_plan.model_dump(mode="json"),
+                )
+            )
+            validation = self.plan_validator.validate(normalized_plan, routed_decision=routed_decision)
+            planner_trace.append(
+                StepExecutionResult(
+                    step_id="validate_plan",
+                    tool_name="plan_validator",
+                    success=validation.is_valid,
+                    args={},
+                    output_summary="plan valid" if validation.is_valid else f"plan invalid issues={len(validation.issues)}",
+                    raw_output=validation.model_dump(mode="json"),
+                    error=None if validation.is_valid else "; ".join(issue.code for issue in validation.issues),
+                )
+            )
+            if not validation.is_valid:
+                fallback_note = "plan_validation_failed:" + ",".join(issue.code for issue in validation.issues)
+                return self._fallback_to_template(
+                    request=request,
+                    routed_decision=routed_decision,
+                    mode=mode,
+                    llm_config=llm_config,
+                    execution_mode=execution_mode,
+                    fallback_note=fallback_note,
+                    prefix_trace=planner_trace,
+                    validation=validation,
+                )
+
+            response = self._execute_query_plan(
+                question=(request.raw_text or "").strip(),
+                request=request,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                query_plan=query_plan,
+                explicit_doctor=explicit_doctor,
+                planned_query_source=PlannedQuerySource(source="llm_planner", note=normalized_plan.rationale),
+                strict_failures=True,
+            )
+            response.execution_trace = planner_trace + list(response.execution_trace)
+            return response
+        except Exception as exc:  # noqa: BLE001
+            fallback_note = str(exc)
+            logger.warning("llm planner branch falling back to template: %s", fallback_note)
+            failure_step_id = "execute_llm_plan" if any(item.step_id == "llm_plan" and item.success for item in planner_trace) else "llm_plan"
+            planner_trace.append(
+                StepExecutionResult(
+                    step_id=failure_step_id,
+                    tool_name="llm_planner",
+                    success=False,
+                    args={},
+                    output_summary="planner branch failed; fallback template will run",
+                    raw_output=None,
+                    error=fallback_note,
+                )
+            )
+            return self._fallback_to_template(
+                request=request,
+                routed_decision=routed_decision,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                fallback_note=fallback_note,
+                prefix_trace=planner_trace,
+            )
 
     def _effective_intent_decision(self, decision: IntentDecision | RoutedDecision) -> IntentDecision:
         if isinstance(decision, IntentDecision):
@@ -116,6 +246,229 @@ class AnalyticsManager:
             doctor_id_source=decision.doctor_id_source,
         )
 
+    def _fallback_to_template(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        fallback_note: str,
+        prefix_trace: list[StepExecutionResult],
+        validation: PlanValidationResult | None = None,
+    ) -> OrchestratorResponse:
+        response = self.run_template(
+            request,
+            routed_decision,
+            mode=mode,
+            llm_config=llm_config,
+            execution_mode=execution_mode,
+            source_note=fallback_note,
+        )
+        self._mark_response_source(
+            response,
+            PlannedQuerySource(source="fallback_template", note=fallback_note),
+        )
+        response.execution_trace = prefix_trace + list(response.execution_trace)
+        issue_codes = [f"llm_planner.fallback:{fallback_note}"]
+        if validation is not None:
+            issue_codes.extend(f"plan_validator.{issue.code}" for issue in validation.issues)
+        response.validation_issues = issue_codes + list(response.validation_issues)
+        return response
+
+    def _mark_response_source(self, response: OrchestratorResponse, source: PlannedQuerySource) -> None:
+        if isinstance(response.structured_output, dict):
+            response.structured_output["planned_query_source"] = source.model_dump(mode="json")
+
+    def _tool_catalog(self, routed_decision: RoutedDecision) -> list[dict[str, Any]]:
+        scope = routed_decision.final_scope
+        if scope == "doctor_aggregate":
+            allowed_names = {"list_doctors_with_active_plans"}
+        else:
+            allowed_names = {
+                "list_patients_seen_by_doctor",
+                "list_patients_with_active_plans",
+                "set_diff",
+                "get_patient_last_visit",
+                "get_patient_plan_status",
+                "rank_patients",
+            }
+        catalog: list[dict[str, Any]] = []
+        for tool_name in allowed_names:
+            tool = self.analytics_tool_registry.get(tool_name)
+            if tool is None:
+                continue
+            metadata = tool.metadata()
+            notes: list[str] = []
+            if tool_name in {"list_patients_seen_by_doctor", "list_patients_with_active_plans"}:
+                notes.append("single_doctor scoped; include doctor_id")
+            if tool_name == "list_doctors_with_active_plans":
+                notes.append("doctor_aggregate scoped; do not pass doctor_id")
+            if tool_name == "set_diff":
+                notes.append("may use base_set_ref and subtract_set_ref to refer to previous patient-set steps")
+            if tool_name in {"get_patient_last_visit", "get_patient_plan_status", "rank_patients"}:
+                notes.append("may use patient_set_ref or patient_ids_ref to fan out from a previous patient-set step")
+            catalog.append(
+                {
+                    "tool_name": metadata["tool_name"],
+                    "description": metadata["description"],
+                    "input_schema": metadata["input_schema"],
+                    "chain_scope": metadata["chain_scope"],
+                    "notes": notes,
+                }
+            )
+        return sorted(catalog, key=lambda item: item["tool_name"])
+
+    def _normalize_llm_plan(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        planned: LLMPlannedQuery,
+    ) -> tuple[LLMPlannedQuery, QueryPlan, bool]:
+        scope = planned.scope or routed_decision.final_scope
+        subtype = planned.subtype or routed_decision.final_subtype
+        analysis_scope: AnalyticsScope = scope or "single_doctor"
+        doctor_id, explicit_doctor = self._resolve_doctor_context(request, analysis_scope=analysis_scope)
+        time_slots = self._extract_time_slots((request.raw_text or "").strip(), request)
+        resolved_ranges = self._resolve_time_slots(
+            time_slots,
+            doctor_id=doctor_id if analysis_scope != "doctor_aggregate" else None,
+            patient_id=request.patient_id,
+        )
+        token_values = self._planner_token_values(
+            doctor_id=doctor_id,
+            request=request,
+            resolved_ranges=resolved_ranges,
+        )
+        normalized_steps: list[LLMPlannedStep] = []
+        for step in planned.steps:
+            args = self._replace_planner_tokens(step.arguments or {}, token_values)
+            if analysis_scope == "single_doctor" and step.tool_name in {"list_patients_seen_by_doctor", "list_patients_with_active_plans"}:
+                args.setdefault("doctor_id", doctor_id)
+            args = self._enforce_planned_window_args(
+                step=step,
+                args=args,
+                subtype=subtype,
+                token_values=token_values,
+            )
+            if step.tool_name == "rank_patients":
+                strategy = str(args.get("strategy") or "").strip().lower()
+                if strategy in {"last_visit", "oldest_last_visit", "last_visit_time"} or ("last" in strategy and "visit" in strategy):
+                    args["strategy"] = "last_visit_oldest"
+                elif strategy and strategy not in {"active_plan_but_absent", "last_visit_oldest", "highest_risk"}:
+                    args["strategy"] = "active_plan_but_absent"
+                args.setdefault("strategy", "active_plan_but_absent")
+            normalized_steps.append(
+                LLMPlannedStep(
+                    step_id=step.step_id,
+                    tool_name=step.tool_name,
+                    arguments=args,
+                    rationale=step.rationale,
+                )
+            )
+        normalized_plan = planned.model_copy(
+            update={
+                "subtype": subtype,
+                "scope": analysis_scope,
+                "steps": normalized_steps,
+            }
+        )
+        query_steps = [
+            QueryPlanStep(
+                step_id=step.step_id,
+                intent="llm_planner",
+                tool_name=step.tool_name,
+                arguments=step.arguments,
+                rationale=step.rationale,
+            )
+            for step in normalized_plan.steps
+        ]
+        query_plan = self._build_query_plan(
+            normalized_question=normalized_plan.normalized_question,
+            subtype=subtype,
+            analysis_scope=analysis_scope,
+            doctor_id=doctor_id,
+            time_slots=time_slots,
+            resolved_ranges=resolved_ranges,
+            steps=query_steps,
+        )
+        return normalized_plan, query_plan, explicit_doctor
+
+    def _enforce_planned_window_args(
+        self,
+        *,
+        step: LLMPlannedStep,
+        args: dict[str, Any],
+        subtype: OpenAnalyticsSubtype | None,
+        token_values: dict[str, Any],
+    ) -> dict[str, Any]:
+        enforced = dict(args)
+        text = f"{step.step_id} {step.rationale}".lower()
+        if step.tool_name == "list_patients_seen_by_doctor":
+            if subtype == "absent_from_baseline_window":
+                if any(token in text for token in ("baseline", "historical", "history", "prior", "old", "base")):
+                    self._apply_window(enforced, token_values.get("BASELINE_START"), token_values.get("BASELINE_END"))
+                elif "recent" in text:
+                    self._apply_window(enforced, token_values.get("RECENT_START"), token_values.get("RECENT_END"))
+            elif subtype == "absent_old_patients_recent_window":
+                if any(token in text for token in ("historical", "history", "prior", "old", "baseline", "base")):
+                    self._apply_window(enforced, None, token_values.get("HISTORICAL_END"))
+                elif "recent" in text:
+                    self._apply_window(enforced, token_values.get("RECENT_START"), token_values.get("RECENT_END"))
+        if step.tool_name == "list_patients_with_active_plans":
+            self._apply_window(enforced, token_values.get("RECENT_START"), token_values.get("RECENT_END"))
+        if step.tool_name == "get_patient_plan_status":
+            self._apply_window(enforced, token_values.get("RECENT_START"), token_values.get("RECENT_END"))
+        return enforced
+
+    def _apply_window(self, args: dict[str, Any], start_date: Any, end_date: Any) -> None:
+        if start_date is not None:
+            args["start_date"] = start_date
+        if end_date is not None:
+            args["end_date"] = end_date
+
+    def _planner_token_values(
+        self,
+        *,
+        doctor_id: int | None,
+        request: OrchestratorRequest,
+        resolved_ranges: ResolvedAnalyticsRanges,
+    ) -> dict[str, Any]:
+        recent = resolved_ranges.recent_window
+        baseline = resolved_ranges.baseline_window
+        historical_end = None
+        if recent is not None:
+            historical_end = self._date_portion_from_datetime(
+                self._parse_required_datetime(recent.start) - timedelta(seconds=1)
+            )
+        return {
+            "DOCTOR_ID": doctor_id,
+            "THERAPIST_ID": doctor_id,
+            "TOP_K": request.top_k or 20,
+            "RECENT_START": self._date_portion(recent.start) if recent else None,
+            "RECENT_END": self._date_portion(recent.end) if recent else None,
+            "BASELINE_START": self._date_portion(baseline.start) if baseline else None,
+            "BASELINE_END": self._date_portion(baseline.end) if baseline else None,
+            "HISTORICAL_END": historical_end,
+        }
+
+    def _replace_planner_tokens(self, value: Any, token_values: dict[str, Any]) -> Any:
+        if isinstance(value, dict):
+            return {key: self._replace_planner_tokens(item, token_values) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._replace_planner_tokens(item, token_values) for item in value]
+        if isinstance(value, str):
+            token = value.strip()
+            upper_token = token.upper()
+            if upper_token in token_values:
+                replacement = token_values[upper_token]
+                if replacement is None:
+                    raise ValueError(f"planner_unresolved_placeholder:{token}")
+                return replacement
+        return value
+
     def _run_absent_old_patients_recent_window(
         self,
         request: OrchestratorRequest,
@@ -124,6 +477,7 @@ class AnalyticsManager:
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
+        planned_query_source: PlannedQuerySource | None = None,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
         doctor_id, explicit_doctor = self._resolve_doctor_context(request, analysis_scope="single_doctor")
@@ -194,6 +548,7 @@ class AnalyticsManager:
             explicit_doctor=explicit_doctor,
             time_slots=time_slots,
             resolved_ranges=resolved_ranges,
+            planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
         )
 
     def _run_absent_from_baseline_window(
@@ -204,6 +559,7 @@ class AnalyticsManager:
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
+        planned_query_source: PlannedQuerySource | None = None,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
         doctor_id, explicit_doctor = self._resolve_doctor_context(request, analysis_scope="single_doctor")
@@ -256,6 +612,7 @@ class AnalyticsManager:
             explicit_doctor=explicit_doctor,
             time_slots=time_slots,
             resolved_ranges=resolved_ranges,
+            planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
         )
 
     def _run_doctors_with_active_plans(
@@ -266,6 +623,7 @@ class AnalyticsManager:
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
+        planned_query_source: PlannedQuerySource | None = None,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
         time_slots = self._extract_time_slots(question, request)
@@ -312,6 +670,7 @@ class AnalyticsManager:
             time_slots=time_slots,
             resolved_ranges=resolved_ranges,
             source_backend=self.analytics_service.repository.last_backend,
+            planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
             query_plan=query_plan,
             historical_seen_set=None,
             recent_seen_set=None,
@@ -323,6 +682,317 @@ class AnalyticsManager:
         )
         final_text = self._render_final_text(structured_output, explicit_doctor=False)
         validation_issues.extend(self._validate(structured_output, final_text))
+        return OrchestratorResponse(success=True, task_type="open_analytics_query", execution_mode=execution_mode, llm_provider=llm_config.provider, llm_model=llm_config.model, structured_output=structured_output.model_dump(mode="json"), final_text=final_text, validation_issues=validation_issues, execution_trace=step_results)
+
+    def _execute_query_plan(
+        self,
+        *,
+        question: str,
+        request: OrchestratorRequest,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        query_plan: QueryPlan,
+        explicit_doctor: bool,
+        planned_query_source: PlannedQuerySource,
+        strict_failures: bool,
+    ) -> OrchestratorResponse:
+        if query_plan.analysis_scope == "doctor_aggregate":
+            return self._execute_doctor_aggregate_query_plan(
+                question=question,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                query_plan=query_plan,
+                planned_query_source=planned_query_source,
+                strict_failures=strict_failures,
+            )
+        if query_plan.subtype in PATIENT_ANALYSIS_SUBTYPES:
+            if query_plan.doctor_id is None:
+                raise ValueError("query_plan.missing_doctor_id")
+            return self._execute_patient_query_plan(
+                question=question,
+                request=request,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                query_plan=query_plan,
+                explicit_doctor=explicit_doctor,
+                planned_query_source=planned_query_source,
+                strict_failures=strict_failures,
+            )
+        raise ValueError(f"query_plan.unsupported_subtype:{query_plan.subtype}")
+
+    def _execute_doctor_aggregate_query_plan(
+        self,
+        *,
+        question: str,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        query_plan: QueryPlan,
+        planned_query_source: PlannedQuerySource,
+        strict_failures: bool,
+    ) -> OrchestratorResponse:
+        recent_window = query_plan.resolved_ranges.recent_window if query_plan.resolved_ranges else None
+        if recent_window is None:
+            raise ValueError("query_plan.missing_recent_window")
+        step = next((item for item in query_plan.steps if item.tool_name == "list_doctors_with_active_plans"), None)
+        if step is None:
+            raise ValueError("query_plan.missing_doctor_aggregate_step")
+
+        step_results: list[StepExecutionResult] = []
+        aggregate_payload = self._execute_step_checked(
+            step_results=step_results,
+            step_id=step.step_id,
+            tool_name=step.tool_name,
+            args=dict(step.arguments),
+            mode=mode,
+            strict=strict_failures,
+        )
+        result_rows = [DoctorAnalyticsResultRow.model_validate(item) for item in (aggregate_payload or []) if isinstance(item, dict)]
+        recent_start_date = self._date_portion(recent_window.start)
+        recent_end_date = self._date_portion(recent_window.end)
+        summary = (
+            f"Found {len(result_rows)} doctors with active patient training plans in {recent_start_date} to {recent_end_date}."
+            if result_rows
+            else f"No doctors with active patient training plans were found in {recent_start_date} to {recent_end_date}."
+        )
+        structured_output = AnalyticsStructuredOutput(
+            question=question,
+            subtype=query_plan.subtype,
+            analysis_scope="doctor_aggregate",
+            doctor_id=None,
+            time_range=self._time_range_from_resolved_window(recent_window),
+            time_slots=query_plan.time_slots,
+            resolved_ranges=query_plan.resolved_ranges,
+            source_backend=self.analytics_service.repository.last_backend,
+            planned_query_source=planned_query_source,
+            query_plan=query_plan,
+            historical_seen_set=None,
+            recent_seen_set=None,
+            absent_set=None,
+            ranked_patients=None,
+            result_rows=result_rows,
+            evidence_basis=self._build_evidence_basis(subtype="doctors_with_active_plans"),
+            summary=summary,
+        )
+        final_text = self._render_final_text(structured_output, explicit_doctor=False)
+        validation_issues = self._validate(structured_output, final_text)
+        return OrchestratorResponse(success=True, task_type="open_analytics_query", execution_mode=execution_mode, llm_provider=llm_config.provider, llm_model=llm_config.model, structured_output=structured_output.model_dump(mode="json"), final_text=final_text, validation_issues=validation_issues, execution_trace=step_results)
+
+    def _execute_patient_query_plan(
+        self,
+        *,
+        question: str,
+        request: OrchestratorRequest,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        query_plan: QueryPlan,
+        explicit_doctor: bool,
+        planned_query_source: PlannedQuerySource,
+        strict_failures: bool,
+    ) -> OrchestratorResponse:
+        recent_window = query_plan.resolved_ranges.recent_window if query_plan.resolved_ranges else None
+        if recent_window is None:
+            raise ValueError("query_plan.missing_recent_window")
+        doctor_id = query_plan.doctor_id
+        if doctor_id is None:
+            raise ValueError("query_plan.missing_doctor_id")
+
+        recent_start_date = self._date_portion(recent_window.start)
+        recent_end_date = self._date_portion(recent_window.end)
+        step_results: list[StepExecutionResult] = []
+        outputs: dict[str, Any] = {}
+        historical_seen: dict[str, Any] | None = None
+        recent_seen: dict[str, Any] | None = None
+        active_plans: dict[str, Any] | None = None
+        absent_candidates: dict[str, Any] | None = None
+        ranked_payload: dict[str, Any] | None = None
+        last_visit_enriched = False
+        plan_status_enriched = False
+
+        for step in query_plan.steps:
+            args = self._resolve_query_plan_step_args(
+                step=step,
+                outputs=outputs,
+                historical_seen=historical_seen,
+                recent_seen=recent_seen,
+                absent_candidates=absent_candidates,
+            )
+            if step.tool_name in {"get_patient_last_visit", "get_patient_plan_status"} and "patient_id" not in args:
+                patient_ids = self._patient_ids_from_step_args(args=args, outputs=outputs, fallback_set=absent_candidates)
+                for patient_id in patient_ids:
+                    fanout_args = dict(args)
+                    fanout_args.pop("patient_set_ref", None)
+                    fanout_args.pop("patient_ids_ref", None)
+                    fanout_args["patient_id"] = patient_id
+                    self._execute_step_checked(
+                        step_results=step_results,
+                        step_id=f"{step.step_id}_patient_{patient_id}",
+                        tool_name=step.tool_name,
+                        args=fanout_args,
+                        mode=mode,
+                        strict=strict_failures,
+                    )
+                outputs[step.step_id] = {"patient_ids": patient_ids}
+                if step.tool_name == "get_patient_last_visit":
+                    last_visit_enriched = True
+                if step.tool_name == "get_patient_plan_status":
+                    plan_status_enriched = True
+                continue
+            if step.tool_name == "rank_patients" and not args.get("patient_ids"):
+                args["patient_ids"] = self._patient_ids_from_step_args(args=args, outputs=outputs, fallback_set=absent_candidates)
+            if step.tool_name == "rank_patients" and absent_candidates is not None:
+                patient_ids_for_rank = [int(item) for item in args.get("patient_ids") or absent_candidates.get("patient_ids") or []]
+                if patient_ids_for_rank and not last_visit_enriched:
+                    for patient_id in patient_ids_for_rank:
+                        self._execute_step_checked(
+                            step_results=step_results,
+                            step_id=f"auto_last_visit_before_rank_{patient_id}",
+                            tool_name="get_patient_last_visit",
+                            args={"patient_id": patient_id, "doctor_id": doctor_id},
+                            mode=mode,
+                            strict=strict_failures,
+                        )
+                    last_visit_enriched = True
+                if patient_ids_for_rank and not plan_status_enriched:
+                    for patient_id in patient_ids_for_rank:
+                        self._execute_step_checked(
+                            step_results=step_results,
+                            step_id=f"auto_plan_status_before_rank_{patient_id}",
+                            tool_name="get_patient_plan_status",
+                            args={"patient_id": patient_id, "doctor_id": doctor_id, "start_date": recent_start_date, "end_date": recent_end_date},
+                            mode=mode,
+                            strict=strict_failures,
+                        )
+                    plan_status_enriched = True
+
+            payload = self._execute_step_checked(
+                step_results=step_results,
+                step_id=step.step_id,
+                tool_name=step.tool_name,
+                args=args,
+                mode=mode,
+                strict=strict_failures,
+            )
+            outputs[step.step_id] = payload
+            if step.tool_name == "list_patients_seen_by_doctor" and isinstance(payload, dict):
+                role = self._patient_set_role(step, historical_seen=historical_seen, recent_seen=recent_seen)
+                if role == "recent":
+                    recent_seen = payload
+                else:
+                    historical_seen = payload
+            elif step.tool_name == "list_patients_with_active_plans" and isinstance(payload, dict):
+                active_plans = payload
+            elif step.tool_name == "set_diff" and isinstance(payload, dict):
+                absent_candidates = payload
+            elif step.tool_name == "rank_patients" and isinstance(payload, dict):
+                ranked_payload = payload
+            elif step.tool_name == "get_patient_last_visit":
+                last_visit_enriched = True
+            elif step.tool_name == "get_patient_plan_status":
+                plan_status_enriched = True
+
+        if absent_candidates is None and historical_seen is not None and recent_seen is not None:
+            absent_candidates = self._execute_step_checked(
+                step_results=step_results,
+                step_id="auto_absent_diff",
+                tool_name="set_diff",
+                args={"base_set_id": historical_seen.get("set_id"), "subtract_set_id": recent_seen.get("set_id")},
+                mode=mode,
+                strict=strict_failures,
+            )
+
+        absent_patient_ids = (absent_candidates or {}).get("patient_ids") or []
+        active_plan_set = PatientSet.model_validate(active_plans) if isinstance(active_plans, dict) else None
+        if absent_patient_ids and ranked_payload is None:
+            if not last_visit_enriched:
+                for patient_id in absent_patient_ids:
+                    self._execute_step_checked(
+                        step_results=step_results,
+                        step_id=f"auto_last_visit_patient_{patient_id}",
+                        tool_name="get_patient_last_visit",
+                        args={"patient_id": patient_id, "doctor_id": doctor_id},
+                        mode=mode,
+                        strict=strict_failures,
+                    )
+            if not plan_status_enriched:
+                for patient_id in absent_patient_ids:
+                    self._execute_step_checked(
+                        step_results=step_results,
+                        step_id=f"auto_plan_status_patient_{patient_id}",
+                        tool_name="get_patient_plan_status",
+                        args={"patient_id": patient_id, "doctor_id": doctor_id, "start_date": recent_start_date, "end_date": recent_end_date},
+                        mode=mode,
+                        strict=strict_failures,
+                    )
+            ranked_payload = self._execute_step_checked(
+                step_results=step_results,
+                step_id="auto_rank_patients",
+                tool_name="rank_patients",
+                args={"patient_ids": absent_patient_ids, "strategy": "active_plan_but_absent", "top_k": request.top_k or 20},
+                mode=mode,
+                strict=strict_failures,
+            )
+
+        if not absent_patient_ids:
+            structured_output = AnalyticsStructuredOutput(
+                question=question,
+                subtype=query_plan.subtype,
+                analysis_scope=query_plan.analysis_scope,
+                doctor_id=doctor_id,
+                time_range=self._time_range_from_resolved_window(recent_window),
+                time_slots=query_plan.time_slots,
+                resolved_ranges=query_plan.resolved_ranges,
+                source_backend=self.analytics_service.repository.last_backend,
+                planned_query_source=planned_query_source,
+                query_plan=query_plan,
+                historical_seen_set=PatientSet.model_validate(historical_seen) if isinstance(historical_seen, dict) else None,
+                recent_seen_set=PatientSet.model_validate(recent_seen) if isinstance(recent_seen, dict) else None,
+                absent_set=PatientSet.model_validate(absent_candidates) if isinstance(absent_candidates, dict) else None,
+                ranked_patients=None,
+                result_rows=[],
+                evidence_basis=self._build_evidence_basis(subtype=query_plan.subtype, active_plan_set=active_plan_set),
+                summary=f"No absent patients were found for doctor {doctor_id} in {recent_start_date} to {recent_end_date}.",
+            )
+            final_text = self._render_final_text(structured_output, explicit_doctor=explicit_doctor)
+            validation_issues = self._validate(structured_output, final_text)
+            return OrchestratorResponse(success=True, task_type="open_analytics_query", execution_mode=execution_mode, llm_provider=llm_config.provider, llm_model=llm_config.model, structured_output=structured_output.model_dump(mode="json"), final_text=final_text, validation_issues=validation_issues, execution_trace=step_results)
+
+        ranked_patients = (
+            RankedPatients.model_validate(ranked_payload)
+            if isinstance(ranked_payload, dict)
+            else self.analytics_service.rank_patients(patient_ids=absent_patient_ids, strategy="active_plan_but_absent", top_k=request.top_k or 20)
+        )
+        result_rows = self.analytics_service.build_result_rows(ranked_patients)
+        active_plan_absent_count = sum(1 for row in result_rows if row.has_active_plan_in_window)
+        summary = f"Found {len(absent_patient_ids)} absent patients for doctor {doctor_id} in {recent_start_date} to {recent_end_date}. {active_plan_absent_count} still have active plans in the recent window."
+        if len(result_rows) < len(absent_patient_ids):
+            summary += f" Showing top {len(result_rows)}."
+
+        structured_output = AnalyticsStructuredOutput(
+            question=question,
+            subtype=query_plan.subtype,
+            analysis_scope=query_plan.analysis_scope,
+            doctor_id=doctor_id,
+            time_range=self._time_range_from_resolved_window(recent_window),
+            time_slots=query_plan.time_slots,
+            resolved_ranges=query_plan.resolved_ranges,
+            source_backend=self.analytics_service.repository.last_backend,
+            planned_query_source=planned_query_source,
+            query_plan=query_plan,
+            historical_seen_set=PatientSet.model_validate(historical_seen) if isinstance(historical_seen, dict) else None,
+            recent_seen_set=PatientSet.model_validate(recent_seen) if isinstance(recent_seen, dict) else None,
+            absent_set=PatientSet.model_validate(absent_candidates) if isinstance(absent_candidates, dict) else None,
+            ranked_patients=ranked_patients,
+            result_rows=result_rows,
+            evidence_basis=self._build_evidence_basis(subtype=query_plan.subtype, active_plan_set=active_plan_set),
+            summary=summary,
+        )
+        final_text = self._render_final_text(structured_output, explicit_doctor=explicit_doctor)
+        validation_issues = self._validate(structured_output, final_text)
         return OrchestratorResponse(success=True, task_type="open_analytics_query", execution_mode=execution_mode, llm_provider=llm_config.provider, llm_model=llm_config.model, structured_output=structured_output.model_dump(mode="json"), final_text=final_text, validation_issues=validation_issues, execution_trace=step_results)
 
     def _execute_absent_patient_analysis(
@@ -338,6 +1008,7 @@ class AnalyticsManager:
         explicit_doctor: bool,
         time_slots: AnalyticsTimeSlots,
         resolved_ranges: ResolvedAnalyticsRanges,
+        planned_query_source: PlannedQuerySource | None = None,
     ) -> OrchestratorResponse:
         recent_window = resolved_ranges.recent_window
         assert recent_window is not None
@@ -369,6 +1040,7 @@ class AnalyticsManager:
                 time_slots=time_slots,
                 resolved_ranges=resolved_ranges,
                 source_backend=self.analytics_service.repository.last_backend,
+                planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
                 query_plan=query_plan,
                 historical_seen_set=PatientSet.model_validate(base_seen) if isinstance(base_seen, dict) else None,
                 recent_seen_set=PatientSet.model_validate(recent_seen) if isinstance(recent_seen, dict) else None,
@@ -420,6 +1092,7 @@ class AnalyticsManager:
             time_slots=time_slots,
             resolved_ranges=resolved_ranges,
             source_backend=self.analytics_service.repository.last_backend,
+            planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
             query_plan=query_plan,
             historical_seen_set=PatientSet.model_validate(base_seen) if isinstance(base_seen, dict) else None,
             recent_seen_set=PatientSet.model_validate(recent_seen) if isinstance(recent_seen, dict) else None,
@@ -443,6 +1116,7 @@ class AnalyticsManager:
         reason: str,
         time_slots: AnalyticsTimeSlots | None = None,
         resolved_ranges: ResolvedAnalyticsRanges | None = None,
+        planned_query_source: PlannedQuerySource | None = None,
     ) -> OrchestratorResponse:
         question = (request.raw_text or "").strip()
         query_plan = self._build_query_plan(
@@ -463,6 +1137,7 @@ class AnalyticsManager:
             time_slots=time_slots,
             resolved_ranges=resolved_ranges,
             source_backend=self.analytics_service.repository.last_backend,
+            planned_query_source=planned_query_source or PlannedQuerySource(source="fixed_template"),
             query_plan=query_plan,
             historical_seen_set=None,
             recent_seen_set=None,
@@ -608,6 +1283,115 @@ class AnalyticsManager:
 
     def _resolved_window_from_datetimes(self, start_dt: datetime, end_dt: datetime, label: str) -> ResolvedWindow:
         return ResolvedWindow(start=start_dt.isoformat(sep=" "), end=end_dt.isoformat(sep=" "), label=label)
+
+    def _execute_step_checked(
+        self,
+        *,
+        step_results: list[StepExecutionResult],
+        step_id: str,
+        tool_name: str,
+        args: dict[str, Any],
+        mode: str,
+        strict: bool,
+    ) -> Any:
+        before_count = len(step_results)
+        payload = self._execute_step(
+            step_results=step_results,
+            step_id=step_id,
+            tool_name=tool_name,
+            args=args,
+            mode=mode,
+        )
+        if strict and len(step_results) > before_count and not step_results[-1].success:
+            raise RuntimeError(f"query_plan.step_failed:{step_id}:{tool_name}:{step_results[-1].error}")
+        return payload
+
+    def _resolve_query_plan_step_args(
+        self,
+        *,
+        step: QueryPlanStep,
+        outputs: dict[str, Any],
+        historical_seen: dict[str, Any] | None,
+        recent_seen: dict[str, Any] | None,
+        absent_candidates: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        args = dict(step.arguments or {})
+        if step.tool_name == "set_diff":
+            if "base_set_ref" in args and "base_set_id" not in args:
+                args["base_set_id"] = self._set_id_from_step_ref(args.pop("base_set_ref"), outputs)
+            if "subtract_set_ref" in args and "subtract_set_id" not in args:
+                args["subtract_set_id"] = self._set_id_from_step_ref(args.pop("subtract_set_ref"), outputs)
+            if "base_set_id" not in args and historical_seen is not None:
+                args["base_set_id"] = historical_seen.get("set_id")
+            if "subtract_set_id" not in args and recent_seen is not None:
+                args["subtract_set_id"] = recent_seen.get("set_id")
+        if step.tool_name in {"get_patient_last_visit", "get_patient_plan_status", "rank_patients"}:
+            if "patient_set_ref" in args:
+                patient_ids = self._patient_ids_from_ref(args["patient_set_ref"], outputs)
+                args["patient_ids_ref"] = args.pop("patient_set_ref")
+                if step.tool_name == "rank_patients":
+                    args.setdefault("patient_ids", patient_ids)
+            if step.tool_name == "rank_patients" and "patient_ids_ref" in args:
+                args.setdefault("patient_ids", self._patient_ids_from_ref(args["patient_ids_ref"], outputs))
+            if step.tool_name == "rank_patients" and "patient_ids" not in args and absent_candidates is not None:
+                args["patient_ids"] = absent_candidates.get("patient_ids") or []
+            if step.tool_name == "rank_patients":
+                args.pop("patient_set_ref", None)
+                args.pop("patient_ids_ref", None)
+        return args
+
+    def _set_id_from_step_ref(self, step_ref: Any, outputs: dict[str, Any]) -> str:
+        if not isinstance(step_ref, str):
+            raise ValueError(f"invalid_step_ref:{step_ref}")
+        output = outputs.get(step_ref)
+        if not isinstance(output, dict) or not output.get("set_id"):
+            raise ValueError(f"step_ref_has_no_set_id:{step_ref}")
+        return str(output["set_id"])
+
+    def _patient_ids_from_ref(self, step_ref: Any, outputs: dict[str, Any]) -> list[int]:
+        if not isinstance(step_ref, str):
+            raise ValueError(f"invalid_step_ref:{step_ref}")
+        output = outputs.get(step_ref)
+        if isinstance(output, dict):
+            if isinstance(output.get("patient_ids"), list):
+                return [int(item) for item in output["patient_ids"]]
+            if isinstance(output.get("rows"), list):
+                return [int(item["patient_id"]) for item in output["rows"] if isinstance(item, dict) and item.get("patient_id") is not None]
+        raise ValueError(f"step_ref_has_no_patient_ids:{step_ref}")
+
+    def _patient_ids_from_step_args(
+        self,
+        *,
+        args: dict[str, Any],
+        outputs: dict[str, Any],
+        fallback_set: dict[str, Any] | None,
+    ) -> list[int]:
+        if isinstance(args.get("patient_ids"), list):
+            return [int(item) for item in args["patient_ids"]]
+        ref = args.get("patient_set_ref") or args.get("patient_ids_ref")
+        if ref:
+            return self._patient_ids_from_ref(ref, outputs)
+        if fallback_set is not None:
+            return [int(item) for item in fallback_set.get("patient_ids") or []]
+        return []
+
+    def _patient_set_role(
+        self,
+        step: QueryPlanStep,
+        *,
+        historical_seen: dict[str, Any] | None,
+        recent_seen: dict[str, Any] | None,
+    ) -> str:
+        text = f"{step.step_id} {step.intent} {step.rationale}".lower()
+        if "recent" in text:
+            return "recent"
+        if any(token in text for token in ("baseline", "historical", "history", "prior", "old")):
+            return "historical"
+        if historical_seen is None:
+            return "historical"
+        if recent_seen is None:
+            return "recent"
+        return "historical"
 
     def _execute_step(self, *, step_results: list[StepExecutionResult], step_id: str, tool_name: str, args: dict[str, Any], mode: str) -> Any:
         tool = self.analytics_tool_registry.get(tool_name)

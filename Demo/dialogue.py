@@ -126,7 +126,7 @@ def parse_natural_language_request(
     state: ConversationState,
     settings: Settings,
     *,
-    use_agent_sdk: bool,
+    use_agent_sdk: bool | None,
     llm_provider: str | None,
     llm_model: str | None,
     llm_base_url: str | None,

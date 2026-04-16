@@ -192,6 +192,48 @@ class RoutedDecision(BaseModel):
     rationale: str = Field(default="", description="Merged routing rationale.")
 
 
+class LLMPlannedStep(BaseModel):
+    step_id: str = Field(description="Planner step identifier.")
+    tool_name: str = Field(description="Allowed primitive tool name.")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments or safe step references.")
+    rationale: str = Field(default="", description="Why the planner selected this step.")
+
+
+class LLMPlannedQuery(BaseModel):
+    normalized_question: str = Field(description="Planner-normalized analytics question.")
+    subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Open analytics subtype.")
+    scope: AnalyticsScope | None = Field(default=None, description="Analysis scope.")
+    source: Literal["llm_planner"] = Field(default="llm_planner", description="Plan source marker.")
+    steps: list[LLMPlannedStep] = Field(default_factory=list, description="Ordered planned primitive steps.")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Planner confidence.")
+    rationale: str | None = Field(default=None, description="Overall planning rationale.")
+
+
+class PlanValidationIssue(BaseModel):
+    code: str = Field(description="Stable validation issue code.")
+    message: str = Field(description="Human-readable validation issue.")
+    step_id: str | None = Field(default=None, description="Related planner step ID, if any.")
+
+
+class PlanValidationResult(BaseModel):
+    is_valid: bool = Field(description="Whether the plan can be executed.")
+    issues: list[PlanValidationIssue] = Field(default_factory=list, description="Validation issues.")
+    normalized_steps: list[LLMPlannedStep] = Field(default_factory=list, description="Validated or normalized steps.")
+
+
+class PlannedQuerySource(BaseModel):
+    source: Literal["fixed_template", "llm_planner", "fallback_template"] = Field(description="Final plan source.")
+    note: str | None = Field(default=None, description="Optional source or fallback note.")
+
+
+class ExecutionStrategy(BaseModel):
+    kind: Literal["fixed_workflow", "template_analytics", "agent_planned", "fallback_fixed_workflow"] = Field(
+        description="Top-level execution strategy selected after routing."
+    )
+    reason: str = Field(description="Why this strategy was selected.")
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Strategy confidence.")
+
+
 class QueryPlanStep(BaseModel):
     step_id: str = Field(description="Query plan step ID.")
     intent: str = Field(description="Intent served by this step.")
@@ -226,6 +268,7 @@ class AnalyticsStructuredOutput(BaseModel):
     time_slots: AnalyticsTimeSlots | None = Field(default=None, description="Structured time slots.")
     resolved_ranges: ResolvedAnalyticsRanges | None = Field(default=None, description="Resolved actual ranges.")
     source_backend: str = Field(default="", description="Underlying data backend.")
+    planned_query_source: PlannedQuerySource | None = Field(default=None, description="Whether template, LLM planner, or fallback template was used.")
     query_plan: QueryPlan = Field(description="Executed query plan.")
     historical_seen_set: PatientSet | None = Field(default=None, description="Historical attendance cohort.")
     recent_seen_set: PatientSet | None = Field(default=None, description="Recent attendance cohort.")

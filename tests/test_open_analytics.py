@@ -17,7 +17,8 @@ from tools import build_analytics_tools, build_tool_registry
 from agent.analytics_manager import AnalyticsManager
 from agent.intent_router import IntentRouter
 from agent.llm_router import LLMRouter, merge_rule_and_llm
-from agent.schemas import OrchestrationTaskType, OrchestratorRequest
+from agent.plan_validator import PlanValidator
+from agent.schemas import LLMPlannedQuery, LLMPlannedStep, OrchestrationTaskType, OrchestratorRequest
 
 CASE_1_QUESTION = "查看医生56这30天有哪些以前来过的患者没有来"
 CASE_2_QUESTION = "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
@@ -42,8 +43,80 @@ def _build_manager() -> AnalyticsManager:
     )
 
 
+def _build_manager_with_planner(fake_planner) -> AnalyticsManager:  # noqa: ANN001
+    settings = Settings(use_mock_when_db_unavailable=True)
+    repository = RehabRepository(settings)
+    repository.client.query = _raise_db_error  # type: ignore[method-assign]
+    analytics_service = AnalyticsService(repository, settings)
+    analytics_tools = build_analytics_tools(analytics_service)
+    registry = build_tool_registry(analytics_tools)
+    return AnalyticsManager(
+        analytics_service=analytics_service,
+        analytics_tool_registry=registry,
+        settings=settings,
+        llm_planner=fake_planner,
+        plan_validator=PlanValidator(registry),
+    )
+
+
 def _llm_config() -> ResolvedLLMConfig:
     return ResolvedLLMConfig(provider="qwen", model="test-model")
+
+
+def _agent_llm_config() -> ResolvedLLMConfig:
+    return ResolvedLLMConfig(provider="qwen", api_key="test-key", model="test-model", base_url="http://localhost")
+
+
+class ValidFakePlanner:
+    def plan(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return LLMPlannedQuery(
+            normalized_question="Compare baseline and recent attendance.",
+            subtype="absent_from_baseline_window",
+            scope="single_doctor",
+            steps=[
+                LLMPlannedStep(
+                    step_id="baseline_seen",
+                    tool_name="list_patients_seen_by_doctor",
+                    arguments={"doctor_id": 56, "start_date": "BASELINE_START", "end_date": "BASELINE_END", "source": "attendance"},
+                    rationale="Collect baseline patients.",
+                ),
+                LLMPlannedStep(
+                    step_id="recent_seen",
+                    tool_name="list_patients_seen_by_doctor",
+                    arguments={"doctor_id": 56, "start_date": "RECENT_START", "end_date": "RECENT_END", "source": "attendance"},
+                    rationale="Collect recent patients.",
+                ),
+                LLMPlannedStep(
+                    step_id="absent_diff",
+                    tool_name="set_diff",
+                    arguments={"base_set_ref": "baseline_seen", "subtract_set_ref": "recent_seen"},
+                    rationale="Subtract recent patients from baseline.",
+                ),
+            ],
+            confidence=0.9,
+            rationale="Dual-window question needs a set comparison.",
+        )
+
+
+class InvalidToolFakePlanner:
+    def plan(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return LLMPlannedQuery(
+            normalized_question="Invalid tool simulation.",
+            subtype="absent_from_baseline_window",
+            scope="single_doctor",
+            steps=[
+                LLMPlannedStep(
+                    step_id="bad_tool",
+                    tool_name="not_a_real_tool",
+                    arguments={},
+                    rationale="Simulate a hallucinated primitive.",
+                )
+            ],
+            confidence=0.2,
+            rationale="Test validator interception.",
+        )
 
 
 class OpenAnalyticsTests(unittest.TestCase):
@@ -147,6 +220,56 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual(routed.final_subtype, "doctors_with_active_plans")
         self.assertEqual(routed.final_scope, "doctor_aggregate")
         self.assertEqual(routed.doctor_id_source, "none")
+
+    def test_agent_planned_dual_window_uses_llm_plan(self) -> None:
+        question = CASE_2_QUESTION
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=question,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        manager = _build_manager_with_planner(ValidFakePlanner())
+
+        response = manager.run_agent_planned(
+            request,
+            routed,
+            mode="agents_sdk",
+            llm_config=_agent_llm_config(),
+            execution_mode="agents_sdk",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertEqual(payload["planned_query_source"]["source"], "llm_planner")
+        self.assertEqual(payload["query_plan"]["subtype"], "absent_from_baseline_window")
+        self.assertEqual([step["step_id"] for step in payload["query_plan"]["steps"]], ["baseline_seen", "recent_seen", "absent_diff"])
+        self.assertTrue(any(item.tool_name == "plan_validator" and item.success for item in response.execution_trace))
+
+    def test_agent_planned_invalid_tool_falls_back_to_template(self) -> None:
+        question = CASE_2_QUESTION
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=question,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        manager = _build_manager_with_planner(InvalidToolFakePlanner())
+
+        response = manager.run_agent_planned(
+            request,
+            routed,
+            mode="agents_sdk",
+            llm_config=_agent_llm_config(),
+            execution_mode="agents_sdk",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertEqual(payload["planned_query_source"]["source"], "fallback_template")
+        self.assertEqual(payload["query_plan"]["subtype"], "absent_from_baseline_window")
+        self.assertIn("plan_validator.tool.unknown", response.validation_issues)
+        self.assertTrue(any(item.tool_name == "plan_validator" and not item.success for item in response.execution_trace))
 
     def test_unclassified_question_does_not_fall_back(self) -> None:
         question = "帮我做一个开放分析，看看最近的整体情况"

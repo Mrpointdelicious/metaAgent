@@ -29,9 +29,12 @@ from tools import (
 )
 from .analytics_manager import AnalyticsManager
 from .intent_router import IntentRouter
+from .llm_planner import LLMPlanner
 from .llm_router import LLMRouter, merge_rule_and_llm
+from .plan_validator import PlanValidator
 
 from .schemas import (
+    ExecutionStrategy,
     ExecutionMode,
     OrchestrationIntent,
     OrchestrationPlan,
@@ -93,6 +96,9 @@ class RehabAgentOrchestrator:
         self.report_tools = build_report_tools(self.report_service)
         self.reflection_tools = build_reflection_tools(self.report_service)
         self.analytics_tools = build_analytics_tools(self.analytics_service)
+        self.analytics_tool_registry = build_tool_registry(self.analytics_tools)
+        self.llm_planner = LLMPlanner(settings=self.settings)
+        self.plan_validator = PlanValidator(tool_registry=self.analytics_tool_registry)
         self.tool_registry = build_tool_registry(
             self.analytics_tools,
             self.plan_tools,
@@ -104,8 +110,10 @@ class RehabAgentOrchestrator:
         )
         self.analytics_manager = AnalyticsManager(
             analytics_service=self.analytics_service,
-            analytics_tool_registry=build_tool_registry(self.analytics_tools),
+            analytics_tool_registry=self.analytics_tool_registry,
             settings=self.settings,
+            llm_planner=self.llm_planner,
+            plan_validator=self.plan_validator,
         )
 
     def run(self, request: OrchestratorRequest) -> OrchestratorResponse:
@@ -123,16 +131,27 @@ class RehabAgentOrchestrator:
             mode=mode,
         )
         route_trace = self._build_route_trace(routed)
+        strategy = self.choose_execution_strategy(request, routed, mode=mode, llm_config=llm_config)
         if routed.final_intent == "open_analytics_query":
-            response = self.analytics_manager.run(
-                request,
-                routed,
-                mode=mode,
-                llm_config=llm_config,
-                execution_mode=execution_mode,
-            )
+            strategy_trace = self._build_strategy_trace(strategy)
+            if strategy.kind == "agent_planned":
+                response = self.analytics_manager.run_agent_planned(
+                    request,
+                    routed,
+                    mode=mode,
+                    llm_config=llm_config,
+                    execution_mode=execution_mode,
+                )
+            else:
+                response = self.analytics_manager.run_template(
+                    request,
+                    routed,
+                    mode=mode,
+                    llm_config=llm_config,
+                    execution_mode=execution_mode,
+                )
             response.validation_issues = list(mode_issues) + list(response.validation_issues)
-            response.execution_trace = [route_trace] + list(response.execution_trace)
+            response.execution_trace = [route_trace, strategy_trace] + list(response.execution_trace)
             return response
 
         direct_request = request.model_copy(deep=True)
@@ -165,6 +184,34 @@ class RehabAgentOrchestrator:
             for issue in state.validation_issues
         )
         return self._build_response(state, llm_config, execution_mode, success=success)
+
+    def choose_execution_strategy(
+        self,
+        request: OrchestratorRequest,
+        routed: RoutedDecision,
+        *,
+        mode: ExecutionMode,
+        llm_config: ResolvedLLMConfig,
+    ) -> ExecutionStrategy:
+        if routed.final_intent != "open_analytics_query":
+            return ExecutionStrategy(kind="fixed_workflow", reason="Final intent is a fixed workflow.", confidence=routed.confidence)
+
+        if self.llm_planner.should_plan_with_llm(request, routed):
+            if mode == "agents_sdk" and llm_config.can_use_agents_sdk:
+                return ExecutionStrategy(kind="agent_planned", reason="Open analytics question needs flexible primitive-tool planning.", confidence=routed.confidence)
+            return ExecutionStrategy(kind="agent_planned", reason="Planner-eligible open analytics; planner will fallback if LLM mode is unavailable.", confidence=routed.confidence)
+
+        return ExecutionStrategy(kind="template_analytics", reason="Supported standard open analytics template.", confidence=routed.confidence)
+
+    def _build_strategy_trace(self, strategy: ExecutionStrategy) -> StepExecutionResult:
+        return StepExecutionResult(
+            step_id="choose_execution_strategy",
+            tool_name="strategy_chooser",
+            success=True,
+            args={},
+            output_summary=f"kind={strategy.kind}; confidence={strategy.confidence}",
+            raw_output=strategy.model_dump(mode="json"),
+        )
 
     def _refine_intent_with_llm_if_needed(
         self,
@@ -590,12 +637,14 @@ class RehabAgentOrchestrator:
         ]
 
     def _resolve_mode(self, request: OrchestratorRequest, llm_config: ResolvedLLMConfig) -> tuple[ExecutionMode, str, list[str]]:
-        requested_agent_sdk = bool(request.use_agent_sdk)
-        if requested_agent_sdk and llm_config.can_use_agents_sdk:
+        if request.use_agent_sdk is False:
+            return "direct", "direct", []
+        requested_agent_sdk = request.use_agent_sdk is True
+        if llm_config.can_use_agents_sdk:
             return "agents_sdk", "agents_sdk", []
         if requested_agent_sdk and not llm_config.can_use_agents_sdk:
             return "direct", "direct_fallback", ["execution_mode.fallback_to_direct"]
-        return "direct", "direct", []
+        return "direct", "direct_fallback", ["execution_mode.fallback_to_direct"]
 
     def _extract_slots(self, text: str) -> dict[str, Any]:
         if not text:

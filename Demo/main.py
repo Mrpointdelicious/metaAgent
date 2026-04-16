@@ -48,7 +48,7 @@ def main() -> int:
         "llm_provider": None,
         "llm_model": None,
         "llm_base_url": None,
-        "use_agent_sdk": False,
+        "use_agent_sdk": None,
         "show_trace": False,
     }
     state = ConversationState()
@@ -84,11 +84,12 @@ def main() -> int:
                 model=runtime_llm["llm_model"],
                 base_url=runtime_llm["llm_base_url"],
             )
+            agent_mode = "auto" if runtime_llm["use_agent_sdk"] is None else ("on" if runtime_llm["use_agent_sdk"] else "off")
             print(
                 f"provider={resolved.provider} "
                 f"model={resolved.model or '默认'} "
                 f"base_url={resolved.base_url or '默认'} "
-                f"agent_sdk={'开' if runtime_llm['use_agent_sdk'] else '关'} "
+                f"agent_sdk={agent_mode} "
                 f"trace={'开' if runtime_llm['show_trace'] else '关'}"
             )
             continue
@@ -97,7 +98,7 @@ def main() -> int:
                 "llm_provider": None,
                 "llm_model": None,
                 "llm_base_url": None,
-                "use_agent_sdk": False,
+                "use_agent_sdk": None,
                 "show_trace": False,
             }
             print("LLM 运行时覆盖配置已清空。")
@@ -151,8 +152,8 @@ def main() -> int:
                 args.llm_model = runtime_llm["llm_model"]
             if runtime_llm["llm_base_url"] and not args.llm_base_url:
                 args.llm_base_url = runtime_llm["llm_base_url"]
-            if runtime_llm["use_agent_sdk"] and not args.use_agent_sdk:
-                args.use_agent_sdk = True
+            if runtime_llm["use_agent_sdk"] is not None:
+                args.use_agent_sdk = runtime_llm["use_agent_sdk"]
             if runtime_llm["show_trace"] and not getattr(args, "show_trace", False):
                 args.show_trace = True
             request = build_request_from_args(args)

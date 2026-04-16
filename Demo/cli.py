@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", dest="json_output", help="以 JSON 输出结构化结果")
     common.add_argument("--show-trace", action="store_true", help="在非 JSON 模式下打印执行轨迹")
-    common.add_argument("--use-agent-sdk", action="store_true", help="当 provider 凭据可用时启用 agents_sdk 模式")
+    common.add_argument("--use-agent-sdk", action="store_true", default=None, help="当 provider 凭据可用时启用 agents_sdk 模式")
     common.add_argument("--llm-provider", choices=["openai", "qwen", "deepseek"], help="为本次运行切换 provider")
     common.add_argument("--llm-model", help="覆盖本次运行使用的模型名")
     common.add_argument("--llm-base-url", help="覆盖本次运行使用的 base URL")
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
 def apply_global_overrides_from_argv(args: argparse.Namespace, argv: list[str]) -> argparse.Namespace:
     args.json_output = getattr(args, "json_output", False) or ("--json" in argv)
     args.show_trace = getattr(args, "show_trace", False) or ("--show-trace" in argv)
-    args.use_agent_sdk = getattr(args, "use_agent_sdk", False) or ("--use-agent-sdk" in argv)
+    args.use_agent_sdk = True if "--use-agent-sdk" in argv else getattr(args, "use_agent_sdk", None)
     for option_name in ("llm_provider", "llm_model", "llm_base_url"):
         current_value = getattr(args, option_name, None)
         if current_value:
@@ -71,9 +71,7 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
     settings = get_settings()
     default_therapist_id = settings.demo_default_therapist_id
     default_plan_id = settings.demo_default_plan_id
-    should_use_agent_sdk = bool(
-        args.use_agent_sdk or args.llm_provider or args.llm_model or args.llm_base_url
-    )
+    use_agent_sdk = args.use_agent_sdk
     if args.command == "review-patient":
         return OrchestratorRequest(
             task_type=OrchestrationTaskType.REVIEW_PATIENT.value,
@@ -82,7 +80,7 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
             therapist_id=args.therapist_id,
             days=args.days,
             raw_text="cli review-patient",
-            use_agent_sdk=should_use_agent_sdk,
+            use_agent_sdk=use_agent_sdk,
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
             llm_base_url=args.llm_base_url,
@@ -95,7 +93,7 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
             days=args.days,
             top_k=args.top_k,
             raw_text="cli screen-risk",
-            use_agent_sdk=should_use_agent_sdk,
+            use_agent_sdk=use_agent_sdk,
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
             llm_base_url=args.llm_base_url,
@@ -108,7 +106,7 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
             days=args.days,
             top_k=args.top_k,
             raw_text=args.question,
-            use_agent_sdk=should_use_agent_sdk,
+            use_agent_sdk=use_agent_sdk,
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
             llm_base_url=args.llm_base_url,
@@ -120,7 +118,7 @@ def build_request_from_args(args: argparse.Namespace) -> OrchestratorRequest:
         days=args.days,
         top_k=args.top_k,
         raw_text="cli weekly-report",
-        use_agent_sdk=should_use_agent_sdk,
+        use_agent_sdk=use_agent_sdk,
         llm_provider=args.llm_provider,
         llm_model=args.llm_model,
         llm_base_url=args.llm_base_url,

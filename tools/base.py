@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field
+from pydantic_core import PydanticUndefined
 
 
 ToolChainScope = Literal["A", "B", "cross"]
@@ -102,6 +103,15 @@ class ToolSpec:
 
     def metadata(self) -> dict[str, Any]:
         fields = getattr(self.input_model, "model_fields", {})
+        def field_default(field) -> Any:  # noqa: ANN001
+            if field.is_required():
+                return None
+            if field.default_factory is not None:
+                return "default_factory"
+            if field.default is PydanticUndefined:
+                return None
+            return field.default
+
         return {
             "tool_name": self.tool_name,
             "description": self.description,
@@ -109,7 +119,7 @@ class ToolSpec:
                 name: {
                     "annotation": str(field.annotation),
                     "required": field.is_required(),
-                    "default": None if field.is_required() else field.default,
+                    "default": field_default(field),
                 }
                 for name, field in fields.items()
             },
