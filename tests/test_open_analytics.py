@@ -19,7 +19,15 @@ from agent.intent_router import IntentRouter
 from agent.llm_router import LLMRouter, merge_rule_and_llm
 from agent.orchestrator import RehabAgentOrchestrator
 from agent.plan_validator import PlanValidator
-from agent.schemas import ExecutionStrategy, LLMPlannedQuery, LLMPlannedStep, OrchestrationTaskType, OrchestratorRequest
+from agent.schemas import (
+    AgentAnalyticsResult,
+    AgentToolCallRecord,
+    ExecutionStrategy,
+    LLMPlannedQuery,
+    LLMPlannedStep,
+    OrchestrationTaskType,
+    OrchestratorRequest,
+)
 
 CASE_1_QUESTION = "查看医生56这30天有哪些以前来过的患者没有来"
 CASE_2_QUESTION = "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
@@ -44,7 +52,64 @@ def _build_manager() -> AnalyticsManager:
     )
 
 
-def _build_manager_with_planner(fake_planner) -> AnalyticsManager:  # noqa: ANN001
+class UnavailableFakeAgentRuntime:
+    def can_run(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return False
+
+    def run(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        raise AssertionError("agent runtime should not run")
+
+
+class SuccessfulFakeAgentRuntime:
+    def __init__(self) -> None:
+        self.seen_tool_names: list[str] = []
+
+    def can_run(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return True
+
+    def run(self, **kwargs):  # noqa: ANN003, ANN201
+        self.seen_tool_names = [tool.tool_name for tool in kwargs["tool_specs"]]
+        return AgentAnalyticsResult(
+            normalized_question="Agent runtime handled the dual-window question.",
+            subtype="absent_from_baseline_window",
+            scope="single_doctor",
+            final_text="Agent runtime result.",
+            structured_output={
+                "summary": "Agent runtime result.",
+                "result_rows": [{"patient_id": 138, "rank": 1}],
+                "fallback_required": False,
+            },
+            tool_calls=[
+                AgentToolCallRecord(
+                    tool_name="list_patients_seen_by_doctor",
+                    arguments={"doctor_id": 56, "start_date": "2024-12-10", "end_date": "2025-01-28"},
+                    output_summary="patient_count=5",
+                )
+            ],
+            rationale="Used fake agent runtime for unit coverage.",
+        )
+
+
+class FailingFakeAgentRuntime:
+    def can_run(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        return True
+
+    def run(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        raise RuntimeError("forced agent runtime failure")
+
+
+class ExplodingFakePlanner:
+    def plan(self, **kwargs):  # noqa: ANN003, ANN201
+        del kwargs
+        raise AssertionError("planner should not run")
+
+
+def _build_manager_with_planner(fake_planner, agent_runtime=None) -> AnalyticsManager:  # noqa: ANN001
     settings = Settings(use_mock_when_db_unavailable=True)
     repository = RehabRepository(settings)
     repository.client.query = _raise_db_error  # type: ignore[method-assign]
@@ -57,6 +122,7 @@ def _build_manager_with_planner(fake_planner) -> AnalyticsManager:  # noqa: ANN0
         settings=settings,
         llm_planner=fake_planner,
         plan_validator=PlanValidator(registry),
+        agent_runtime=agent_runtime or UnavailableFakeAgentRuntime(),
     )
 
 
@@ -263,6 +329,60 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual([step["step_id"] for step in payload["query_plan"]["steps"]], ["baseline_seen", "recent_seen", "absent_diff"])
         self.assertTrue(any(item.tool_name == "plan_validator" and item.success for item in response.execution_trace))
 
+    def test_agent_planned_uses_agent_runtime_before_planner(self) -> None:
+        question = CASE_2_QUESTION
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=question,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        runtime = SuccessfulFakeAgentRuntime()
+        manager = _build_manager_with_planner(ExplodingFakePlanner(), agent_runtime=runtime)
+
+        response = manager.run(
+            request=request,
+            routed_decision=routed,
+            strategy=_agent_strategy(routed.confidence),
+            mode="agents_sdk",
+            llm_config=_agent_llm_config(),
+            execution_mode="agents_sdk",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertEqual(payload["planned_query_source"]["source"], "agents_sdk_runtime")
+        self.assertEqual(payload["agent_runtime"]["tool_call_count"], 1)
+        self.assertIn("list_patients_seen_by_doctor", runtime.seen_tool_names)
+        self.assertTrue(any(item.tool_name == "open_analytics_agent" and item.success for item in response.execution_trace))
+        self.assertFalse(any(item.tool_name == "plan_validator" for item in response.execution_trace))
+
+    def test_agent_runtime_failure_falls_back_to_llm_planner(self) -> None:
+        question = CASE_2_QUESTION
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=question,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        manager = _build_manager_with_planner(ValidFakePlanner(), agent_runtime=FailingFakeAgentRuntime())
+
+        response = manager.run(
+            request=request,
+            routed_decision=routed,
+            strategy=_agent_strategy(routed.confidence),
+            mode="agents_sdk",
+            llm_config=_agent_llm_config(),
+            execution_mode="agents_sdk",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertEqual(payload["planned_query_source"]["source"], "llm_planner")
+        self.assertTrue(any(issue.startswith("agents_sdk_runtime.fallback:") for issue in response.validation_issues))
+        self.assertTrue(any(item.tool_name == "open_analytics_agent" and not item.success for item in response.execution_trace))
+        self.assertTrue(any(item.tool_name == "plan_validator" and item.success for item in response.execution_trace))
+
     def test_agent_planned_invalid_tool_falls_back_to_template(self) -> None:
         question = CASE_2_QUESTION
         request = OrchestratorRequest(
@@ -382,7 +502,29 @@ class OpenAnalyticsTests(unittest.TestCase):
                 llm_config=_agent_llm_config(),
             )
 
-            self.assertEqual(strategy.kind, "agent_planned")
+        self.assertEqual(strategy.kind, "agent_planned")
+
+    def test_agent_tool_specs_respect_analysis_scope(self) -> None:
+        patient_request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_2_QUESTION,
+        )
+        patient_routed = merge_rule_and_llm(self.router.route(patient_request), None)
+        patient_tool_names = {tool.tool_name for tool in self.manager._agent_tool_specs(patient_routed)}
+
+        self.assertIn("list_patients_seen_by_doctor", patient_tool_names)
+        self.assertIn("set_diff", patient_tool_names)
+        self.assertNotIn("generate_review_card", patient_tool_names)
+        self.assertNotIn("screen_risk_patients", patient_tool_names)
+
+        aggregate_request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_3_QUESTION,
+        )
+        aggregate_routed = merge_rule_and_llm(self.router.route(aggregate_request), None)
+        aggregate_tool_names = {tool.tool_name for tool in self.manager._agent_tool_specs(aggregate_routed)}
+
+        self.assertEqual(aggregate_tool_names, {"list_doctors_with_active_plans"})
 
     def test_default_mode_uses_agents_sdk_when_llm_config_is_available(self) -> None:
         request = OrchestratorRequest(

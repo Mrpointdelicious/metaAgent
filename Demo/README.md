@@ -123,6 +123,7 @@ JSON / trace 模式下还会看到：
 开放分析会在 `structured_output.planned_query_source` 标记计划来源：
 
 - `fixed_template`
+- `agents_sdk_runtime`
 - `llm_planner`
 - `fallback_template`
 
@@ -138,6 +139,7 @@ JSON / trace 模式下还会看到：
 
 - 固定 workflow 是高频主路径，不会被 planner 替代
 - LLM Router 只精修路由，不执行工具
+- `agent_planned` 会优先进入真实 Agents SDK runtime，只使用开放分析 primitive tool 白名单
 - LLM Planner 只生成结构化计划，不访问数据库、不生成 SQL
 - Plan Validator 会拦截非法工具、非法 scope、SQL-like 文本和参数错误
 - 数据库不可用时可按配置回退到 mock 数据

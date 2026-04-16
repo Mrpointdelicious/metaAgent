@@ -12,8 +12,10 @@ from services.shared import build_time_range, parse_datetime_flexible, resolve_t
 from tools import ToolSpec
 
 from .llm_planner import LLMPlanner
+from .open_analytics_agent import OpenAnalyticsAgentRuntime
 from .plan_validator import PlanValidator
 from .schemas import (
+    AgentAnalyticsResult,
     AnalyticsScope,
     AnalyticsStructuredOutput,
     AnalyticsTimeSlots,
@@ -57,12 +59,14 @@ class AnalyticsManager:
         settings: Settings | None = None,
         llm_planner: LLMPlanner | None = None,
         plan_validator: PlanValidator | None = None,
+        agent_runtime: OpenAnalyticsAgentRuntime | None = None,
     ):
         self.analytics_service = analytics_service
         self.analytics_tool_registry = analytics_tool_registry
         self.settings = settings or get_settings()
         self.llm_planner = llm_planner or LLMPlanner(settings=self.settings)
         self.plan_validator = plan_validator or PlanValidator(tool_registry=self.analytics_tool_registry)
+        self.agent_runtime = agent_runtime or OpenAnalyticsAgentRuntime(settings=self.settings)
 
     def run(
         self,
@@ -166,7 +170,112 @@ class AnalyticsManager:
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
     ) -> OrchestratorResponse:
-        planner_trace: list[StepExecutionResult] = []
+        prefix_trace: list[StepExecutionResult] = []
+        runtime_issue: str | None = None
+        if self.agent_runtime.can_run(mode=mode, llm_config=llm_config):
+            tool_specs = self._agent_tool_specs(routed_decision)
+            try:
+                agent_request = self._request_with_agent_runtime_context(request, routed_decision)
+                agent_result = self.agent_runtime.run(
+                    request=agent_request,
+                    routed_decision=routed_decision,
+                    tool_specs=tool_specs,
+                    llm_config=llm_config,
+                )
+                return self._response_from_agent_result(
+                    agent_result,
+                    request=request,
+                    routed_decision=routed_decision,
+                    llm_config=llm_config,
+                    execution_mode=execution_mode,
+                )
+            except Exception as exc:  # noqa: BLE001
+                runtime_issue = f"agents_sdk_runtime.fallback:{type(exc).__name__}:{exc}"
+                logger.warning("open analytics agent runtime falling back to planner: %s", exc)
+                prefix_trace.append(
+                    StepExecutionResult(
+                        step_id="agents_sdk_runtime",
+                        tool_name="open_analytics_agent",
+                        success=False,
+                        args={"tool_count": len(tool_specs)},
+                        output_summary="agent runtime failed; fallback planner will run",
+                        raw_output=None,
+                        error=str(exc),
+                    )
+                )
+        else:
+            prefix_trace.append(
+                StepExecutionResult(
+                    step_id="agents_sdk_runtime",
+                    tool_name="open_analytics_agent",
+                    success=False,
+                    args={"mode": mode},
+                    output_summary="agent runtime unavailable; fallback planner will run",
+                    raw_output=None,
+                    error="agents_sdk_runtime.unavailable",
+                )
+            )
+
+        response = self._run_via_llm_planner(
+            request=request,
+            routed_decision=routed_decision,
+            mode=mode,
+            llm_config=llm_config,
+            execution_mode=execution_mode,
+            prefix_trace=prefix_trace,
+        )
+        if runtime_issue:
+            response.validation_issues = [runtime_issue] + list(response.validation_issues)
+        return response
+
+    def _request_with_agent_runtime_context(
+        self,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+    ) -> OrchestratorRequest:
+        analysis_scope: AnalyticsScope = routed_decision.final_scope or "single_doctor"
+        doctor_id, explicit_doctor = self._resolve_doctor_context(request, analysis_scope=analysis_scope)
+        time_slots = self._extract_time_slots((request.raw_text or "").strip(), request)
+        resolved_ranges = self._resolve_time_slots(
+            time_slots,
+            doctor_id=doctor_id if analysis_scope != "doctor_aggregate" else None,
+            patient_id=request.patient_id,
+        )
+        recent_window = resolved_ranges.recent_window
+        baseline_window = resolved_ranges.baseline_window
+        context = dict(request.context or {})
+        context["agent_runtime_context"] = {
+            "analysis_scope": analysis_scope,
+            "doctor_id": doctor_id if analysis_scope != "doctor_aggregate" else None,
+            "explicit_doctor": explicit_doctor,
+            "time_slots": time_slots.model_dump(mode="json"),
+            "resolved_ranges": resolved_ranges.model_dump(mode="json"),
+            "tool_date_arguments": {
+                "recent_start_date": self._date_portion(recent_window.start) if recent_window else None,
+                "recent_end_date": self._date_portion(recent_window.end) if recent_window else None,
+                "baseline_start_date": self._date_portion(baseline_window.start) if baseline_window else None,
+                "baseline_end_date": self._date_portion(baseline_window.end) if baseline_window else None,
+            },
+        }
+        update: dict[str, Any] = {
+            "context": context,
+            "analytics_time_slots": time_slots,
+        }
+        if analysis_scope != "doctor_aggregate" and doctor_id is not None and request.therapist_id is None:
+            update["therapist_id"] = doctor_id
+        return request.model_copy(update=update)
+
+    def _run_via_llm_planner(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        mode: str,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        prefix_trace: list[StepExecutionResult] | None = None,
+    ) -> OrchestratorResponse:
+        planner_trace: list[StepExecutionResult] = list(prefix_trace or [])
         fallback_note: str | None = None
         try:
             tool_catalog = self._tool_catalog(routed_decision)
@@ -255,6 +364,79 @@ class AnalyticsManager:
                 prefix_trace=planner_trace,
             )
 
+    def _response_from_agent_result(
+        self,
+        result: AgentAnalyticsResult,
+        *,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+    ) -> OrchestratorResponse:
+        source = PlannedQuerySource(source="agents_sdk_runtime", note=result.rationale)
+        structured_output = dict(result.structured_output or {})
+        structured_output.setdefault("question", request.raw_text or result.normalized_question)
+        structured_output.setdefault("subtype", result.subtype or routed_decision.final_subtype)
+        structured_output.setdefault("analysis_scope", result.scope or routed_decision.final_scope)
+        structured_output.setdefault("summary", result.final_text)
+        structured_output["planned_query_source"] = source.model_dump(mode="json")
+        if "query_plan" not in structured_output:
+            structured_output["query_plan"] = QueryPlan(
+                normalized_question=result.normalized_question,
+                subtype=result.subtype or routed_decision.final_subtype,
+                analysis_scope=result.scope or routed_decision.final_scope,
+                steps=[
+                    QueryPlanStep(
+                        step_id=f"agent_tool_{index}",
+                        intent="agents_sdk_runtime_tool_call",
+                        tool_name=call.tool_name,
+                        arguments=call.arguments,
+                        rationale="Called by the Agents SDK runtime.",
+                    )
+                    for index, call in enumerate(result.tool_calls, start=1)
+                ],
+            ).model_dump(mode="json")
+        structured_output["agent_runtime"] = {
+            "source": result.source,
+            "tool_call_count": len(result.tool_calls),
+        }
+
+        trace = [
+            StepExecutionResult(
+                step_id="agents_sdk_runtime",
+                tool_name="open_analytics_agent",
+                success=True,
+                args={"tool_call_count": len(result.tool_calls)},
+                output_summary=f"agent runtime completed with {len(result.tool_calls)} tool calls",
+                raw_output=result.model_dump(mode="json"),
+            )
+        ]
+        trace.extend(
+            StepExecutionResult(
+                step_id=f"agent_tool_{index}_{call.tool_name}",
+                tool_name=call.tool_name,
+                success=True,
+                args=call.arguments,
+                output_summary=call.output_summary or "tool called by agent runtime",
+                raw_output=None,
+            )
+            for index, call in enumerate(result.tool_calls, start=1)
+        )
+        validation_issues: list[str] = []
+        if not result.final_text.strip():
+            validation_issues.append("agents_sdk_runtime.empty_final_text")
+        return OrchestratorResponse(
+            success=not validation_issues,
+            task_type="open_analytics_query",
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output=structured_output,
+            final_text=result.final_text,
+            validation_issues=validation_issues,
+            execution_trace=trace,
+        )
+
     def _effective_intent_decision(self, decision: IntentDecision | RoutedDecision) -> IntentDecision:
         if isinstance(decision, IntentDecision):
             return decision
@@ -340,6 +522,23 @@ class AnalyticsManager:
                 }
             )
         return sorted(catalog, key=lambda item: item["tool_name"])
+
+    def _agent_tool_specs(self, routed_decision: RoutedDecision) -> list[ToolSpec]:
+        if routed_decision.final_scope == "doctor_aggregate":
+            allowed_names = {"list_doctors_with_active_plans"}
+        else:
+            allowed_names = {
+                "list_patients_seen_by_doctor",
+                "list_patients_with_active_plans",
+                "set_diff",
+                "rank_patients",
+            }
+        tool_specs: list[ToolSpec] = []
+        for tool_name in sorted(allowed_names):
+            tool = self.analytics_tool_registry.get(tool_name)
+            if tool is not None and tool.get_agent_tool() is not None:
+                tool_specs.append(tool)
+        return tool_specs
 
     def _normalize_llm_plan(
         self,

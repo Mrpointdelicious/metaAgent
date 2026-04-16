@@ -221,8 +221,25 @@ class PlanValidationResult(BaseModel):
     normalized_steps: list[LLMPlannedStep] = Field(default_factory=list, description="Validated or normalized steps.")
 
 
+class AgentToolCallRecord(BaseModel):
+    tool_name: str = Field(description="Agent-visible primitive tool name.")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="Arguments passed to the tool.")
+    output_summary: str | None = Field(default=None, description="Compact tool output summary.")
+
+
+class AgentAnalyticsResult(BaseModel):
+    normalized_question: str = Field(description="Agent-normalized analytics question.")
+    subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Open analytics subtype handled by the agent.")
+    scope: AnalyticsScope | None = Field(default=None, description="Analysis scope handled by the agent.")
+    final_text: str = Field(default="", description="Human-readable final answer.")
+    structured_output: dict[str, Any] = Field(default_factory=dict, description="Program-consumable agent output.")
+    tool_calls: list[AgentToolCallRecord] = Field(default_factory=list, description="Tool calls observed during the agent run.")
+    rationale: str | None = Field(default=None, description="Agent reasoning summary.")
+    source: Literal["agents_sdk_runtime"] = Field(default="agents_sdk_runtime", description="Agent runtime source marker.")
+
+
 class PlannedQuerySource(BaseModel):
-    source: Literal["fixed_template", "llm_planner", "fallback_template"] = Field(description="Final plan source.")
+    source: Literal["fixed_template", "llm_planner", "agents_sdk_runtime", "fallback_template"] = Field(description="Final plan source.")
     note: str | None = Field(default=None, description="Optional source or fallback note.")
 
 

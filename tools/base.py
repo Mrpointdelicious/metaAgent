@@ -101,6 +101,9 @@ class ToolSpec:
         payload = validated.model_dump(exclude_none=True)
         return handler(**payload)
 
+    def get_agent_tool(self) -> Any | None:
+        return self.agent_tool
+
     def metadata(self) -> dict[str, Any]:
         fields = getattr(self.input_model, "model_fields", {})
         def field_default(field) -> Any:  # noqa: ANN001

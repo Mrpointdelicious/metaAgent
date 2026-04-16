@@ -56,12 +56,12 @@
 
 用于更灵活的开放分析。触发后由：
 
-1. `LLMPlanner` 在工具白名单内生成结构化 `QueryPlan`
-2. `PlanValidator` 做白名单、参数、scope、步数和 SQL-like 文本校验
-3. `AnalyticsManager` 使用统一执行器执行合法计划
-4. 任一环节失败则 fallback 到模板分析
+1. `OpenAnalyticsAgentRuntime` 优先启动真实 Agents SDK runtime
+2. Agent 只看到开放分析 primitive tool 白名单，并通过 `ToolSpec.agent_tool` 调用工具
+3. Agent runtime 失败时 fallback 到 `LLMPlanner + PlanValidator + _execute_query_plan`
+4. planner 路径也失败时 fallback 到模板分析
 
-LLM 只负责规划，不直接访问数据库、不生成 SQL、不调用 repository。
+Agent/LLM 只工作在开放分析域，不直接访问数据库、不生成 SQL、不调用 repository。
 
 ## 运行模式
 
@@ -69,16 +69,16 @@ LLM 只负责规划，不直接访问数据库、不生成 SQL、不调用 repos
 
 - 如果 provider 凭据、模型和 base URL 可用，默认可进入 `agents_sdk`
 - 如果显式关闭 SDK 或凭据不可用，则进入 `direct` / `direct_fallback`
-- `agent_planned` 只有在策略为 `agent_planned` 且运行模式可用时才会真正调用 planner
+- `agent_planned` 只有在策略为 `agent_planned` 且运行模式可用时才会真正调用 Agent runtime
 - 固定 workflow 和模板 analytics 都可以在 `direct` 下稳定运行
 
-因此运行模式只影响“是否能调用 LLM Router / Planner”，不改变主链的策略结构。
+因此运行模式只影响“是否能调用 LLM Router / Agent runtime / Planner”，不改变主链的策略结构。
 
 ## 架构分层
 
 ```text
 Demo/              命令行与交互式入口
-agent/             编排层、路由、LLM Router、LLM Planner、Plan Validator
+agent/             编排层、路由、Open Analytics Agent、LLM Router、LLM Planner、Plan Validator
 config/            配置读取与环境变量
 models/            Pydantic 数据结构
 repositories/      只读数据访问层
@@ -114,8 +114,13 @@ tests/             回归测试
 
 - `agent/analytics_manager.py`
   - 公开入口统一为 `run(..., strategy=...)`
-  - 内部再选择模板或 planner 分支
+  - 内部再选择模板、Agent runtime 或 planner fallback
   - 负责开放分析 trace、fallback、统一执行器
+
+- `agent/open_analytics_agent.py`
+  - 封装真实 Agents SDK runtime
+  - 只接 `agent_planned` 开放分析分支
+  - 只通过 `ToolSpec.agent_tool` 使用白名单工具
 
 - `agent/llm_planner.py`
   - 在工具白名单内生成结构化 `LLMPlannedQuery`
@@ -183,23 +188,31 @@ B 链当前以独立证据块保留，用于步态 / 步道解释扩展。
 
 当前 B 链输出不参与 A 链偏离指标、风险分和周报统计。代码中 `gait_explanation` 是独立证据块，不表示 A/B 链已经合并。
 
-## 开放分析与 Planner
+## 开放分析、Agent Runtime 与 Planner
 
 开放分析入口用于处理自然语言统计和集合分析问题。
 
-### 当前支持的 primitive tools
+### Agent Runtime 可见工具
 
-Planner 只看到 analytics primitive tools，不暴露高层固定 workflow 工具。典型工具包括：
+真实 Agent runtime 只看到 analytics primitive tools，不暴露高层固定 workflow 工具。
+
+`single_doctor` / 患者集合类当前开放：
 
 - `list_patients_seen_by_doctor`
 - `list_patients_with_active_plans`
 - `set_diff`
-- `get_patient_last_visit`
-- `get_patient_plan_status`
 - `rank_patients`
+
+`doctor_aggregate` 当前只开放：
+
 - `list_doctors_with_active_plans`
 
-不会暴露给 planner 的高层工具包括：
+Planner fallback 的工具 catalog 仍保留更完整的 analytics primitive 集合，包括：
+
+- `get_patient_last_visit`
+- `get_patient_plan_status`
+
+不会暴露给 Agent / Planner 的高层工具包括：
 
 - `generate_review_card`
 - `screen_risk_patients`
@@ -207,7 +220,7 @@ Planner 只看到 analytics primitive tools，不暴露高层固定 workflow 工
 
 ### Tool Catalog 暴露字段
 
-传给 LLM 的 catalog 只包含精简元数据：
+传给 Agent / Planner 的 catalog 只包含精简元数据：
 
 - `tool_name`
 - `description`
@@ -235,13 +248,15 @@ Planner 只看到 analytics primitive tools，不暴露高层固定 workflow 工
 
 以下情况会回退到模板分析：
 
+- Agent runtime 不可用
+- Agent runtime 执行失败
 - planner 调用失败
 - planner 输出解析失败
 - validator 校验失败
 - 执行计划时关键步骤失败
 - 工具名不在白名单内
 - scope 不合法
-- 当前运行模式无法安全使用 LLM planning
+- 当前运行模式无法安全使用 Agent runtime / LLM planning
 
 fallback 会写入 `execution_trace` 和 `structured_output.planned_query_source`。
 
@@ -263,6 +278,7 @@ fallback 会写入 `execution_trace` 和 `structured_output.planned_query_source
 
 - `planned_query_source.source`
   - `fixed_template`
+  - `agents_sdk_runtime`
   - `llm_planner`
   - `fallback_template`
 
@@ -367,6 +383,8 @@ python -m unittest discover -s tests -v
 
 - 固定任务不触发 LLM Router
 - 标准模板问题走 template analytics
+- `agent_planned` 优先走 Agent runtime
+- Agent runtime 报错后 fallback 到 planner
 - 双窗口问题可走 agent planned
 - 医生聚合问题不注入单医生过滤
 - planner 生成非法工具时由 validator 拦截并 fallback
@@ -382,4 +400,4 @@ python -m unittest discover -s tests -v
 
 ## 一句话结论
 
-MetaAgent 当前已经收口为：固定 workflow + template analytics + agent planned 三策略主链。LLM Router 和 LLM Planner 被限制在识别与规划层，所有执行仍由代码侧工具白名单、校验器、service 和 repository 完成。
+MetaAgent 当前已经收口为：固定 workflow + template analytics + agent planned 三策略主链。`agent_planned` 已优先接入真实 Agents SDK runtime；LLM Router、Agent runtime 和 LLM Planner 都被限制在开放分析识别、受控工具调用或规划层，所有数据库能力仍只能经由代码侧工具白名单、service 和 repository 完成。
