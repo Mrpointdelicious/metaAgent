@@ -227,7 +227,7 @@ class PlannedQuerySource(BaseModel):
 
 
 class ExecutionStrategy(BaseModel):
-    kind: Literal["fixed_workflow", "template_analytics", "agent_planned", "fallback_fixed_workflow"] = Field(
+    kind: Literal["fixed_workflow", "template_analytics", "agent_planned", "fallback_fixed_workflow", "fallback_template"] = Field(
         description="Top-level execution strategy selected after routing."
     )
     reason: str = Field(description="Why this strategy was selected.")

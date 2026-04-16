@@ -17,8 +17,9 @@ from tools import build_analytics_tools, build_tool_registry
 from agent.analytics_manager import AnalyticsManager
 from agent.intent_router import IntentRouter
 from agent.llm_router import LLMRouter, merge_rule_and_llm
+from agent.orchestrator import RehabAgentOrchestrator
 from agent.plan_validator import PlanValidator
-from agent.schemas import LLMPlannedQuery, LLMPlannedStep, OrchestrationTaskType, OrchestratorRequest
+from agent.schemas import ExecutionStrategy, LLMPlannedQuery, LLMPlannedStep, OrchestrationTaskType, OrchestratorRequest
 
 CASE_1_QUESTION = "查看医生56这30天有哪些以前来过的患者没有来"
 CASE_2_QUESTION = "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
@@ -59,12 +60,24 @@ def _build_manager_with_planner(fake_planner) -> AnalyticsManager:  # noqa: ANN0
     )
 
 
+def _build_orchestrator() -> RehabAgentOrchestrator:
+    return RehabAgentOrchestrator(Settings(use_mock_when_db_unavailable=True))
+
+
 def _llm_config() -> ResolvedLLMConfig:
     return ResolvedLLMConfig(provider="qwen", model="test-model")
 
 
 def _agent_llm_config() -> ResolvedLLMConfig:
     return ResolvedLLMConfig(provider="qwen", api_key="test-key", model="test-model", base_url="http://localhost")
+
+
+def _template_strategy(confidence: float | None = None) -> ExecutionStrategy:
+    return ExecutionStrategy(kind="template_analytics", reason="unit test template analytics", confidence=confidence)
+
+
+def _agent_strategy(confidence: float | None = None) -> ExecutionStrategy:
+    return ExecutionStrategy(kind="agent_planned", reason="unit test agent planned", confidence=confidence)
 
 
 class ValidFakePlanner:
@@ -136,8 +149,9 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual(decision.analytics_subtype, "absent_old_patients_recent_window")
 
         response = self.manager.run(
-            request,
-            decision,
+            request=request,
+            routed_decision=merge_rule_and_llm(decision, None),
+            strategy=_template_strategy(decision.confidence),
             mode="direct",
             llm_config=_llm_config(),
             execution_mode="direct",
@@ -167,8 +181,9 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual(decision.analytics_subtype, "absent_from_baseline_window")
 
         response = self.manager.run(
-            request,
-            decision,
+            request=request,
+            routed_decision=merge_rule_and_llm(decision, None),
+            strategy=_template_strategy(decision.confidence),
             mode="direct",
             llm_config=_llm_config(),
             execution_mode="direct",
@@ -201,8 +216,9 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual(decision.analysis_scope, "doctor_aggregate")
 
         response = self.manager.run(
-            request,
-            decision,
+            request=request,
+            routed_decision=merge_rule_and_llm(decision, None),
+            strategy=_template_strategy(decision.confidence),
             mode="direct",
             llm_config=_llm_config(),
             execution_mode="direct",
@@ -231,9 +247,10 @@ class OpenAnalyticsTests(unittest.TestCase):
         routed = merge_rule_and_llm(decision, None)
         manager = _build_manager_with_planner(ValidFakePlanner())
 
-        response = manager.run_agent_planned(
-            request,
-            routed,
+        response = manager.run(
+            request=request,
+            routed_decision=routed,
+            strategy=_agent_strategy(routed.confidence),
             mode="agents_sdk",
             llm_config=_agent_llm_config(),
             execution_mode="agents_sdk",
@@ -256,9 +273,10 @@ class OpenAnalyticsTests(unittest.TestCase):
         routed = merge_rule_and_llm(decision, None)
         manager = _build_manager_with_planner(InvalidToolFakePlanner())
 
-        response = manager.run_agent_planned(
-            request,
-            routed,
+        response = manager.run(
+            request=request,
+            routed_decision=routed,
+            strategy=_agent_strategy(routed.confidence),
             mode="agents_sdk",
             llm_config=_agent_llm_config(),
             execution_mode="agents_sdk",
@@ -282,8 +300,9 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertIsNone(decision.analytics_subtype)
 
         response = self.manager.run(
-            request,
-            decision,
+            request=request,
+            routed_decision=merge_rule_and_llm(decision, None),
+            strategy=_template_strategy(decision.confidence),
             mode="direct",
             llm_config=_llm_config(),
             execution_mode="direct",
@@ -312,6 +331,82 @@ class OpenAnalyticsTests(unittest.TestCase):
 
         self.assertEqual(decision.intent, "risk_screening")
         self.assertFalse(LLMRouter().should_refine(request, decision))
+
+    def test_strategy_chooser_keeps_fixed_workflow_as_fixed(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.SCREEN_RISK.value,
+            therapist_id=56,
+            days=30,
+            raw_text="screen-risk --therapist-id 56 --days 30",
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        strategy = _build_orchestrator().choose_execution_strategy(
+            request,
+            routed,
+            mode="direct",
+            llm_config=_llm_config(),
+        )
+
+        self.assertEqual(strategy.kind, "fixed_workflow")
+
+    def test_strategy_chooser_keeps_standard_open_analytics_on_template(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_1_QUESTION,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        strategy = _build_orchestrator().choose_execution_strategy(
+            request,
+            routed,
+            mode="agents_sdk",
+            llm_config=_agent_llm_config(),
+        )
+
+        self.assertEqual(strategy.kind, "template_analytics")
+
+    def test_strategy_chooser_routes_complex_open_analytics_to_planner_when_available(self) -> None:
+        orchestrator = _build_orchestrator()
+        for question in (CASE_2_QUESTION, CASE_3_QUESTION):
+            request = OrchestratorRequest(
+                task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+                raw_text=question,
+            )
+            decision = self.router.route(request)
+            routed = merge_rule_and_llm(decision, None)
+            strategy = orchestrator.choose_execution_strategy(
+                request,
+                routed,
+                mode="agents_sdk",
+                llm_config=_agent_llm_config(),
+            )
+
+            self.assertEqual(strategy.kind, "agent_planned")
+
+    def test_default_mode_uses_agents_sdk_when_llm_config_is_available(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_2_QUESTION,
+        )
+
+        mode, execution_mode, issues = _build_orchestrator()._resolve_mode(request, _agent_llm_config())
+
+        self.assertEqual(mode, "agents_sdk")
+        self.assertEqual(execution_mode, "agents_sdk")
+        self.assertEqual(issues, [])
+
+    def test_mode_falls_back_to_direct_when_default_llm_config_is_unavailable(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_2_QUESTION,
+        )
+
+        mode, execution_mode, issues = _build_orchestrator()._resolve_mode(request, _llm_config())
+
+        self.assertEqual(mode, "direct")
+        self.assertEqual(execution_mode, "direct_fallback")
+        self.assertEqual(issues, ["execution_mode.fallback_to_direct"])
 
 
 if __name__ == "__main__":

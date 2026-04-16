@@ -1,65 +1,50 @@
-# Rehab Execution Deviation Demo
+# Demo 使用说明
 
-## 定位
+`Demo/` 提供 MetaAgent 的两个运行入口：
 
-这是一个面向康复训练师的计划执行偏离识别与复核支持 demo。
+- `Demo/main.py`：常驻交互式入口，适合自然语言、多轮续接和现场演示
+- `Demo/cli.py`：单次命令入口，适合脚本、回归和快速验证
 
-当前主链聚焦：
+当前 Demo 使用的真实主链是：
 
-- `dbrehaplan`
-- `dbdevicelog`
-- `dbreport`
-- `dbtemplates`
-
-步道链 `dbwalk / walkreportdetails` 目前仅作为补充解释，不并入 A 链主偏离打分。
-
-## 目录
-
-- `Demo/main.py`: 常驻 CMD 交互入口
-- `Demo/cli.py`: 单次命令入口
-- `agent/`: OpenAI Agents SDK 编排
-- `tools/`: tool adapter 层
-- `services/`: 业务逻辑层
-- `repositories/`: 只读数据库访问层
-- `models/`: Pydantic schema
-- `config/`: 配置读取和多厂商 LLM 配置
-
-## 启动
-
-```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe -m pip install -e .
+```text
+输入
+-> OrchestratorRequest
+-> IntentRouter 规则路由
+-> LLMRouter 按需精修
+-> choose_execution_strategy
+-> fixed_workflow / template_analytics / agent_planned
+-> OrchestratorResponse
 ```
 
-最少需要补：
+`direct` 与 `agents_sdk` 只是运行模式。策略选择由 `ExecutionStrategy` 统一决定。
 
-- `MYSQL_PASSWORD`
+## 快速启动
 
-如果要启用 Agents SDK，再补对应厂商的 key：
-
-- OpenAI: `OPENAI_API_KEY`
-- Qwen: `QWEN_API_KEY`
-- DeepSeek: `DEEPSEEK_API_KEY`
-
-## 多厂商 LLM 配置
-
-`.env.example` 已支持三套配置：
-
-- `LLM_PROVIDER=openai|qwen|deepseek`
-- `OPENAI_*`
-- `QWEN_*`
-- `DEEPSEEK_*`
-
-默认 provider 由 `LLM_PROVIDER` 控制，但每次命令也可以临时覆盖。
-
-## CMD 交互
-
-启动服务式进程：
+在项目根目录执行：
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\main.py
+python -m pip install -e .
+python Demo\main.py
 ```
 
-交互命令：
+也可以直接执行单次命令：
+
+```powershell
+python Demo\cli.py review-patient --plan-id 6 --days 30
+python Demo\cli.py screen-risk --therapist-id 56 --days 30
+python Demo\cli.py weekly-report --therapist-id 56 --days 30
+```
+
+## 交互模式
+
+启动：
+
+```powershell
+python Demo\main.py
+```
+
+常用输入：
 
 ```text
 review-patient --plan-id 6 --days 30
@@ -71,103 +56,89 @@ weekly-report --therapist-id 56 --days 30
 换成最近 7 天
 ```
 
-运行时切换 provider，不用重启服务：
+运行时配置：
 
 ```text
 set-provider qwen
 set-model qwen-plus
+set-base-url https://dashscope.aliyuncs.com/compatible-mode/v1
+set-agent on
+set-agent off
+set-trace on
 show-llm
-review-patient --plan-id 6 --days 7
-
-set-provider deepseek
-set-model deepseek-chat
-review-patient --plan-id 6 --days 7
-
 clear-llm
+show-context
+clear-context
+show-demo-sample
 ```
 
-## 单次命令方式
+## 单次命令
 
-使用默认 provider：
+固定任务：
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py review-patient --plan-id 6 --days 30
+python Demo\cli.py review-patient --plan-id 6 --days 30
+python Demo\cli.py screen-risk --therapist-id 56 --days 30 --top-k 10
+python Demo\cli.py weekly-report --therapist-id 56 --days 7
 ```
 
-临时切换到 Qwen：
+开放分析：
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider qwen --use-agent-sdk review-patient --plan-id 6 --days 30
+python Demo\cli.py ask "查看医生56这30天有哪些以前来过的患者没有来"
+python Demo\cli.py ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
+python Demo\cli.py ask "查询一下这30天哪些医生有定患者训练计划？"
 ```
 
-临时切换到 DeepSeek：
+启用 SDK 和 trace：
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider deepseek --use-agent-sdk weekly-report --therapist-id 56 --days 30
+python Demo\cli.py --use-agent-sdk --show-trace ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
+python Demo\cli.py --json --show-trace ask "查询一下这30天哪些医生有定患者训练计划？"
 ```
 
-覆盖模型名或 base URL：
+临时切换 LLM：
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --llm-provider qwen --llm-model qwen-max --llm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 --use-agent-sdk review-patient --plan-id 6 --days 30
+python Demo\cli.py --llm-provider qwen --llm-model qwen-plus --use-agent-sdk ask "查询一下这30天哪些医生有定患者训练计划？"
+python Demo\cli.py --llm-provider deepseek --llm-model deepseek-chat --use-agent-sdk ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
 ```
 
-输出 JSON：
+## 输出说明
 
-```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py --json review-patient --plan-id 6 --days 30
-```
+所有命令最终返回 `OrchestratorResponse`。
 
-## 稳定样本
+人类可读输出主要看：
 
-当前建议用于 demo 回归的稳定样本：
+- `success`
+- `execution_mode`
+- `final_text`
+
+JSON / trace 模式下还会看到：
+
+- `structured_output`
+- `validation_issues`
+- `execution_trace`
+
+开放分析会在 `structured_output.planned_query_source` 标记计划来源：
+
+- `fixed_template`
+- `llm_planner`
+- `fallback_template`
+
+## Demo 样本
+
+当前建议使用的稳定样本：
 
 - `therapist_id=56`
 - `plan_id=6`
 - `patient_id=146`
 
-## 当前工具
+## 当前边界
 
-- `get_plan_summary`
-- `get_execution_logs`
-- `calc_deviation_metrics`
-- `get_outcome_change`
-- `get_gait_explanation`
-- `generate_review_card`
-- `screen_risk_patients`
-- `generate_weekly_risk_report`
-- `reflect_on_output`
-
-## Agent 流程
-
-1. 先分类任务
-2. 再进入对应工具集
-3. 输出最终结果
-4. 最后做一次受约束 reflection 检查
-
-默认策略：
-
-- 如果显式指定了 `--llm-provider` 或 `--use-agent-sdk`，系统会尝试启用 Agents SDK
-- 如果当前 provider 缺少 key 或模型配置，自动回退到 direct 模式
-- 非 OpenAI provider 默认关闭 tracing，避免额外依赖 OpenAI tracing 配置
-
-## 当前实现边界
-
-- 数据库访问默认只读
-- 若数据库不可用，可自动回退到 mock 数据
-- `dbdevicelog.PlanId` 不完全可靠，因此偏离判断采用多证据合并
-- 步态链只做补充解释，不参与主风险评分
-
-## 迁移 LangGraph 的方式
-
-当前已经把核心逻辑拆成三层：
-
-1. `services/` 负责真正业务逻辑
-2. `tools/` 只负责把 service 包装成工具
-3. `agent/` 只负责 OpenAI Agents SDK 编排
-
-后续迁移到 LangGraph 时：
-
-- 保留 `repositories/ + services/`
-- 复用 `tools/` 的入参和出参 schema
-- 重写 `agent/orchestrator.py` 为 LangGraph graph 即可
+- 固定 workflow 是高频主路径，不会被 planner 替代
+- LLM Router 只精修路由，不执行工具
+- LLM Planner 只生成结构化计划，不访问数据库、不生成 SQL
+- Plan Validator 会拦截非法工具、非法 scope、SQL-like 文本和参数错误
+- 数据库不可用时可按配置回退到 mock 数据
+- B 链步道数据目前只作为 `gait_explanation` 独立证据块，不参与 A 链风险评分

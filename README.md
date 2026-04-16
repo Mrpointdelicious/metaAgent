@@ -1,389 +1,282 @@
 # MetaAgent Rehab Review Demo
 
-面向康复训练师的计划执行偏离识别与复核支持系统 demo。
+面向康复训练师的计划执行偏离识别与复核支持系统 Demo。
 
-当前目标不是通用医疗聊天，也不是纯 RAG，而是围绕院内康复训练流程，帮助治疗师快速回答这些问题：
+本项目不是通用医疗聊天系统，也不是纯 RAG 系统。当前主目标是围绕院内康复训练流程，帮助训练师识别和复核：
 
-- 哪些患者最近出现了计划执行偏离
+- 哪些患者最近出现计划执行偏离
 - 偏离主要体现在哪些维度
 - 偏离是否伴随结果变化
 - 哪些患者值得优先人工复核
+- 哪些开放式集合分析问题可以由受控工具链回答
 
-## 业务定位
+## 当前标准主链
 
-本项目当前聚焦的是：
+当前真实运行主链已经收口为一条明确的编排链路：
 
-- A 链下肢康复机器人产品的计划执行偏离识别
-- A 链训练师侧单患者复核、多患者筛选、风险周报
-- B 链康复步道产品的数据审计与步态/执行质量解释扩展位
+```text
+用户输入
+-> request normalization
+-> IntentRouter 规则路由
+-> LLMRouter 按需精修 intent / subtype / scope
+-> choose_execution_strategy
+-> 三种执行策略之一
+   -> fixed_workflow
+   -> template_analytics
+   -> agent_planned
+-> shared response / trace
+```
 
-链路边界以数据库审计文档为准：
+`direct` 和 `agents_sdk` 现在只是运行模式，不再是项目的主架构分叉。主链的唯一策略裁决点是 `ExecutionStrategy`。
 
-- [rehab_execution_deviation_data_audit_v2.md](</D:/Project/Docker/mysql/rehab_execution_deviation_data_audit_v2.md>)
+## 执行策略
 
-## A/B 链业务澄清
+### `fixed_workflow`
 
-先澄清一个核心点：
+用于高频且口径稳定的固定任务：
 
-**A 链和 B 链是两个独立产品链，不是主从关系。**
+- 单患者复核
+- 多患者风险筛选
+- 周报 / 风险摘要
+- 预留步态专项复核入口
 
-### A 链
+固定流程仍然是主路径和回归基线，不会被 LLM Planner 覆盖。
 
-A 链在审计文档中的定义是“下肢康复机器人产品链”。
+### `template_analytics`
 
-当前核心表：
+用于标准开放分析模板。当前已支持：
+
+- `absent_old_patients_recent_window`
+- `absent_from_baseline_window`
+- `doctors_with_active_plans`
+
+模板分析是开放分析的稳定兜底路径。
+
+### `agent_planned`
+
+用于更灵活的开放分析。触发后由：
+
+1. `LLMPlanner` 在工具白名单内生成结构化 `QueryPlan`
+2. `PlanValidator` 做白名单、参数、scope、步数和 SQL-like 文本校验
+3. `AnalyticsManager` 使用统一执行器执行合法计划
+4. 任一环节失败则 fallback 到模板分析
+
+LLM 只负责规划，不直接访问数据库、不生成 SQL、不调用 repository。
+
+## 运行模式
+
+`agent/orchestrator.py` 会先解析 LLM 配置和运行模式：
+
+- 如果 provider 凭据、模型和 base URL 可用，默认可进入 `agents_sdk`
+- 如果显式关闭 SDK 或凭据不可用，则进入 `direct` / `direct_fallback`
+- `agent_planned` 只有在策略为 `agent_planned` 且运行模式可用时才会真正调用 planner
+- 固定 workflow 和模板 analytics 都可以在 `direct` 下稳定运行
+
+因此运行模式只影响“是否能调用 LLM Router / Planner”，不改变主链的策略结构。
+
+## 架构分层
+
+```text
+Demo/              命令行与交互式入口
+agent/             编排层、路由、LLM Router、LLM Planner、Plan Validator
+config/            配置读取与环境变量
+models/            Pydantic 数据结构
+repositories/      只读数据访问层
+services/          业务逻辑层
+tools/             service 工具包装层
+tests/             回归测试
+```
+
+### 输入层
+
+- `Demo/cli.py`：单次命令入口
+- `Demo/main.py`：常驻交互入口
+- `Demo/dialogue.py`：自然语言解析、上下文续接、命令容错
+
+### 编排层
+
+- `agent/orchestrator.py`
+  - runtime assembly
+  - resolve LLM config / execution mode
+  - rule route
+  - LLM route refine
+  - strategy choose
+  - fixed workflow dispatch
+  - analytics dispatch
+
+- `agent/intent_router.py`
+  - 规则路由
+  - 输出 `intent / analytics_subtype / analysis_scope / doctor_id_source`
+
+- `agent/llm_router.py`
+  - 按需精修 `intent / subtype / scope`
+  - 不执行工具
+
+- `agent/analytics_manager.py`
+  - 公开入口统一为 `run(..., strategy=...)`
+  - 内部再选择模板或 planner 分支
+  - 负责开放分析 trace、fallback、统一执行器
+
+- `agent/llm_planner.py`
+  - 在工具白名单内生成结构化 `LLMPlannedQuery`
+
+- `agent/plan_validator.py`
+  - 校验 LLM 计划是否可执行
+
+### 业务逻辑层
+
+- `services/plan_service.py`
+- `services/execution_service.py`
+- `services/outcome_service.py`
+- `services/gait_service.py`
+- `services/deviation_service.py`
+- `services/report_service.py`
+- `services/reflection_service.py`
+- `services/analytics_service.py`
+
+业务判断仍在 service 层，LLM 不承载核心医疗业务口径。
+
+### 数据层
+
+- `repositories/rehab_repository.py`：业务查询封装
+- `repositories/db_client.py`：只读 MySQL 客户端
+- `repositories/mock_data.py`：数据库不可用时的 mock fallback
+
+数据库访问默认只读。
+
+## A/B 产品链边界
+
+### A 链：下肢康复机器人产品链
+
+A 链是当前主业务范围，承担：
+
+- 计划执行偏离识别
+- 单患者复核
+- 多患者风险筛选
+- 周报 / 风险摘要
+
+核心表：
 
 - `dbtemplates`
 - `dbrehaplan`
 - `dbdevicelog`
 - `dbreport`
 
-业务问题：
+核心判断：
 
-- 某个计划是否存在
+- 计划是否存在
 - 患者是否到训
 - 是否完成
 - 实际剂量是否低于计划剂量
 - 结果是否下降
-- 哪些患者需要训练师优先复核
+- 是否需要优先人工复核
 
-当前项目里“计划执行偏离识别”这个主任务，指的就是 A 链。
+### B 链：康复步道产品链
 
-### B 链
+B 链当前以独立证据块保留，用于步态 / 步道解释扩展。
 
-B 链在审计文档中的定义是“康复步道产品链”。
-
-当前核心表：
+核心表：
 
 - `dbwalk`
 - `walkreport`
 - `walkreportdetails`
 
-业务问题：
+当前 B 链输出不参与 A 链偏离指标、风险分和周报统计。代码中 `gait_explanation` 是独立证据块，不表示 A/B 链已经合并。
 
-- 步道训练是否发生
-- 步道训练是否完成
-- 步道训练时长和状态是否异常
-- 步态质量、准确率、完成率等专项指标如何解释
+## 开放分析与 Planner
 
-### A 链和 B 链的关系
+开放分析入口用于处理自然语言统计和集合分析问题。
 
-根据审计文档，A/B 链之间应这样理解：
+### 当前支持的 primitive tools
 
-- 二者是独立链，不共享统一任务口径
-- 二者不应在当前阶段进入同一个偏离识别模型
-- 二者不应被混成同一个“总 session”
-- B 链不是 A 链的解释增强从链，也不是 A 链的附属模块
+Planner 只看到 analytics primitive tools，不暴露高层固定 workflow 工具。典型工具包括：
 
-当前 demo 中两条链的实现关系是：
+- `list_patients_seen_by_doctor`
+- `list_patients_with_active_plans`
+- `set_diff`
+- `get_patient_last_visit`
+- `get_patient_plan_status`
+- `rank_patients`
+- `list_doctors_with_active_plans`
 
-- A 链承担当前主任务的偏离指标计算与风险判断
-- B 链在代码中以 `gait_explanation` 独立证据块形式保留，用于扩展步态解释能力
-- B 链输出当前**不参与** A 链的偏离指标、风险分和周报统计
+不会暴露给 planner 的高层工具包括：
 
-也就是说：
-
-**当前代码里虽然会在单患者输出中挂出 B 链解释字段，但这只是独立证据块，不代表 A/B 链被合并成主从结构。**
-
-## 当前可落地任务
-
-当前 demo 已实现三类 A 链任务：
-
-1. 单患者复核
-2. 多患者风险筛选
-3. 周报 / 风险摘要
-
-当前 B 链在 demo 中的状态是：
-
-- 已有单患者维度的独立解释输出能力
-- 尚未单独暴露成“康复步道独立复核入口”
-
-## 当前工作流程
-
-当前系统有两种输入方式，但最后会收敛到同一条编排链路。
-
-### 1. 输入层
-
-结构化输入：
-
-- `Demo/cli.py`
-
-多轮自然语言输入：
-
-- `Demo/main.py`
-- `Demo/dialogue.py`
-
-其中 `Demo/main.py` 当前支持：
-
-- 结构化命令
-- 自然语言输入
-- 多轮上下文续接
-- 运行时切换 LLM provider / model / base URL
-- 误把 Python 启动命令贴进交互窗口时的容错
-
-### 2. 编排层
-
-统一编排入口：
-
-- `agent/orchestrator.py`
-
-核心职责：
-
-- 识别任务类型
-- 组装 service 层依赖
-- 决定走 `direct` 还是 `agents_sdk`
-- 输出结构化结果和可读摘要
-
-### 3. 执行层
-
-主业务编排由：
-
-- `services/report_service.py`
-
-向下调用：
-
-- `plan_service.py`
-- `execution_service.py`
-- `outcome_service.py`
-- `gait_service.py`
-- `deviation_service.py`
-- `reflection_service.py`
-
-### 4. 数据层
-
-统一数据访问入口：
-
-- `repositories/rehab_repository.py`
-
-底层只读连接：
-
-- `repositories/db_client.py`
-
-数据库不可用时回退：
-
-- `repositories/mock_data.py`
-
-### 5. 输出层
-
-输出分两层：
-
-- `structured_output`
-- `final_text`
-
-其中 `structured_output` 适合程序消费，`final_text` 适合命令行直接阅读。
-
-## 模块调用关系
-
-下面按当前代码的真实调用顺序说明。
-
-### 单患者复核
-
-调用链：
-
-`Demo/main.py / Demo/cli.py`
--> `OrchestratorRequest`
--> `RehabAgentOrchestrator.run`
--> `ReportService.generate_review_card`
--> `PlanService.get_plan_summary`
--> `ExecutionService.get_execution_logs`
--> `OutcomeService.get_outcome_change`
--> `GaitService.get_gait_explanation`
--> `DeviationService.calc_deviation_metrics`
--> `ReflectionService.reflect_on_output`
--> `ReviewCard`
-
-业务解释：
-
-- `PlanService` 负责 A 链计划摘要
-- `ExecutionService` 负责 A 链执行日志汇总
-- `OutcomeService` 负责 A 链结果变化摘要
-- `GaitService` 负责 B 链独立证据块提取
-- `DeviationService` 只基于 A 链可用字段计算偏离与风险
-- `ReflectionService` 做受约束检查，不做自由反思
-
-### 多患者风险筛选
-
-调用链：
-
-`Demo/main.py / Demo/cli.py`
--> `RehabAgentOrchestrator.run`
--> `ReportService.screen_risk_patients`
--> `ReportService.generate_weekly_risk_report`
--> `RehabRepository.get_plan_records`
--> 对患者逐个调用 `generate_review_card`
--> 汇总为 `PatientRiskSummary[]`
-
-业务解释：
-
-- 先按 `DoctorId -> Patient -> Plan` 取 A 链计划池
-- 再对每个患者复用单患者复核逻辑
-- 最后按风险分排序，返回优先复核名单
-
-### 周报 / 风险摘要
-
-调用链：
-
-`Demo/main.py / Demo/cli.py`
--> `RehabAgentOrchestrator.run`
--> `ReportService.generate_weekly_risk_report`
--> `build_time_range`
--> `RehabRepository.get_plan_records`
--> 对患者逐个调用 `generate_review_card`
--> 汇总为 `WeeklyRiskReport`
-
-业务解释：
-
-- 周报不是单独的一套分析逻辑
-- 它是在“患者级复核结果”之上做聚合
-- 因此单患者复核逻辑是整个 demo 的核心复用单元
-
-### Agents SDK 模式
-
-当启用 `Agents SDK` 时，调用链会多一层 tool adapter：
-
-`Demo/main.py / Demo/cli.py`
--> `RehabAgentOrchestrator.run`
--> `tools/*.py`
--> `services/*.py`
--> `repositories/*.py`
-
-当前 tools 只是 service 的适配层，不承载核心业务逻辑。
-
-## 当前实现中的链路边界
-
-结合审计文档和当前代码，边界应这样理解：
-
-- A 链是当前“计划执行偏离识别 + 训练师复核支持”的主业务范围
-- B 链是康复步道独立产品链，不并入当前 A 链主模型
-- `dbcyclereport` 当前视为并行聚合链，不进入 session 级主分析
-
-当前代码中与该边界一致的部分：
-
-- 偏离指标只按 A 链字段定义
-- A 链周报与风险筛选只按 `DoctorId -> Patient -> Plan` 聚合
-- B 链不参与风险分计算
-
-当前代码中保留的扩展位：
-
-- 单患者输出结构里保留 `gait_explanation`
-- 这便于后续把 B 链独立建设为步道专项复核模块
-- 但不应把这个字段理解成“B 链已经并入 A 链”
-
-## 软件架构
-
-项目按“三层 + Demo 入口”组织。
-
-### 1. `repositories/`
-
-只负责读数据库和提供 mock fallback。
-
-- `db_client.py`
-  只读 MySQL 客户端
-- `rehab_repository.py`
-  面向业务的查询封装
-- `mock_data.py`
-  数据库不可用时的 mock 数据
-
-### 2. `services/`
-
-真正的业务逻辑层，不依赖 Agents SDK。
-
-- `plan_service.py`
-  A 链计划层摘要与计划任务解析
-- `execution_service.py`
-  A 链执行日志汇总
-- `outcome_service.py`
-  A 链结果变化与报告解析
-- `gait_service.py`
-  B 链步态/步道独立证据块提取
-- `deviation_service.py`
-  A 链偏离指标计算
-- `report_service.py`
-  单患者复核卡、风险筛选、周报聚合
-- `reflection_service.py`
-  受约束输出检查
-- `shared.py`
-  时间窗、JSON 解析、通用统计
-
-### 3. `tools/`
-
-把 service 包装成 agent 可调用工具。
-
-当前工具包括：
-
-- `get_plan_summary`
-- `get_execution_logs`
-- `calc_deviation_metrics`
-- `get_outcome_change`
-- `get_gait_explanation`
 - `generate_review_card`
 - `screen_risk_patients`
 - `generate_weekly_risk_report`
-- `reflect_on_output`
 
-### 4. `agent/`
+### Tool Catalog 暴露字段
 
-负责任务编排，不承载核心业务逻辑。
+传给 LLM 的 catalog 只包含精简元数据：
 
-- `schemas.py`
-  编排输入输出结构
-- `instructions.py`
-  agent 指令模板
-- `orchestrator.py`
-  任务分类、service 组装、tool 调用、provider 切换、direct fallback
+- `tool_name`
+- `description`
+- `input_schema`
+- `chain_scope`
+- `notes`
 
-### 5. `Demo/`
+不会把 Python 实现或 repository 查询逻辑发给模型。
 
-命令行入口。
+### Plan Validator 校验
 
-- `Demo/main.py`
-  常驻 CMD 交互服务入口，支持多轮自然语言
-- `Demo/cli.py`
-  单次命令入口
-- `Demo/dialogue.py`
-  自然语言解析、上下文状态、命令容错
-- `Demo/README.md`
-  Demo 层使用说明
+`PlanValidator` 至少拦截：
 
-### 6. `models/` 与 `config/`
+- 非白名单工具
+- 超过最大步数的计划
+- SQL-like 文本
+- scope 不匹配
+- doctor aggregate 中错误注入单医生过滤
+- single doctor 分析缺少医生 scope
+- 排序策略不合法
+- 明显重复的无意义步骤
+- 工具参数不符合 `ToolSpec.validate_args()`
 
-- `models/`
-  Pydantic 数据结构
-- `config/settings.py`
-  环境变量读取、稳定 demo 样本、LLM provider 配置
+### Fallback
 
-## 偏离指标
+以下情况会回退到模板分析：
 
-偏离指标口径以数据库审计文档中的 A 链定义为准。
+- planner 调用失败
+- planner 输出解析失败
+- validator 校验失败
+- 执行计划时关键步骤失败
+- 工具名不在白名单内
+- scope 不合法
+- 当前运行模式无法安全使用 LLM planning
 
-当前一级指标：
+fallback 会写入 `execution_trace` 和 `structured_output.planned_query_source`。
 
-- 到训率
-- 完成率
-- 执行剂量偏差
-- 连续中断风险
+## 输出结构
 
-当前实现原则：
+所有入口最终返回 `OrchestratorResponse`：
 
-- 这四项仅针对 A 链定义
-- 不直接引入 `dbwalk / walkreport / walkreportdetails`
-- `dbdevicelog.PlanId` 不裸连使用，而是结合时间窗与多证据汇总
-- `dbdevicelog.IsComplete` 不作为唯一完成标记
-- `dbreport.ReportDetails` 作为结果层重要来源，但先做结构化抽取
+- `success`
+- `task_type`
+- `execution_mode`
+- `llm_provider`
+- `llm_model`
+- `structured_output`
+- `final_text`
+- `validation_issues`
+- `execution_trace`
 
-## 多厂商 LLM 支持
+开放分析结果会额外标记：
 
-当前已支持：
+- `planned_query_source.source`
+  - `fixed_template`
+  - `llm_planner`
+  - `fallback_template`
 
-- `openai`
-- `qwen`
-- `deepseek`
+## 环境配置
 
-默认 provider：
+推荐使用 Python 3.11+。
 
-- `qwen`
+安装：
 
-配置入口在 `.env`：
+```powershell
+python -m pip install -e .
+```
+
+`.env` 示例：
 
 ```env
 LLM_PROVIDER=qwen
@@ -400,35 +293,26 @@ QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 DEEPSEEK_API_KEY=
 DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_BASE_URL=https://api.deepseek.com
+
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_DATABASE=meta_universe
+MYSQL_USER=meta_user
+MYSQL_PASSWORD=
+USE_MOCK_WHEN_DB_UNAVAILABLE=true
 ```
 
-说明：
+数据库不可用时，如果 `USE_MOCK_WHEN_DB_UNAVAILABLE=true`，系统会使用 mock fallback。
 
-- `LLM_PROVIDER` 决定默认厂商
-- 每次命令也可以临时覆盖 provider / model / base URL
-- 非 OpenAI provider 当前默认关闭 tracing
+## 启动方式
 
-## 稳定 Demo 样本
-
-当前建议使用的稳定样本：
-
-- `therapist_id=56`
-- `plan_id=6`
-- `patient_id=146`
-
-## 启动与使用
-
-推荐运行环境见：
-
-- [envIntro.md](</d:/Project/metaAgent/envIntro.md>)
-
-当前常用启动方式：
+### 交互模式
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\main.py
+python Demo\main.py
 ```
 
-服务模式示例：
+交互命令：
 
 ```text
 review-patient --plan-id 6 --days 30
@@ -440,51 +324,62 @@ weekly-report --therapist-id 56 --days 30
 换成最近 7 天
 ```
 
-运行时切换 LLM：
+运行时切换：
 
 ```text
 set-provider qwen
 set-model qwen-plus
-show-llm
+set-base-url https://dashscope.aliyuncs.com/compatible-mode/v1
 set-agent on
-review-patient --plan-id 6 --days 30
+set-agent off
+set-trace on
+show-llm
 clear-llm
 ```
 
-单次命令示例：
+### 单次命令
 
 ```powershell
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py review-patient --plan-id 6 --days 30
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py screen-risk --therapist-id 56 --days 30
-D:\APP\ANACONDA\envs\metaAgent\python.exe Demo\cli.py weekly-report --therapist-id 56 --days 30
+python Demo\cli.py review-patient --plan-id 6 --days 30
+python Demo\cli.py screen-risk --therapist-id 56 --days 30
+python Demo\cli.py weekly-report --therapist-id 56 --days 30
+python Demo\cli.py ask "查看医生56这30天有哪些以前来过的患者没有来"
+python Demo\cli.py --use-agent-sdk ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
+python Demo\cli.py --json --show-trace ask "查询一下这30天哪些医生有定患者训练计划？"
 ```
 
-## 数据访问与回退策略
+## 稳定 Demo 样本
 
-- 数据库访问默认只读
-- MySQL 不可用时可回退到 mock 数据
-- 当前已确认真实 MySQL 链路可读
-- 当前 demo 默认使用真实 A 链数据做稳定样本回归
+当前建议用于演示和回归的样本：
 
-## 当前限制
+- `therapist_id=56`
+- `plan_id=6`
+- `patient_id=146`
+
+## 测试
+
+```powershell
+python -m py_compile agent\orchestrator.py agent\analytics_manager.py agent\schemas.py tests\test_open_analytics.py
+python -m unittest discover -s tests -v
+```
+
+当前开放分析测试覆盖：
+
+- 固定任务不触发 LLM Router
+- 标准模板问题走 template analytics
+- 双窗口问题可走 agent planned
+- 医生聚合问题不注入单医生过滤
+- planner 生成非法工具时由 validator 拦截并 fallback
+
+## 当前边界
 
 - 风险评分仍是规则版，不是学习版
-- `dbdevicelog.PlanId` 仍需逻辑清洗，不能当严格 session 主键
-- `dbrehaplan.StartTime` 不可直接作为精确计划开始时间
-- A 链结果层仍以当前结构化抽取为主，尚未深入 `dbreportdata`
-- B 链虽然已保留独立证据块，但尚未做成独立步道复核入口
-- OpenAI 当前配置未完全打通，Qwen 是当前默认可用 provider
+- `dbdevicelog.PlanId` 需要逻辑清洗，不能直接当严格 session 主键
+- `dbrehaplan.StartTime` 不作为精确计划开始时间
+- A 链结果层仍以结构化抽取为主，尚未深入 `dbreportdata`
+- B 链尚未形成完整的独立步道复核入口
+- 医生聚合和复杂统计类 planner 能力仍依赖现有 analytics primitive tools 的覆盖度
 
-## 迁移到 LangGraph
+## 一句话结论
 
-当前结构已经为迁移做了隔离：
-
-- `repositories/ + services/` 可以原样保留
-- `tools/` 的入参出参可以继续复用
-- 只需要替换 `agent/orchestrator.py` 的编排层
-
-也就是说，当前成果主语始终是：
-
-**面向康复训练师的计划执行偏离识别与复核支持系统**
-
-而不是某个 agent 框架本身。
+MetaAgent 当前已经收口为：固定 workflow + template analytics + agent planned 三策略主链。LLM Router 和 LLM Planner 被限制在识别与规划层，所有执行仍由代码侧工具白名单、校验器、service 和 repository 完成。

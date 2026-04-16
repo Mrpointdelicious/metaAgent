@@ -132,28 +132,43 @@ class RehabAgentOrchestrator:
         )
         route_trace = self._build_route_trace(routed)
         strategy = self.choose_execution_strategy(request, routed, mode=mode, llm_config=llm_config)
-        if routed.final_intent == "open_analytics_query":
-            strategy_trace = self._build_strategy_trace(strategy)
-            if strategy.kind == "agent_planned":
-                response = self.analytics_manager.run_agent_planned(
-                    request,
-                    routed,
-                    mode=mode,
-                    llm_config=llm_config,
-                    execution_mode=execution_mode,
-                )
-            else:
-                response = self.analytics_manager.run_template(
-                    request,
-                    routed,
-                    mode=mode,
-                    llm_config=llm_config,
-                    execution_mode=execution_mode,
-                )
-            response.validation_issues = list(mode_issues) + list(response.validation_issues)
-            response.execution_trace = [route_trace, strategy_trace] + list(response.execution_trace)
-            return response
+        strategy_trace = self._build_strategy_trace(strategy)
+        if strategy.kind in {"fixed_workflow", "fallback_fixed_workflow"}:
+            return self._run_fixed_workflow(
+                request=request,
+                routed=routed,
+                route_trace=route_trace,
+                strategy_trace=strategy_trace,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                mode_issues=mode_issues,
+            )
 
+        response = self.analytics_manager.run(
+            request=request,
+            routed_decision=routed,
+            strategy=strategy,
+            mode=mode,
+            llm_config=llm_config,
+            execution_mode=execution_mode,
+        )
+        response.validation_issues = list(mode_issues) + list(response.validation_issues)
+        response.execution_trace = [route_trace, strategy_trace] + list(response.execution_trace)
+        return response
+
+    def _run_fixed_workflow(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed: RoutedDecision,
+        route_trace: StepExecutionResult,
+        strategy_trace: StepExecutionResult,
+        mode: ExecutionMode,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
         direct_request = request.model_copy(deep=True)
         if routed.final_intent == "single_patient_review":
             direct_request.task_type = OrchestrationTaskType.REVIEW_PATIENT.value
@@ -167,6 +182,7 @@ class RehabAgentOrchestrator:
             validation_issues=list(mode_issues),
         )
         state.step_results.append(route_trace)
+        state.step_results.append(strategy_trace)
 
         intent = self.route_intent(direct_request)
         state.intent = intent
@@ -196,12 +212,56 @@ class RehabAgentOrchestrator:
         if routed.final_intent != "open_analytics_query":
             return ExecutionStrategy(kind="fixed_workflow", reason="Final intent is a fixed workflow.", confidence=routed.confidence)
 
-        if self.llm_planner.should_plan_with_llm(request, routed):
+        if self._should_use_agent_planned_strategy(request, routed):
             if mode == "agents_sdk" and llm_config.can_use_agents_sdk:
                 return ExecutionStrategy(kind="agent_planned", reason="Open analytics question needs flexible primitive-tool planning.", confidence=routed.confidence)
-            return ExecutionStrategy(kind="agent_planned", reason="Planner-eligible open analytics; planner will fallback if LLM mode is unavailable.", confidence=routed.confidence)
+            return ExecutionStrategy(
+                kind="template_analytics",
+                reason="Planner-eligible analytics, but LLM planning is unavailable in the resolved execution mode; using template analytics.",
+                confidence=routed.confidence,
+            )
 
         return ExecutionStrategy(kind="template_analytics", reason="Supported standard open analytics template.", confidence=routed.confidence)
+
+    def _should_use_agent_planned_strategy(self, request: OrchestratorRequest, routed: RoutedDecision) -> bool:
+        subtype = routed.final_subtype
+        scope = routed.final_scope
+        question = request.raw_text or ""
+        lowered = question.lower()
+
+        if subtype in {"absent_from_baseline_window", "doctors_with_active_plans"}:
+            return True
+        if scope == "doctor_aggregate":
+            return True
+        if subtype == "absent_old_patients_recent_window":
+            return self._has_complex_analytics_signal(question)
+        if subtype is None:
+            return any(
+                token in question or token in lowered
+                for token in (
+                    "compare",
+                    "baseline",
+                    "aggregate",
+                    "which doctors",
+                    "哪些医生",
+                    "各医生",
+                    "全院",
+                    "统计",
+                    "比较",
+                    "排除",
+                    "基线",
+                )
+            )
+        return self._has_complex_analytics_signal(question)
+
+    def _has_complex_analytics_signal(self, question: str) -> bool:
+        lowered = question.lower()
+        if any(token in question or token in lowered for token in ("compare", "baseline", "排除", "统计", "比较", "基线", "前一阶段")):
+            return True
+        return bool(
+            re.search(r"\d+\s*[-到至]\s*\d+\s*(天|days?)", question, flags=re.IGNORECASE)
+            or re.search(r"(past|last)\s*\d+\s*days?.*(exclude|except).*\d+\s*days?", lowered)
+        )
 
     def _build_strategy_trace(self, strategy: ExecutionStrategy) -> StepExecutionResult:
         return StepExecutionResult(

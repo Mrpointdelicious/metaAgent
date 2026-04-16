@@ -18,6 +18,7 @@ from .schemas import (
     AnalyticsStructuredOutput,
     AnalyticsTimeSlots,
     IntentDecision,
+    ExecutionStrategy,
     LLMPlannedQuery,
     LLMPlannedStep,
     OpenAnalyticsSubtype,
@@ -65,22 +66,42 @@ class AnalyticsManager:
 
     def run(
         self,
-        request: OrchestratorRequest,
-        decision: IntentDecision | RoutedDecision,
         *,
+        request: OrchestratorRequest,
+        routed_decision: RoutedDecision,
+        strategy: ExecutionStrategy,
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
     ) -> OrchestratorResponse:
-        return self.run_template(
+        if strategy.kind == "agent_planned":
+            return self._run_agent_planned(
+                request=request,
+                routed_decision=routed_decision,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+            )
+        if strategy.kind in {"template_analytics", "fallback_template"}:
+            source_note = strategy.reason if strategy.kind == "fallback_template" else None
+            return self._run_template(
+                request,
+                routed_decision,
+                mode=mode,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                source_note=source_note,
+            )
+        return self._build_not_supported_response(
             request,
-            decision,
-            mode=mode,
+            self._effective_intent_decision(routed_decision),
             llm_config=llm_config,
             execution_mode=execution_mode,
+            reason=f"Analytics manager received non-analytics strategy: {strategy.kind}.",
+            planned_query_source=PlannedQuerySource(source="fixed_template", note=strategy.reason),
         )
 
-    def run_template(
+    def _run_template(
         self,
         request: OrchestratorRequest,
         decision: IntentDecision | RoutedDecision,
@@ -136,11 +157,11 @@ class AnalyticsManager:
             planned_query_source=PlannedQuerySource(source="fixed_template", note=source_note),
         )
 
-    def run_agent_planned(
+    def _run_agent_planned(
         self,
+        *,
         request: OrchestratorRequest,
         routed_decision: RoutedDecision,
-        *,
         mode: str,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
@@ -258,7 +279,7 @@ class AnalyticsManager:
         prefix_trace: list[StepExecutionResult],
         validation: PlanValidationResult | None = None,
     ) -> OrchestratorResponse:
-        response = self.run_template(
+        response = self._run_template(
             request,
             routed_decision,
             mode=mode,
