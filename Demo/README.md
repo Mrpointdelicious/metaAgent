@@ -19,6 +19,14 @@
 
 `direct` 与 `agents_sdk` 只是运行模式。策略选择由 `ExecutionStrategy` 统一决定。
 
+顶层策略只包含：
+
+- `fixed_workflow`
+- `template_analytics`
+- `agent_planned`
+
+`fallback_template` 只会作为开放分析结果来源或 trace 信息出现，不再作为顶层 strategy。
+
 ## 快速启动
 
 在项目根目录执行：

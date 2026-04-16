@@ -133,7 +133,7 @@ class RehabAgentOrchestrator:
         route_trace = self._build_route_trace(routed)
         strategy = self.choose_execution_strategy(request, routed, mode=mode, llm_config=llm_config)
         strategy_trace = self._build_strategy_trace(strategy)
-        if strategy.kind in {"fixed_workflow", "fallback_fixed_workflow"}:
+        if strategy.kind == "fixed_workflow":
             return self._run_fixed_workflow(
                 request=request,
                 routed=routed,
@@ -214,10 +214,10 @@ class RehabAgentOrchestrator:
 
         if self._should_use_agent_planned_strategy(request, routed):
             if mode == "agents_sdk" and llm_config.can_use_agents_sdk:
-                return ExecutionStrategy(kind="agent_planned", reason="Open analytics question needs flexible primitive-tool planning.", confidence=routed.confidence)
+                return ExecutionStrategy(kind="agent_planned", reason="Open analytics question is eligible for controlled agent runtime.", confidence=routed.confidence)
             return ExecutionStrategy(
                 kind="template_analytics",
-                reason="Planner-eligible analytics, but LLM planning is unavailable in the resolved execution mode; using template analytics.",
+                reason="Agent-runtime-eligible analytics, but agents_sdk is unavailable in the resolved execution mode; using template analytics.",
                 confidence=routed.confidence,
             )
 

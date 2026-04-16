@@ -486,7 +486,7 @@ class OpenAnalyticsTests(unittest.TestCase):
 
         self.assertEqual(strategy.kind, "template_analytics")
 
-    def test_strategy_chooser_routes_complex_open_analytics_to_planner_when_available(self) -> None:
+    def test_strategy_chooser_routes_complex_open_analytics_to_agent_runtime_when_available(self) -> None:
         orchestrator = _build_orchestrator()
         for question in (CASE_2_QUESTION, CASE_3_QUESTION):
             request = OrchestratorRequest(
@@ -502,7 +502,24 @@ class OpenAnalyticsTests(unittest.TestCase):
                 llm_config=_agent_llm_config(),
             )
 
-        self.assertEqual(strategy.kind, "agent_planned")
+            self.assertEqual(strategy.kind, "agent_planned")
+
+    def test_strategy_chooser_routes_complex_open_analytics_to_template_when_sdk_unavailable(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            raw_text=CASE_2_QUESTION,
+            use_agent_sdk=False,
+        )
+        decision = self.router.route(request)
+        routed = merge_rule_and_llm(decision, None)
+        strategy = _build_orchestrator().choose_execution_strategy(
+            request,
+            routed,
+            mode="direct",
+            llm_config=_llm_config(),
+        )
+
+        self.assertEqual(strategy.kind, "template_analytics")
 
     def test_agent_tool_specs_respect_analysis_scope(self) -> None:
         patient_request = OrchestratorRequest(

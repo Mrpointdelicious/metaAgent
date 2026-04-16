@@ -29,6 +29,14 @@
 
 `direct` 和 `agents_sdk` 现在只是运行模式，不再是项目的主架构分叉。主链的唯一策略裁决点是 `ExecutionStrategy`。
 
+顶层 `ExecutionStrategy.kind` 只表达三种前置裁决结果：
+
+- `fixed_workflow`
+- `template_analytics`
+- `agent_planned`
+
+运行中 fallback 不再作为顶层 strategy kind 表达，只写入 `execution_trace` 和 `planned_query_source`。
+
 ## 执行策略
 
 ### `fixed_workflow`

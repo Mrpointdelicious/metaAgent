@@ -86,15 +86,13 @@ class AnalyticsManager:
                 llm_config=llm_config,
                 execution_mode=execution_mode,
             )
-        if strategy.kind in {"template_analytics", "fallback_template"}:
-            source_note = strategy.reason if strategy.kind == "fallback_template" else None
+        if strategy.kind == "template_analytics":
             return self._run_template(
                 request,
                 routed_decision,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
-                source_note=source_note,
             )
         return self._build_not_supported_response(
             request,
