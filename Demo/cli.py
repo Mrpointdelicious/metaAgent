@@ -155,6 +155,11 @@ def print_response(response, *, json_output: bool, show_trace: bool = False) -> 
         f"llm_provider={response.llm_provider}, "
         f"llm_model={response.llm_model or '默认'}]"
     )
+    if response.task_type == OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value and isinstance(response.structured_output, dict):
+        subtype = response.structured_output.get("subtype")
+        parse_mode = ((response.structured_output.get("query_plan") or {}).get("time_parse_mode"))
+        if subtype or parse_mode:
+            print(f"[open_analytics subtype={subtype or 'unclassified'} parse_mode={parse_mode or 'unknown'}]")
     print(response.final_text)
     if response.validation_issues:
         print("\n[校验问题]")

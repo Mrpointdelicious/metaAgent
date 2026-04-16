@@ -57,3 +57,10 @@ class AnalyticsResultRow(BaseModel):
     rank_score: float | None = None
     rank_reason: str | None = None
     note: str | None = None
+
+
+class DoctorAnalyticsResultRow(BaseModel):
+    doctor_id: int
+    active_plan_patient_count: int = 0
+    active_plan_count: int = 0
+    note: str | None = None

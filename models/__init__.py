@@ -17,6 +17,7 @@ from .domain import (
 )
 from .analytics_models import (
     AnalyticsResultRow,
+    DoctorAnalyticsResultRow,
     LastVisitInfo,
     PatientSet,
     PlanStatus,
@@ -30,6 +31,7 @@ __all__ = [
     "ExecutionLog",
     "ExecutionSummary",
     "AnalyticsResultRow",
+    "DoctorAnalyticsResultRow",
     "GaitExplanationSummary",
     "GaitSessionExplanation",
     "LastVisitInfo",

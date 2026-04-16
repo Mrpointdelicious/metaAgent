@@ -204,7 +204,6 @@ def parse_natural_language_request(
         )
 
     if task_type == OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value:
-        therapist_id = therapist_id or state.therapist_id or settings.demo_default_therapist_id
         days = days or (state.days if follow_up else None) or settings.default_time_window_days
         top_k = top_k or state.top_k or 20
         if therapist_id == settings.demo_default_therapist_id and state.therapist_id is None and _extract_identifier(text, ("医生", "治疗师", "doctor", "therapist")) is None:

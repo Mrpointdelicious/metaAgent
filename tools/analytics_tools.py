@@ -5,6 +5,7 @@ from agents import function_tool
 from services import AnalyticsService
 
 from .base import (
+    DateWindowInput,
     DoctorWindowInput,
     LastVisitInput,
     PatientPlanStatusInput,
@@ -35,7 +36,7 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         end_date: str | None = None,
         source: str = "attendance",
     ) -> dict:
-        """返回指定医生在某个时间窗内实际到训过的患者集合。"""
+        """Return the patients actually seen by a doctor inside a time window."""
         return _list_patients_seen_by_doctor(
             doctor_id=doctor_id,
             start_date=start_date,
@@ -63,12 +64,35 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         end_date: str | None = None,
         source: str = "attendance",
     ) -> dict:
-        """返回指定时间窗内存在计划的患者集合。"""
+        """Return the patients with plans inside a time window for a doctor."""
         return _list_patients_with_active_plans(
             doctor_id=doctor_id,
             start_date=start_date,
             end_date=end_date,
             source=source,
+        )
+
+    def _list_doctors_with_active_plans(
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict]:
+        return [
+            row.model_dump(mode="json")
+            for row in analytics_service.list_doctors_with_active_plans(
+                start_date=start_date,
+                end_date=end_date,
+            )
+        ]
+
+    @function_tool
+    def list_doctors_with_active_plans(
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[dict]:
+        """Return doctor-level active plan aggregates inside a time window."""
+        return _list_doctors_with_active_plans(
+            start_date=start_date,
+            end_date=end_date,
         )
 
     def _set_diff(base_set_id: str, subtract_set_id: str) -> dict:
@@ -79,7 +103,7 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
 
     @function_tool
     def set_diff(base_set_id: str, subtract_set_id: str) -> dict:
-        """计算两个患者集合的差集。"""
+        """Compute the set difference between two patient sets."""
         return _set_diff(
             base_set_id=base_set_id,
             subtract_set_id=subtract_set_id,
@@ -93,7 +117,7 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
 
     @function_tool
     def get_patient_last_visit(patient_id: int, doctor_id: int | None = None) -> dict:
-        """返回患者最近一次到训时间及其简要上下文。"""
+        """Return the latest visit for a patient."""
         return _get_patient_last_visit(
             patient_id=patient_id,
             doctor_id=doctor_id,
@@ -119,7 +143,7 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         start_date: str = "",
         end_date: str = "",
     ) -> dict:
-        """返回患者在指定窗口内的计划与到训状态。"""
+        """Return plan status for a patient inside a time window."""
         return _get_patient_plan_status(
             patient_id=patient_id,
             doctor_id=doctor_id,
@@ -144,7 +168,7 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         strategy: str,
         top_k: int | None = None,
     ) -> dict:
-        """按指定策略对患者列表排序。"""
+        """Rank patients with a deterministic strategy."""
         return _rank_patients(
             patient_ids=patient_ids,
             strategy=strategy,
@@ -154,9 +178,9 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
     return [
         ToolSpec(
             tool_name="list_patients_seen_by_doctor",
-            description="返回指定医生在某个时间窗内实际到训过的患者集合。",
+            description="Return the patients actually seen by a doctor inside a window.",
             input_model=DoctorWindowInput,
-            output_schema="PatientSet JSON。",
+            output_schema="PatientSet JSON",
             chain_scope="A",
             can_affect_risk_score=False,
             direct_handler=_list_patients_seen_by_doctor,
@@ -165,9 +189,9 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         ),
         ToolSpec(
             tool_name="list_patients_with_active_plans",
-            description="返回指定时间窗内存在计划的患者集合。",
+            description="Return the patients with plans for a doctor inside a window.",
             input_model=DoctorWindowInput,
-            output_schema="PatientSet JSON。",
+            output_schema="PatientSet JSON",
             chain_scope="A",
             can_affect_risk_score=False,
             direct_handler=_list_patients_with_active_plans,
@@ -175,10 +199,21 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
             agent_handler=_list_patients_with_active_plans,
         ),
         ToolSpec(
+            tool_name="list_doctors_with_active_plans",
+            description="Return doctor-level active plan aggregates inside a window.",
+            input_model=DateWindowInput,
+            output_schema="DoctorAnalyticsResultRow[] JSON",
+            chain_scope="A",
+            can_affect_risk_score=False,
+            direct_handler=_list_doctors_with_active_plans,
+            agent_tool=list_doctors_with_active_plans,
+            agent_handler=_list_doctors_with_active_plans,
+        ),
+        ToolSpec(
             tool_name="set_diff",
-            description="对两个患者集合做差集运算。",
+            description="Compute the difference between two patient sets.",
             input_model=PatientSetDiffInput,
-            output_schema="PatientSet JSON。",
+            output_schema="PatientSet JSON",
             chain_scope="cross",
             can_affect_risk_score=False,
             direct_handler=_set_diff,
@@ -187,9 +222,9 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         ),
         ToolSpec(
             tool_name="get_patient_last_visit",
-            description="返回患者最近一次到训时间及关联简要信息。",
+            description="Return the latest visit metadata for a patient.",
             input_model=LastVisitInput,
-            output_schema="LastVisitInfo JSON。",
+            output_schema="LastVisitInfo JSON",
             chain_scope="A",
             can_affect_risk_score=False,
             direct_handler=_get_patient_last_visit,
@@ -198,9 +233,9 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         ),
         ToolSpec(
             tool_name="get_patient_plan_status",
-            description="返回患者在指定窗口内是否有计划以及计划/到训摘要。",
+            description="Return whether a patient has plans in a window.",
             input_model=PatientPlanStatusInput,
-            output_schema="PlanStatus JSON。",
+            output_schema="PlanStatus JSON",
             chain_scope="A",
             can_affect_risk_score=False,
             direct_handler=_get_patient_plan_status,
@@ -209,9 +244,9 @@ def build_analytics_tools(analytics_service: AnalyticsService) -> list[ToolSpec]
         ),
         ToolSpec(
             tool_name="rank_patients",
-            description="按规则策略对患者列表排序。",
+            description="Rank patients with a deterministic strategy.",
             input_model=RankPatientsInput,
-            output_schema="RankedPatients JSON。",
+            output_schema="RankedPatients JSON",
             chain_scope="A",
             can_affect_risk_score=False,
             direct_handler=_rank_patients,

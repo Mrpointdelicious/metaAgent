@@ -11,65 +11,70 @@ ToolMode = Literal["direct", "agents_sdk"]
 
 
 class PatientPlanWindowInput(BaseModel):
-    patient_id: int | None = Field(default=None, description="患者 ID。")
-    plan_id: int | None = Field(default=None, description="计划 ID。")
-    therapist_id: int | None = Field(default=None, description="治疗师或医生 ID。")
-    days: int = Field(default=30, ge=1, le=3650, description="时间窗口天数。")
+    patient_id: int | None = Field(default=None, description="Patient ID.")
+    plan_id: int | None = Field(default=None, description="Plan ID.")
+    therapist_id: int | None = Field(default=None, description="Therapist or doctor ID.")
+    days: int = Field(default=30, ge=1, le=3650, description="Relative time window in days.")
 
 
 class GenerateReviewCardInput(PatientPlanWindowInput):
-    patient_ids: list[int] = Field(default_factory=list, description="批量复核时使用的患者 ID 列表。")
+    patient_ids: list[int] = Field(default_factory=list, description="Patient IDs used in batch review mode.")
 
 
 class TherapistWindowInput(BaseModel):
-    therapist_id: int = Field(description="治疗师或医生 ID。")
-    days: int = Field(default=7, ge=1, le=3650, description="时间窗口天数。")
-    top_k: int = Field(default=10, ge=1, le=100, description="返回结果数量上限。")
+    therapist_id: int = Field(description="Therapist or doctor ID.")
+    days: int = Field(default=7, ge=1, le=3650, description="Relative time window in days.")
+    top_k: int = Field(default=10, ge=1, le=100, description="Max number of rows to return.")
 
 
 class GaitExplanationInput(BaseModel):
-    patient_id: int | None = Field(default=None, description="患者 ID。")
-    item_id: int | None = Field(default=None, description="步道项目 ID。")
-    days: int = Field(default=30, ge=1, le=3650, description="时间窗口天数。")
+    patient_id: int | None = Field(default=None, description="Patient ID.")
+    item_id: int | None = Field(default=None, description="Walk item ID.")
+    days: int = Field(default=30, ge=1, le=3650, description="Relative time window in days.")
 
 
 class ReflectOnOutputInput(BaseModel):
-    task_type: str | None = Field(default=None, description="当前任务类型。")
-    current_output: Any | None = Field(default=None, description="待检查的当前结构化输出。")
-    patient_id: int | None = Field(default=None, description="患者 ID。")
-    plan_id: int | None = Field(default=None, description="计划 ID。")
-    therapist_id: int | None = Field(default=None, description="治疗师或医生 ID。")
-    days: int = Field(default=30, ge=1, le=3650, description="时间窗口天数。")
+    task_type: str | None = Field(default=None, description="Current task type.")
+    current_output: Any | None = Field(default=None, description="Current structured output to inspect.")
+    patient_id: int | None = Field(default=None, description="Patient ID.")
+    plan_id: int | None = Field(default=None, description="Plan ID.")
+    therapist_id: int | None = Field(default=None, description="Therapist or doctor ID.")
+    days: int = Field(default=30, ge=1, le=3650, description="Relative time window in days.")
 
 
 class DoctorWindowInput(BaseModel):
-    doctor_id: int = Field(description="医生或治疗师 ID。")
-    start_date: str | None = Field(default=None, description="时间窗口开始日期。")
-    end_date: str | None = Field(default=None, description="时间窗口结束日期。")
-    source: str = Field(default="attendance", description="患者集合来源，当前仅支持 attendance。")
+    doctor_id: int = Field(description="Doctor or therapist ID.")
+    start_date: str | None = Field(default=None, description="Window start date.")
+    end_date: str | None = Field(default=None, description="Window end date.")
+    source: str = Field(default="attendance", description="Source type for the patient set.")
+
+
+class DateWindowInput(BaseModel):
+    start_date: str | None = Field(default=None, description="Window start date.")
+    end_date: str | None = Field(default=None, description="Window end date.")
 
 
 class PatientSetDiffInput(BaseModel):
-    base_set_id: str = Field(description="被减集合 ID。")
-    subtract_set_id: str = Field(description="用于做差的集合 ID。")
+    base_set_id: str = Field(description="Base set ID.")
+    subtract_set_id: str = Field(description="Set ID to subtract from the base set.")
 
 
 class LastVisitInput(BaseModel):
-    patient_id: int = Field(description="患者 ID。")
-    doctor_id: int | None = Field(default=None, description="医生或治疗师 ID。")
+    patient_id: int = Field(description="Patient ID.")
+    doctor_id: int | None = Field(default=None, description="Doctor or therapist ID.")
 
 
 class PatientPlanStatusInput(BaseModel):
-    patient_id: int = Field(description="患者 ID。")
-    doctor_id: int | None = Field(default=None, description="医生或治疗师 ID。")
-    start_date: str = Field(description="计划状态窗口开始日期。")
-    end_date: str = Field(description="计划状态窗口结束日期。")
+    patient_id: int = Field(description="Patient ID.")
+    doctor_id: int | None = Field(default=None, description="Doctor or therapist ID.")
+    start_date: str = Field(description="Window start date for plan status.")
+    end_date: str = Field(description="Window end date for plan status.")
 
 
 class RankPatientsInput(BaseModel):
-    patient_ids: list[int] = Field(default_factory=list, description="待排序患者 ID 列表。")
-    strategy: str = Field(description="排序策略。")
-    top_k: int | None = Field(default=None, ge=1, le=1000, description="返回数量上限。")
+    patient_ids: list[int] = Field(default_factory=list, description="Patient IDs to rank.")
+    strategy: str = Field(description="Ranking strategy.")
+    top_k: int | None = Field(default=None, ge=1, le=1000, description="Optional result limit.")
 
 
 @dataclass(frozen=True)

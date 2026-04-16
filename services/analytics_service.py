@@ -4,7 +4,15 @@ from datetime import datetime, time
 from uuid import uuid4
 
 from config import Settings
-from models import AnalyticsResultRow, LastVisitInfo, PatientSet, PlanStatus, RankedPatientRow, RankedPatients
+from models import (
+    AnalyticsResultRow,
+    DoctorAnalyticsResultRow,
+    LastVisitInfo,
+    PatientSet,
+    PlanStatus,
+    RankedPatientRow,
+    RankedPatients,
+)
 from repositories import RehabRepository
 
 from .shared import parse_datetime_flexible
@@ -71,6 +79,36 @@ class AnalyticsService:
             description=description,
             note=note,
         )
+
+    def list_doctors_with_active_plans(
+        self,
+        start_date: str | None,
+        end_date: str | None,
+    ) -> list[DoctorAnalyticsResultRow]:
+        start_dt = self._parse_date(start_date, end_of_day=False)
+        end_dt = self._parse_date(end_date, end_of_day=True)
+        rows = self.repository.get_doctors_with_active_plans(
+            start=start_dt,
+            end=end_dt,
+        )
+        result_rows: list[DoctorAnalyticsResultRow] = []
+        for row in rows:
+            doctor_id = row.get("doctor_id")
+            if doctor_id is None:
+                continue
+            active_plan_count = int(row.get("active_plan_count") or 0)
+            active_plan_patient_count = int(row.get("active_plan_patient_count") or 0)
+            note = "window contains active plans" if active_plan_count else "no active plans found"
+            result_rows.append(
+                DoctorAnalyticsResultRow(
+                    doctor_id=int(doctor_id),
+                    active_plan_patient_count=active_plan_patient_count,
+                    active_plan_count=active_plan_count,
+                    note=note,
+                )
+            )
+        result_rows.sort(key=lambda item: (item.active_plan_count, item.active_plan_patient_count, item.doctor_id), reverse=True)
+        return result_rows
 
     def diff_patient_sets(self, base_set_id: str, subtract_set_id: str) -> PatientSet:
         base = self._set_registry.get(base_set_id)

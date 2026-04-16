@@ -376,6 +376,48 @@ class RehabRepository:
                 current["latest_plan_time"] = anchor
         return [grouped[key] for key in sorted(grouped)]
 
+    def get_doctors_with_active_plans(
+        self,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        limit: int = 5000,
+    ) -> list[dict[str, Any]]:
+        rows = self.get_plan_records(
+            start=start,
+            end=end,
+            limit=limit,
+        )
+        grouped: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            doctor_id = row.get("DoctorId")
+            patient_id = row.get("UserId")
+            if doctor_id is None:
+                continue
+            current = grouped.get(doctor_id)
+            if current is None:
+                current = {
+                    "doctor_id": int(doctor_id),
+                    "active_plan_count": 0,
+                    "patient_ids": set(),
+                }
+                grouped[int(doctor_id)] = current
+            current["active_plan_count"] += 1
+            if patient_id is not None:
+                current["patient_ids"].add(int(patient_id))
+
+        result_rows: list[dict[str, Any]] = []
+        for doctor_id in sorted(grouped):
+            item = grouped[doctor_id]
+            result_rows.append(
+                {
+                    "doctor_id": doctor_id,
+                    "active_plan_count": item["active_plan_count"],
+                    "active_plan_patient_count": len(item["patient_ids"]),
+                }
+            )
+        return result_rows
+
     def get_patient_last_visit(
         self,
         *,

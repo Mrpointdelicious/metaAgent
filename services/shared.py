@@ -108,14 +108,13 @@ def build_time_range(
     end: datetime | None = None,
     prefer_walk_anchor: bool = False,
 ) -> TimeRange:
-    end_value = end
-    if end_value is None:
-        if prefer_walk_anchor and patient_id is not None:
-            end_value = repository.get_walk_anchor(patient_id=patient_id)
-        end_value = end_value or repository.get_plan_anchor(patient_id=patient_id, therapist_id=therapist_id)
-        end_value = end_value or datetime.now()
-    if end_value.hour == 0 and end_value.minute == 0 and end_value.second == 0:
-        end_value = end_value + timedelta(days=1) - timedelta(seconds=1)
+    end_value = resolve_time_anchor(
+        repository,
+        patient_id=patient_id,
+        therapist_id=therapist_id,
+        prefer_walk_anchor=prefer_walk_anchor,
+        explicit_end=end,
+    )
     if start is None:
         start_date = (end_value - timedelta(days=days)).date()
         start_value = datetime.combine(start_date, time.min)
@@ -123,6 +122,25 @@ def build_time_range(
         start_value = start
     label = f"{start_value.date().isoformat()} to {end_value.date().isoformat()}"
     return TimeRange(start=start_value, end=end_value, label=label)
+
+
+def resolve_time_anchor(
+    repository: RehabRepository,
+    *,
+    patient_id: int | None = None,
+    therapist_id: int | None = None,
+    prefer_walk_anchor: bool = False,
+    explicit_end: datetime | None = None,
+) -> datetime:
+    end_value = explicit_end
+    if end_value is None:
+        if prefer_walk_anchor and patient_id is not None:
+            end_value = repository.get_walk_anchor(patient_id=patient_id)
+        end_value = end_value or repository.get_plan_anchor(patient_id=patient_id, therapist_id=therapist_id)
+        end_value = end_value or datetime.now()
+    if end_value.hour == 0 and end_value.minute == 0 and end_value.second == 0:
+        end_value = end_value + timedelta(days=1) - timedelta(seconds=1)
+    return end_value
 
 
 def parse_training_tasks(raw: Any) -> list[TrainingTask]:
