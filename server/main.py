@@ -11,8 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent import RehabAgentOrchestrator
 from config import get_settings
-
-from server.session_context import MissingIdentityContextError, build_orchestrator_request_from_payload
+from server.request_factory import build_orchestrator_request_from_payload
+from server.session_context import MissingIdentityContextError
 
 
 def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:

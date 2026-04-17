@@ -1,3 +1,11 @@
+"""Legacy local debug shell.
+
+This file is kept for manual experiments only. It is not the production entry
+and it must not be treated as the formal routing or identity source. Server and
+explicit doctor/patient demos build requests through server.request_factory and
+then call the core orchestrator.
+"""
+
 from __future__ import annotations
 
 import sys

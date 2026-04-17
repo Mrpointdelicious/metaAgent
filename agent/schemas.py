@@ -26,6 +26,7 @@ class OrchestrationTaskType(str, Enum):
     WEEKLY_REPORT = "weekly_report"
     GAIT_REVIEW = "gait_review"
     OPEN_ANALYTICS_QUERY = "open_analytics_query"
+    LOOKUP_QUERY = "lookup_query"
     UNKNOWN = "unknown"
 
 
@@ -36,6 +37,7 @@ TaskType = Literal[
     "weekly_report",
     "gait_review",
     "open_analytics_query",
+    "lookup_query",
     "unknown",
     "single_review",
     "risk_screen",
@@ -51,12 +53,15 @@ OpenAnalyticsSubtype = Literal[
 AnalyticsScope = Literal["single_doctor", "doctor_aggregate", "patient_single"]
 AnalyticsParseMode = Literal["single_window", "dual_window", "fallback"]
 DoctorIdSource = Literal["explicit", "session", "none"]
+LookupSubtype = Literal["lookup_user_name"]
+LookupEntityType = Literal["doctor", "patient", "unknown"]
 
 AnalyticsIntentName = Literal[
     "single_patient_review",
     "risk_screening",
     "weekly_report",
     "open_analytics_query",
+    "lookup_query",
 ]
 
 
@@ -72,6 +77,7 @@ _NORMALIZED_TO_LEGACY: dict[OrchestrationTaskType, str] = {
     OrchestrationTaskType.WEEKLY_REPORT: "weekly_report",
     OrchestrationTaskType.GAIT_REVIEW: "unsupported",
     OrchestrationTaskType.OPEN_ANALYTICS_QUERY: "unsupported",
+    OrchestrationTaskType.LOOKUP_QUERY: "unsupported",
     OrchestrationTaskType.UNKNOWN: "unsupported",
 }
 
@@ -182,6 +188,9 @@ class IntentDecision(BaseModel):
     analytics_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Open analytics subtype.")
     analysis_scope: AnalyticsScope | None = Field(default=None, description="Open analytics scope.")
     doctor_id_source: DoctorIdSource | None = Field(default=None, description="Rule-derived doctor ID source.")
+    lookup_subtype: LookupSubtype | None = Field(default=None, description="Lookup subtype for lightweight entity queries.")
+    lookup_entity_type: LookupEntityType | None = Field(default=None, description="Entity type targeted by a lookup query.")
+    lookup_user_id: int | None = Field(default=None, description="User ID targeted by a lookup query.")
 
 
 class LLMRouteDecision(BaseModel):
@@ -189,6 +198,9 @@ class LLMRouteDecision(BaseModel):
     analytics_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="LLM-refined open analytics subtype.")
     scope: AnalyticsScope | None = Field(default=None, description="LLM-refined task scope.")
     doctor_id_source: DoctorIdSource | None = Field(default=None, description="Source used for doctor ID resolution.")
+    lookup_subtype: LookupSubtype | None = Field(default=None, description="LLM-refined lookup subtype.")
+    lookup_entity_type: LookupEntityType | None = Field(default=None, description="LLM-refined lookup entity type.")
+    lookup_user_id: int | None = Field(default=None, description="LLM-refined lookup user ID.")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="LLM routing confidence.")
     rationale: str = Field(default="", description="Why the LLM chose this route.")
 
@@ -200,6 +212,9 @@ class RoutedDecision(BaseModel):
     final_subtype: OpenAnalyticsSubtype | None = Field(default=None, description="Merged final open analytics subtype.")
     final_scope: AnalyticsScope | None = Field(default=None, description="Merged final scope.")
     doctor_id_source: DoctorIdSource | None = Field(default=None, description="Merged doctor ID source.")
+    lookup_subtype: LookupSubtype | None = Field(default=None, description="Merged lookup subtype.")
+    lookup_entity_type: LookupEntityType | None = Field(default=None, description="Merged lookup entity type.")
+    lookup_user_id: int | None = Field(default=None, description="Merged lookup user ID.")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Merged confidence.")
     rationale: str = Field(default="", description="Merged routing rationale.")
 

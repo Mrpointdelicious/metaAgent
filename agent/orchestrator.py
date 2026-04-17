@@ -146,6 +146,16 @@ class RehabAgentOrchestrator:
                 traces=[identity_trace, route_trace],
                 mode_issues=mode_issues,
             )
+        if routed.final_intent == "lookup_query":
+            return self._run_lookup_query(
+                request=request,
+                routed=routed,
+                identity_trace=identity_trace,
+                route_trace=route_trace,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                mode_issues=mode_issues,
+            )
         strategy = self.choose_execution_strategy(request, routed, mode=mode, llm_config=llm_config)
         strategy_trace = self._build_strategy_trace(strategy)
         if strategy.kind == "fixed_workflow":
@@ -272,6 +282,8 @@ class RehabAgentOrchestrator:
         extracted = self._extract_slots(request.raw_text or "")
         target_patient_id = request.patient_id or extracted.get("patient_id")
         target_plan_id = request.plan_id or extracted.get("plan_id")
+        if routed.final_intent == "lookup_query":
+            return self._authorize_lookup_request(identity, routed)
         if identity.actor_role == "patient":
             actor_patient_id = identity.actor_patient_id
             if actor_patient_id is None:
@@ -301,12 +313,116 @@ class RehabAgentOrchestrator:
             return "authorization.doctor_cannot_access_patient"
         return None
 
+    def _authorize_lookup_request(self, identity: SessionIdentityContext, routed: RoutedDecision) -> str | None:
+        user_id = routed.lookup_user_id
+        entity_type = routed.lookup_entity_type or "unknown"
+        if user_id is None:
+            return None
+
+        if identity.actor_role == "patient":
+            actor_patient_id = identity.actor_patient_id
+            if actor_patient_id is None:
+                return "authorization.missing_actor_patient_id"
+            if entity_type in {"patient", "unknown"} and int(user_id) == int(actor_patient_id):
+                return None
+            return "authorization.patient_cannot_access_lookup_target"
+
+        actor_doctor_id = identity.actor_doctor_id
+        if actor_doctor_id is None:
+            return "authorization.missing_actor_doctor_id"
+        if entity_type == "doctor":
+            if int(user_id) == int(actor_doctor_id):
+                return None
+            if (identity.authorized_scope or {}).get("allow_doctor_lookup"):
+                return None
+            return "authorization.doctor_cannot_lookup_other_doctor"
+        if entity_type == "patient":
+            if self._doctor_can_access_patient(actor_doctor_id, user_id):
+                return None
+            return "authorization.doctor_cannot_access_patient"
+        if int(user_id) == int(actor_doctor_id) or self._doctor_can_access_patient(actor_doctor_id, user_id):
+            return None
+        return "authorization.lookup_entity_ambiguous"
+
     def _doctor_can_access_patient(self, doctor_id: int, patient_id: int) -> bool:
         plan_rows = self.repository.get_plan_records(patient_id=patient_id, therapist_id=doctor_id, limit=1)
         if plan_rows:
             return True
         execution_rows = self.repository.get_execution_logs(patient_id=patient_id, therapist_id=doctor_id, limit=1)
         return bool(execution_rows)
+
+    def _run_lookup_query(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed: RoutedDecision,
+        identity_trace: StepExecutionResult,
+        route_trace: StepExecutionResult,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
+        user_id = routed.lookup_user_id
+        entity_type = routed.lookup_entity_type or "unknown"
+        if user_id is None:
+            lookup_trace = StepExecutionResult(
+                step_id="lookup_user_name",
+                tool_name="dbuser_name_lookup",
+                success=False,
+                args={"entity_type": entity_type},
+                output_summary="missing lookup user_id",
+                raw_output=None,
+                error="lookup.missing_user_id",
+            )
+            return OrchestratorResponse(
+                success=False,
+                task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
+                execution_mode=execution_mode,
+                llm_provider=llm_config.provider,
+                llm_model=llm_config.model,
+                structured_output={"error": "lookup.missing_user_id", "lookup_subtype": routed.lookup_subtype},
+                final_text="缺少要查询的用户 ID，无法完成姓名查询。",
+                validation_issues=list(mode_issues) + ["lookup.missing_user_id"],
+                execution_trace=[identity_trace, route_trace, lookup_trace],
+            )
+
+        name_map = self.repository.get_user_name_map([user_id])
+        user_name = name_map.get(int(user_id))
+        label = self._lookup_entity_label(entity_type, user_id)
+        lookup_trace = StepExecutionResult(
+            step_id="lookup_user_name",
+            tool_name="dbuser_name_lookup",
+            success=True,
+            args={"entity_type": entity_type, "user_id": user_id},
+            output_summary=f"{label} -> {user_name or 'name_missing'}",
+            raw_output={"user_id": user_id, "user_name": user_name, "entity_type": entity_type},
+        )
+        final_text = f"{label} 的姓名是 {user_name}。" if user_name else f"未在 dbuser 中找到 {label} 的姓名。"
+        return OrchestratorResponse(
+            success=True,
+            task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output={
+                "lookup_subtype": routed.lookup_subtype or "lookup_user_name",
+                "entity_type": entity_type,
+                "user_id": user_id,
+                "user_name": user_name,
+                "display_label": label,
+                "source_table": "dbuser",
+            },
+            final_text=final_text,
+            validation_issues=list(mode_issues),
+            execution_trace=[identity_trace, route_trace, lookup_trace],
+        )
+
+    def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
+        if entity_type == "doctor":
+            return f"医生{user_id}"
+        if entity_type == "patient":
+            return f"患者{user_id}"
+        return f"用户{user_id}"
 
     def _build_authorization_error_response(
         self,
@@ -488,6 +604,7 @@ class RehabAgentOrchestrator:
                 f"final_intent={routed.final_intent}; "
                 f"final_subtype={routed.final_subtype or 'none'}; "
                 f"final_scope={routed.final_scope or 'none'}; "
+                f"lookup={routed.lookup_entity_type or 'none'}:{routed.lookup_user_id or 'none'}; "
                 f"llm_refined={llm_called}"
             ),
             raw_output=routed.model_dump(mode="json"),

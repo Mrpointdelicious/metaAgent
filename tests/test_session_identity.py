@@ -12,9 +12,9 @@ from agent.orchestrator import RehabAgentOrchestrator
 from agent.schemas import OrchestrationTaskType, OrchestratorRequest
 from config import Settings
 from repositories.db_client import DatabaseConnectionError
+from server.request_factory import build_orchestrator_request_from_payload
 from server.session_context import (
     MissingIdentityContextError,
-    build_orchestrator_request_from_payload,
     build_session_identity_context,
 )
 

@@ -29,7 +29,7 @@ SUPPORTED_SCOPES: tuple[AnalyticsScope, ...] = (
     "doctor_aggregate",
     "patient_single",
 )
-FIXED_INTENTS = {"single_patient_review", "risk_screening", "weekly_report"}
+FIXED_INTENTS = {"single_patient_review", "risk_screening", "weekly_report", "lookup_query"}
 
 
 class LLMRouter:
@@ -139,9 +139,11 @@ class LLMRouter:
             "Return only JSON that matches the provided schema. "
             "You identify intent, open analytics subtype, scope, doctor_id_source, confidence, and rationale. "
             "Never generate SQL. Never call tools. Never execute the request. "
-            "Supported intents: single_patient_review, risk_screening, weekly_report, open_analytics_query. "
+            "Supported intents: single_patient_review, risk_screening, weekly_report, open_analytics_query, lookup_query. "
             "Supported open analytics subtypes: absent_old_patients_recent_window, absent_from_baseline_window, doctors_with_active_plans. "
             "Supported scopes: single_doctor, doctor_aggregate, patient_single. "
+            "Lookup queries such as doctor name / patient name / who is this ID should use intent=lookup_query, "
+            "lookup_subtype=lookup_user_name, lookup_entity_type doctor/patient/unknown, and lookup_user_id. "
             "Scope rules: explicit doctor ID wins; single doctor analytics may inherit session doctor ID; "
             "doctor aggregate questions such as which doctors / each doctor / whole hospital must ignore session doctor as a filter."
         )
@@ -155,11 +157,13 @@ class LLMRouter:
             "raw_question": request.raw_text or "",
             "request_slots": {
                 "therapist_id": request.therapist_id,
+                "doctor_id": request.doctor_id,
                 "patient_id": request.patient_id,
                 "plan_id": request.plan_id,
                 "days": request.days,
                 "task_type": request.task_type,
             },
+            "identity_context": request.identity_context.model_dump(mode="json") if request.identity_context else None,
             "session_context": request.context or {},
             "rule_decision": rule_decision.model_dump(mode="json"),
             "supported_open_analytics_subtypes": list(SUPPORTED_SUBTYPES),
@@ -177,6 +181,9 @@ class LLMRouter:
             analytics_subtype=rule_decision.analytics_subtype,
             scope=rule_decision.analysis_scope,
             doctor_id_source=rule_decision.doctor_id_source,
+            lookup_subtype=rule_decision.lookup_subtype,
+            lookup_entity_type=rule_decision.lookup_entity_type,
+            lookup_user_id=rule_decision.lookup_user_id,
             confidence=rule_decision.confidence,
             rationale=rationale,
         )
@@ -216,6 +223,9 @@ def merge_rule_and_llm(
             final_subtype=rule_decision.analytics_subtype,
             final_scope=rule_decision.analysis_scope,
             doctor_id_source=rule_decision.doctor_id_source,
+            lookup_subtype=rule_decision.lookup_subtype,
+            lookup_entity_type=rule_decision.lookup_entity_type,
+            lookup_user_id=rule_decision.lookup_user_id,
             confidence=rule_decision.confidence,
             rationale=f"rule_only: {rule_decision.rationale}",
         )
@@ -228,6 +238,9 @@ def merge_rule_and_llm(
             final_subtype=rule_decision.analytics_subtype,
             final_scope=rule_decision.analysis_scope,
             doctor_id_source=llm_decision.doctor_id_source or rule_decision.doctor_id_source,
+            lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
+            lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
+            lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
             confidence=rule_decision.confidence,
             rationale=f"kept high-confidence fixed rule decision; llm={llm_decision.rationale}",
         )
@@ -244,6 +257,9 @@ def merge_rule_and_llm(
             final_subtype=final_subtype,
             final_scope=final_scope,
             doctor_id_source=llm_decision.doctor_id_source or rule_decision.doctor_id_source,
+            lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
+            lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
+            lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
             confidence=confidence,
             rationale=f"open analytics merged rule and llm; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
         )
@@ -256,6 +272,9 @@ def merge_rule_and_llm(
             final_subtype=llm_decision.analytics_subtype,
             final_scope=llm_decision.scope,
             doctor_id_source=llm_decision.doctor_id_source or rule_decision.doctor_id_source,
+            lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
+            lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
+            lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
             confidence=llm_decision.confidence,
             rationale=f"llm override because confidence is materially higher; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
         )
@@ -267,6 +286,9 @@ def merge_rule_and_llm(
         final_subtype=rule_decision.analytics_subtype or llm_decision.analytics_subtype,
         final_scope=rule_decision.analysis_scope or llm_decision.scope,
         doctor_id_source=llm_decision.doctor_id_source or rule_decision.doctor_id_source,
+        lookup_subtype=rule_decision.lookup_subtype or llm_decision.lookup_subtype,
+        lookup_entity_type=rule_decision.lookup_entity_type or llm_decision.lookup_entity_type,
+        lookup_user_id=rule_decision.lookup_user_id or llm_decision.lookup_user_id,
         confidence=max(rule_decision.confidence, llm_decision.confidence),
         rationale=f"kept rule intent with llm enrichment; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
     )

@@ -1,3 +1,10 @@
+"""Legacy local-dialogue helpers.
+
+This module is retained for the old debug shell only. It is not a production
+router, identity source, or authorization boundary. Formal request creation now
+lives in server.request_factory, and formal routing lives in agent.IntentRouter.
+"""
+
 from __future__ import annotations
 
 import re

@@ -1,272 +1,82 @@
-# MetaAgent Rehab Review Demo
+# MetaAgent Rehab Review
 
-面向康复训练师的计划执行偏离识别与复核支持系统 Demo。
+MetaAgent 是面向康复训练师与患者会话的服务端编排器。当前系统不是通用医疗聊天系统，也不是纯 RAG 系统，而是围绕院内康复训练流程，提供计划执行偏离识别、复核支持、开放分析与轻量实体查询。
 
-本项目不是通用医疗聊天系统，也不是纯 RAG 系统。当前主目标是围绕院内康复训练流程，帮助训练师识别和复核：
+## 正式入口
 
-- 哪些患者最近出现计划执行偏离
-- 偏离主要体现在哪些维度
-- 偏离是否伴随结果变化
-- 哪些患者值得优先人工复核
-- 哪些开放式集合分析问题可以由受控工具链回答
+当前正式入口已经从 Demo 层收口到服务端与核心编排层：
 
-## 当前标准主链
+- `server/main.py`：生产/接口入口，从 JSON payload 构造正式请求并调用 orchestrator。
+- `server/request_factory.py`：统一 request normalization 与 `OrchestratorRequest` 构造入口。
+- `server/session_context.py`：构造权威的 `SessionIdentityContext`。
+- `Demo/doctor_demo.py`：医生身份演示入口，只注入显式 `doctor_id`。
+- `Demo/patient_demo.py`：患者身份演示入口，只注入显式 `patient_id`。
+- `Demo/main.py`：legacy/local debug shell，不是正式服务入口。
 
-当前真实运行主链已经收口为一条明确的编排链路：
+Demo 只做适配与演示，不承担正式问题路由、身份判定、权限来源或生产兜底。
+
+## 运行时主链
+
+正式主链为：
 
 ```text
-用户输入
+外部请求 / Demo 输入
 -> request normalization
+-> SessionIdentityContext 注入
 -> IntentRouter 规则路由
--> LLMRouter 按需精修 intent / subtype / scope
+-> LLMRouter 按需 refine intent / subtype / scope
 -> choose_execution_strategy
--> 三种执行策略之一
-   -> fixed_workflow
-   -> template_analytics
-   -> agent_planned
+-> fixed_workflow / template_analytics / agent_planned
 -> shared response / trace
 ```
 
-`direct` 和 `agents_sdk` 现在只是运行模式，不再是项目的主架构分叉。主链的唯一策略裁决点是 `ExecutionStrategy`。
+Analytics 域内部继续独占：
 
-顶层 `ExecutionStrategy.kind` 只表达三种前置裁决结果：
+```text
+agents_sdk_runtime -> llm_planner -> template fallback
+```
 
-- `fixed_workflow`
-- `template_analytics`
-- `agent_planned`
+`IntentRouter` 是唯一正式规则路由器。`LLMRouter` 只在低置信、模糊问题、开放分析细分等场景做 refine，不是主要分类器。
 
-运行中 fallback 不再作为顶层 strategy kind 表达，只写入 `execution_trace` 和 `planned_query_source`。
+## 身份与权限
+
+服务端请求必须携带身份上下文来源字段：
+
+- 只传 `doctor_id`：当前主体为医生。
+- 只传 `patient_id`：当前主体为患者。
+- 同时传 `doctor_id` 和 `patient_id`：当前主体为医生，`patient_id` 作为目标患者。
+- 两者都不传：请求被拒绝，不进入业务编排。
+
+主链字段优先级固定为：
+
+1. `SessionIdentityContext`
+2. request 显式参数
+3. 文本中的目标对象线索
+4. 普通会话上下文
+5. 禁止使用 Demo 默认 doctor/patient 作为生产兜底
+
+权限边界在代码层执行，不依赖 prompt 或 Agent 自律。医生默认只能访问自己职责范围内的患者；患者默认只能访问自己的信息，不能进入多患者筛选或医生聚合。
+
+## IntentRouter 能力
+
+`agent/intent_router.py` 当前承担正式问题路由：
+
+- 固定 workflow：单患者复核、风险筛选、周报/风险摘要。
+- 开放分析：患者集合、双窗口分析、医生聚合等 subtype/scope 初判。
+- lookup/entity query：如“查询医生59的名字”“患者146叫什么”“59是谁”。
+- 保守判定：只含 ID 或低置信问题不会被硬压到高频固定任务，而是保留为低置信开放分析或交给 LLM refine。
+
+lookup 查询不会暴露 `dbuser` 表给 Agent；姓名查询由 repository/service 层完成。
 
 ## 执行策略
 
-### `fixed_workflow`
+`choose_execution_strategy` 是顶层策略裁决点：
 
-用于高频且口径稳定的固定任务：
+- `fixed_workflow`：高频稳定任务。
+- `template_analytics`：标准开放分析模板。
+- `agent_planned`：SDK 与 LLM 配置可用时的复杂开放分析路径。
 
-- 单患者复核
-- 多患者风险筛选
-- 周报 / 风险摘要
-- 预留步态专项复核入口
-
-固定流程仍然是主路径和回归基线，不会被 LLM Planner 覆盖。
-
-### `template_analytics`
-
-用于标准开放分析模板。当前已支持：
-
-- `absent_old_patients_recent_window`
-- `absent_from_baseline_window`
-- `doctors_with_active_plans`
-
-模板分析是开放分析的稳定兜底路径。
-
-### `agent_planned`
-
-用于更灵活的开放分析。触发后由：
-
-1. `OpenAnalyticsAgentRuntime` 优先启动真实 Agents SDK runtime
-2. Agent 只看到开放分析 primitive tool 白名单，并通过 `ToolSpec.agent_tool` 调用工具
-3. Agent runtime 失败时 fallback 到 `LLMPlanner + PlanValidator + _execute_query_plan`
-4. planner 路径也失败时 fallback 到模板分析
-
-Agent/LLM 只工作在开放分析域，不直接访问数据库、不生成 SQL、不调用 repository。
-
-## 运行模式
-
-`agent/orchestrator.py` 会先解析 LLM 配置和运行模式：
-
-- 如果 provider 凭据、模型和 base URL 可用，默认可进入 `agents_sdk`
-- 如果显式关闭 SDK 或凭据不可用，则进入 `direct` / `direct_fallback`
-- `agent_planned` 只有在策略为 `agent_planned` 且运行模式可用时才会真正调用 Agent runtime
-- 固定 workflow 和模板 analytics 都可以在 `direct` 下稳定运行
-
-因此运行模式只影响“是否能调用 LLM Router / Agent runtime / Planner”，不改变主链的策略结构。
-
-## 架构分层
-
-```text
-Demo/              命令行与交互式入口
-agent/             编排层、路由、Open Analytics Agent、LLM Router、LLM Planner、Plan Validator
-config/            配置读取与环境变量
-models/            Pydantic 数据结构
-repositories/      只读数据访问层
-services/          业务逻辑层
-tools/             service 工具包装层
-tests/             回归测试
-```
-
-### 输入层
-
-- `Demo/cli.py`：单次命令入口
-- `Demo/main.py`：常驻交互入口
-- `Demo/dialogue.py`：自然语言解析、上下文续接、命令容错
-
-### 编排层
-
-- `agent/orchestrator.py`
-  - runtime assembly
-  - resolve LLM config / execution mode
-  - rule route
-  - LLM route refine
-  - strategy choose
-  - fixed workflow dispatch
-  - analytics dispatch
-
-- `agent/intent_router.py`
-  - 规则路由
-  - 输出 `intent / analytics_subtype / analysis_scope / doctor_id_source`
-
-- `agent/llm_router.py`
-  - 按需精修 `intent / subtype / scope`
-  - 不执行工具
-
-- `agent/analytics_manager.py`
-  - 公开入口统一为 `run(..., strategy=...)`
-  - 内部再选择模板、Agent runtime 或 planner fallback
-  - 负责开放分析 trace、fallback、统一执行器
-
-- `agent/open_analytics_agent.py`
-  - 封装真实 Agents SDK runtime
-  - 只接 `agent_planned` 开放分析分支
-  - 只通过 `ToolSpec.agent_tool` 使用白名单工具
-
-- `agent/llm_planner.py`
-  - 在工具白名单内生成结构化 `LLMPlannedQuery`
-
-- `agent/plan_validator.py`
-  - 校验 LLM 计划是否可执行
-
-### 业务逻辑层
-
-- `services/plan_service.py`
-- `services/execution_service.py`
-- `services/outcome_service.py`
-- `services/gait_service.py`
-- `services/deviation_service.py`
-- `services/report_service.py`
-- `services/reflection_service.py`
-- `services/analytics_service.py`
-
-业务判断仍在 service 层，LLM 不承载核心医疗业务口径。
-
-### 数据层
-
-- `repositories/rehab_repository.py`：业务查询封装
-- `repositories/db_client.py`：只读 MySQL 客户端
-- `repositories/mock_data.py`：数据库不可用时的 mock fallback
-
-数据库访问默认只读。
-
-## A/B 产品链边界
-
-### A 链：下肢康复机器人产品链
-
-A 链是当前主业务范围，承担：
-
-- 计划执行偏离识别
-- 单患者复核
-- 多患者风险筛选
-- 周报 / 风险摘要
-
-核心表：
-
-- `dbtemplates`
-- `dbrehaplan`
-- `dbdevicelog`
-- `dbreport`
-
-核心判断：
-
-- 计划是否存在
-- 患者是否到训
-- 是否完成
-- 实际剂量是否低于计划剂量
-- 结果是否下降
-- 是否需要优先人工复核
-
-### B 链：康复步道产品链
-
-B 链当前以独立证据块保留，用于步态 / 步道解释扩展。
-
-核心表：
-
-- `dbwalk`
-- `walkreport`
-- `walkreportdetails`
-
-当前 B 链输出不参与 A 链偏离指标、风险分和周报统计。代码中 `gait_explanation` 是独立证据块，不表示 A/B 链已经合并。
-
-## 开放分析、Agent Runtime 与 Planner
-
-开放分析入口用于处理自然语言统计和集合分析问题。
-
-### Agent Runtime 可见工具
-
-真实 Agent runtime 只看到 analytics primitive tools，不暴露高层固定 workflow 工具。
-
-`single_doctor` / 患者集合类当前开放：
-
-- `list_patients_seen_by_doctor`
-- `list_patients_with_active_plans`
-- `set_diff`
-- `rank_patients`
-
-`doctor_aggregate` 当前只开放：
-
-- `list_doctors_with_active_plans`
-
-Planner fallback 的工具 catalog 仍保留更完整的 analytics primitive 集合，包括：
-
-- `get_patient_last_visit`
-- `get_patient_plan_status`
-
-不会暴露给 Agent / Planner 的高层工具包括：
-
-- `generate_review_card`
-- `screen_risk_patients`
-- `generate_weekly_risk_report`
-
-### Tool Catalog 暴露字段
-
-传给 Agent / Planner 的 catalog 只包含精简元数据：
-
-- `tool_name`
-- `description`
-- `input_schema`
-- `chain_scope`
-- `notes`
-
-不会把 Python 实现或 repository 查询逻辑发给模型。
-
-### Plan Validator 校验
-
-`PlanValidator` 至少拦截：
-
-- 非白名单工具
-- 超过最大步数的计划
-- SQL-like 文本
-- scope 不匹配
-- doctor aggregate 中错误注入单医生过滤
-- single doctor 分析缺少医生 scope
-- 排序策略不合法
-- 明显重复的无意义步骤
-- 工具参数不符合 `ToolSpec.validate_args()`
-
-### Fallback
-
-以下情况会回退到模板分析：
-
-- Agent runtime 不可用
-- Agent runtime 执行失败
-- planner 调用失败
-- planner 输出解析失败
-- validator 校验失败
-- 执行计划时关键步骤失败
-- 工具名不在白名单内
-- scope 不合法
-- 当前运行模式无法安全使用 Agent runtime / LLM planning
-
-fallback 会写入 `execution_trace` 和 `structured_output.planned_query_source`。
+当 LLM/Agents SDK 配置不可用时，系统回退到 direct/template 路径，并在 trace/validation issues 中标明原因。
 
 ## 输出结构
 
@@ -275,137 +85,65 @@ fallback 会写入 `execution_trace` 和 `structured_output.planned_query_source
 - `success`
 - `task_type`
 - `execution_mode`
-- `llm_provider`
-- `llm_model`
 - `structured_output`
 - `final_text`
 - `validation_issues`
 - `execution_trace`
 
-开放分析结果会额外标记：
+开放分析的 `structured_output.planned_query_source.source` 可能为：
 
-- `planned_query_source.source`
-  - `fixed_template`
-  - `agents_sdk_runtime`
-  - `llm_planner`
-  - `fallback_template`
+- `fixed_template`
+- `agents_sdk_runtime`
+- `llm_planner`
+- `fallback_template`
 
-## 环境配置
+## 运行示例
 
-推荐使用 Python 3.11+。
+生产入口从 stdin 读取 JSON：
 
-安装：
-
-```powershell
-python -m pip install -e .
+```bash
+python server/main.py
 ```
 
-`.env` 示例：
+示例 payload：
 
-```env
-LLM_PROVIDER=qwen
-AGENTS_TRACING_ENABLED=false
-
-OPENAI_API_KEY=
-OPENAI_MODEL=
-OPENAI_BASE_URL=
-
-QWEN_API_KEY=
-QWEN_MODEL=qwen-plus
-QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-
-DEEPSEEK_API_KEY=
-DEEPSEEK_MODEL=deepseek-chat
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-
-MYSQL_HOST=127.0.0.1
-MYSQL_PORT=3306
-MYSQL_DATABASE=meta_universe
-MYSQL_USER=meta_user
-MYSQL_PASSWORD=
-USE_MOCK_WHEN_DB_UNAVAILABLE=true
+```json
+{
+  "doctor_id": 30001,
+  "question": "看一下最近7天高风险患者",
+  "days": 7
+}
 ```
 
-数据库不可用时，如果 `USE_MOCK_WHEN_DB_UNAVAILABLE=true`，系统会使用 mock fallback。
+医生演示：
 
-## 启动方式
-
-### 交互模式
-
-```powershell
-python Demo\main.py
+```bash
+python Demo/doctor_demo.py --doctor-id 30001 --question "查询医生30001的名字"
 ```
 
-交互命令：
+患者演示：
+
+```bash
+python Demo/patient_demo.py --patient-id 20001 --question "我最近的训练情况怎么样"
+```
+
+legacy debug shell：
+
+```bash
+python Demo/main.py
+```
+
+该入口仅用于本地调试，不代表生产主链。
+
+## 目录概览
 
 ```text
-review-patient --plan-id 6 --days 30
-screen-risk --therapist-id 56 --days 30
-weekly-report --therapist-id 56 --days 30
-帮我复核计划 6
-看一下医生 56 最近 30 天的高风险患者
-给我这个医生最近 7 天的周报
-换成最近 7 天
+agent/        编排、路由、LLM refine、planner、validator、analytics manager
+server/       服务端入口、request factory、session identity 构造
+Demo/         显式身份演示入口与 legacy debug shell
+models/       Pydantic 结构
+repositories/ 只读数据访问与 mock fallback
+services/     业务逻辑与权限作用域执行
+tools/        受控工具包装
+tests/        主链、开放分析、身份与路由测试
 ```
-
-运行时切换：
-
-```text
-set-provider qwen
-set-model qwen-plus
-set-base-url https://dashscope.aliyuncs.com/compatible-mode/v1
-set-agent on
-set-agent off
-set-trace on
-show-llm
-clear-llm
-```
-
-### 单次命令
-
-```powershell
-python Demo\cli.py review-patient --plan-id 6 --days 30
-python Demo\cli.py screen-risk --therapist-id 56 --days 30
-python Demo\cli.py weekly-report --therapist-id 56 --days 30
-python Demo\cli.py ask "查看医生56这30天有哪些以前来过的患者没有来"
-python Demo\cli.py --use-agent-sdk ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
-python Demo\cli.py --json --show-trace ask "查询一下这30天哪些医生有定患者训练计划？"
-```
-
-## 稳定 Demo 样本
-
-当前建议用于演示和回归的样本：
-
-- `therapist_id=56`
-- `plan_id=6`
-- `patient_id=146`
-
-## 测试
-
-```powershell
-python -m py_compile agent\orchestrator.py agent\analytics_manager.py agent\schemas.py tests\test_open_analytics.py
-python -m unittest discover -s tests -v
-```
-
-当前开放分析测试覆盖：
-
-- 固定任务不触发 LLM Router
-- 标准模板问题走 template analytics
-- `agent_planned` 优先走 Agent runtime
-- Agent runtime 报错后 fallback 到 planner
-- 双窗口问题可走 agent planned
-- 医生聚合问题不注入单医生过滤
-- planner 生成非法工具时由 validator 拦截并 fallback
-
-## 当前边界
-
-- 风险评分仍是规则版，不是学习版
-- `dbdevicelog.PlanId` 需要逻辑清洗，不能直接当严格 session 主键
-- `dbrehaplan.StartTime` 不作为精确计划开始时间
-- A 链结果层仍以结构化抽取为主，尚未深入 `dbreportdata`
-- B 链尚未形成完整的独立步道复核入口
-- 医生聚合和复杂统计类 planner 能力仍依赖现有 analytics primitive tools 的覆盖度
-
-## 一句话结论
-
-MetaAgent 当前已经收口为：固定 workflow + template analytics + agent planned 三策略主链。`agent_planned` 已优先接入真实 Agents SDK runtime；LLM Router、Agent runtime 和 LLM Planner 都被限制在开放分析识别、受控工具调用或规划层，所有数据库能力仍只能经由代码侧工具白名单、service 和 repository 完成。

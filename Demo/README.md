@@ -1,154 +1,88 @@
-# Demo 使用说明
+# Demo Entries
 
-`Demo/` 提供 MetaAgent 的两个运行入口：
+`Demo/` 现在只保留演示与本地调试入口，不再承担正式主链路由、身份判定或权限来源。
 
-- `Demo/main.py`：常驻交互式入口，适合自然语言、多轮续接和现场演示
-- `Demo/cli.py`：单次命令入口，适合脚本、回归和快速验证
-
-当前 Demo 使用的真实主链是：
+所有正式请求都应通过：
 
 ```text
-输入
--> OrchestratorRequest
--> IntentRouter 规则路由
--> LLMRouter 按需精修
--> choose_execution_strategy
+server.request_factory
+-> RehabAgentOrchestrator
+-> IntentRouter / LLMRouter
+-> strategy chooser
 -> fixed_workflow / template_analytics / agent_planned
--> OrchestratorResponse
 ```
 
-`direct` 与 `agents_sdk` 只是运行模式。策略选择由 `ExecutionStrategy` 统一决定。
+## 医生演示入口
 
-顶层策略只包含：
-
-- `fixed_workflow`
-- `template_analytics`
-- `agent_planned`
-
-`fallback_template` 只会作为开放分析结果来源或 trace 信息出现，不再作为顶层 strategy。
-
-## 快速启动
-
-在项目根目录执行：
-
-```powershell
-python -m pip install -e .
-python Demo\main.py
+```bash
+python Demo/doctor_demo.py --doctor-id 30001
 ```
 
-也可以直接执行单次命令：
+或单次问题：
 
-```powershell
-python Demo\cli.py review-patient --plan-id 6 --days 30
-python Demo\cli.py screen-risk --therapist-id 56 --days 30
-python Demo\cli.py weekly-report --therapist-id 56 --days 30
+```bash
+python Demo/doctor_demo.py --doctor-id 30001 --question "看一下最近7天高风险患者"
 ```
 
-## 交互模式
+特点：
 
-启动：
+- 必须显式传入 `--doctor-id`。
+- Demo 构造医生身份 `SessionIdentityContext`。
+- Demo 不推断正式 task type。
+- Demo 不使用默认治疗师兜底。
+- 最终请求统一走 `server.request_factory` 和核心 orchestrator。
 
-```powershell
-python Demo\main.py
+## 患者演示入口
+
+```bash
+python Demo/patient_demo.py --patient-id 20001
 ```
 
-常用输入：
+或单次问题：
 
-```text
-review-patient --plan-id 6 --days 30
-screen-risk --therapist-id 56 --days 30
-weekly-report --therapist-id 56 --days 30
-帮我复核计划 6
-看一下医生 56 最近 30 天的高风险患者
-给我这个医生最近 7 天的周报
-换成最近 7 天
+```bash
+python Demo/patient_demo.py --patient-id 20001 --question "患者20001叫什么"
 ```
 
-运行时配置：
+特点：
 
-```text
-set-provider qwen
-set-model qwen-plus
-set-base-url https://dashscope.aliyuncs.com/compatible-mode/v1
-set-agent on
-set-agent off
-set-trace on
-show-llm
-clear-llm
-show-context
-clear-context
-show-demo-sample
+- 必须显式传入 `--patient-id`。
+- Demo 构造患者身份 `SessionIdentityContext`。
+- 患者身份不能进入多患者风险筛选或医生聚合。
+- 最终请求统一走正式 orchestrator 主链。
+
+## Legacy Debug Shell
+
+```bash
+python Demo/main.py
 ```
 
-## 单次命令
+`Demo/main.py` 是 legacy/local debug shell，仅用于历史兼容和手工实验。它不是生产入口，也不应被当作正式问题路由器。
 
-固定任务：
+`Demo/dialogue.py` 仍可为旧 debug shell 提供本地便利解析，但它不是正式 router、不是身份真相源、不是权限边界。
 
-```powershell
-python Demo\cli.py review-patient --plan-id 6 --days 30
-python Demo\cli.py screen-risk --therapist-id 56 --days 30 --top-k 10
-python Demo\cli.py weekly-report --therapist-id 56 --days 7
+## 正式服务入口
+
+生产/接口场景应使用：
+
+```bash
+python server/main.py
 ```
 
-开放分析：
+从 stdin 传入 JSON payload，例如：
 
-```powershell
-python Demo\cli.py ask "查看医生56这30天有哪些以前来过的患者没有来"
-python Demo\cli.py ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
-python Demo\cli.py ask "查询一下这30天哪些医生有定患者训练计划？"
+```json
+{
+  "doctor_id": 30001,
+  "question": "查询医生30001的名字"
+}
 ```
 
-启用 SDK 和 trace：
+## 路由说明
 
-```powershell
-python Demo\cli.py --use-agent-sdk --show-trace ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
-python Demo\cli.py --json --show-trace ask "查询一下这30天哪些医生有定患者训练计划？"
-```
+正式问题路由只在核心层完成：
 
-临时切换 LLM：
+- `agent/intent_router.py`：规则主判。
+- `agent/llm_router.py`：低置信或模糊场景 refine。
 
-```powershell
-python Demo\cli.py --llm-provider qwen --llm-model qwen-plus --use-agent-sdk ask "查询一下这30天哪些医生有定患者训练计划？"
-python Demo\cli.py --llm-provider deepseek --llm-model deepseek-chat --use-agent-sdk ask "看医生56这30天有哪些是前80-30天以前来过的患者，这30没有来"
-```
-
-## 输出说明
-
-所有命令最终返回 `OrchestratorResponse`。
-
-人类可读输出主要看：
-
-- `success`
-- `execution_mode`
-- `final_text`
-
-JSON / trace 模式下还会看到：
-
-- `structured_output`
-- `validation_issues`
-- `execution_trace`
-
-开放分析会在 `structured_output.planned_query_source` 标记计划来源：
-
-- `fixed_template`
-- `agents_sdk_runtime`
-- `llm_planner`
-- `fallback_template`
-
-## Demo 样本
-
-当前建议使用的稳定样本：
-
-- `therapist_id=56`
-- `plan_id=6`
-- `patient_id=146`
-
-## 当前边界
-
-- 固定 workflow 是高频主路径，不会被 planner 替代
-- LLM Router 只精修路由，不执行工具
-- `agent_planned` 会优先进入真实 Agents SDK runtime，只使用开放分析 primitive tool 白名单
-- LLM Planner 只生成结构化计划，不访问数据库、不生成 SQL
-- Plan Validator 会拦截非法工具、非法 scope、SQL-like 文本和参数错误
-- 数据库不可用时可按配置回退到 mock 数据
-- B 链步道数据目前只作为 `gait_explanation` 独立证据块，不参与 A 链风险评分
+Demo 层只负责读取本地参数、构造身份化 request、调用 orchestrator、打印输出。
