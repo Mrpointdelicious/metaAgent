@@ -53,6 +53,7 @@ def main() -> int:
     }
     state = ConversationState()
 
+    print("Legacy local debug entry. For explicit session identity use Demo/doctor_demo.py or Demo/patient_demo.py; for server payloads use server/main.py.")
     print(build_welcome(settings))
     while True:
         try:

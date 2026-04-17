@@ -47,6 +47,19 @@ BASELINE_KEYWORDS = ("baseline", "基线", "前一阶段", "前一段时间", "�
 class IntentRouter:
     def route(self, request: OrchestratorRequest) -> IntentDecision:
         normalized = normalize_task_type(request.task_type)
+        identity = request.identity_context
+        if identity and identity.actor_role == "patient" and normalized in {
+            OrchestrationTaskType.SCREEN_RISK,
+            OrchestrationTaskType.WEEKLY_REPORT,
+        }:
+            return IntentDecision(
+                intent="open_analytics_query",
+                confidence=0.99,
+                rationale="Patient identity cannot be routed to group doctor workflows.",
+                analytics_subtype=None,
+                analysis_scope=None,
+                doctor_id_source="none",
+            )
         if normalized == OrchestrationTaskType.REVIEW_PATIENT:
             return IntentDecision(intent="single_patient_review", confidence=0.99, rationale="Task type explicitly requests patient review.")
         if normalized == OrchestrationTaskType.SCREEN_RISK:
@@ -194,6 +207,11 @@ class IntentRouter:
     ) -> DoctorIdSource | None:
         if scope == "doctor_aggregate":
             return "none"
+        if request.identity_context is not None:
+            if request.identity_context.actor_role == "doctor" and scope == "single_doctor":
+                return "session"
+            if request.identity_context.actor_role == "patient":
+                return "none"
         if self._extract_doctor_id(text) is not None:
             return "explicit"
         if scope == "single_doctor" and (request.therapist_id is not None or (request.context or {}).get("therapist_id") is not None):

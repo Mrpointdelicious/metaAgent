@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
 
 from config import LLMProvider
 from models import (
@@ -14,6 +15,7 @@ from models import (
     PatientSet,
     PlanStatus,
     RankedPatients,
+    SessionIdentityContext,
 )
 from models.common import TimeRange
 
@@ -123,6 +125,7 @@ class OrchestratorRequest(BaseModel):
     task_type: TaskType | None = Field(default=None, description="Task type from CLI or dialogue layer.")
     patient_id: int | None = Field(default=None, description="Patient identifier.")
     plan_id: int | None = Field(default=None, description="Plan identifier.")
+    doctor_id: int | None = Field(default=None, description="Doctor identifier; synchronized with therapist_id for API-facing payloads.")
     therapist_id: int | None = Field(default=None, description="Therapist or doctor identifier.")
     days: int | None = Field(default=None, description="Legacy relative time window in days.")
     analytics_time_slots: AnalyticsTimeSlots | None = Field(
@@ -138,7 +141,16 @@ class OrchestratorRequest(BaseModel):
     need_outcome: bool | None = Field(default=None, description="Whether outcome evidence is required.")
     need_gait_evidence: bool | None = Field(default=None, description="Whether gait evidence is required.")
     response_style: str | None = Field(default=None, description="Response style hint.")
+    identity_context: SessionIdentityContext | None = Field(default=None, description="Authoritative session identity and authorization context.")
     context: dict[str, Any] = Field(default_factory=dict, description="Structured conversation context.")
+
+    @model_validator(mode="after")
+    def sync_doctor_and_therapist_ids(self) -> "OrchestratorRequest":
+        if self.doctor_id is None and self.therapist_id is not None:
+            self.doctor_id = self.therapist_id
+        elif self.therapist_id is None and self.doctor_id is not None:
+            self.therapist_id = self.doctor_id
+        return self
 
     @property
     def normalized_task_type(self) -> OrchestrationTaskType:

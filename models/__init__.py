@@ -1,4 +1,5 @@
 from .common import EvidenceItem, RiskLevel, TimeRange
+from .session import SessionIdentityContext
 from .domain import (
     DeviationMetrics,
     ExecutionLog,
@@ -49,6 +50,7 @@ __all__ = [
     "RankedPatients",
     "ReviewCard",
     "RiskLevel",
+    "SessionIdentityContext",
     "TimeRange",
     "TrainingTask",
     "WeeklyRiskReport",

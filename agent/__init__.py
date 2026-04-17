@@ -1,4 +1,4 @@
 from .orchestrator import RehabAgentOrchestrator
-from .schemas import OrchestratorRequest, OrchestratorResponse, TaskType
+from .schemas import OrchestratorRequest, OrchestratorResponse, SessionIdentityContext, TaskType
 
-__all__ = ["OrchestratorRequest", "OrchestratorResponse", "RehabAgentOrchestrator", "TaskType"]
+__all__ = ["OrchestratorRequest", "OrchestratorResponse", "RehabAgentOrchestrator", "SessionIdentityContext", "TaskType"]

@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from config import ResolvedLLMConfig, Settings, get_settings
-from models import GaitExplanationSummary, ReviewCard, WeeklyRiskReport
+from models import GaitExplanationSummary, ReviewCard, SessionIdentityContext, WeeklyRiskReport
 from repositories import RehabRepository
 from services import (
     AnalyticsService,
@@ -117,11 +117,16 @@ class RehabAgentOrchestrator:
         )
 
     def run(self, request: OrchestratorRequest) -> OrchestratorResponse:
+        request, identity_error = self._normalize_identity_context(request)
         llm_config = self.settings.resolve_llm_config(
             provider=request.llm_provider,
             model=request.llm_model,
             base_url=request.llm_base_url,
         )
+        if identity_error is not None:
+            return self._build_identity_error_response(request, llm_config, identity_error)
+        self.repository.set_identity_context(request.identity_context)
+        identity_trace = self._build_identity_trace(request.identity_context)
         mode, execution_mode, mode_issues = self._resolve_mode(request, llm_config)
         rule_decision = self.intent_router.route(request)
         routed = self._refine_intent_with_llm_if_needed(
@@ -131,6 +136,16 @@ class RehabAgentOrchestrator:
             mode=mode,
         )
         route_trace = self._build_route_trace(routed)
+        authorization_issue = self._authorize_request(request, routed)
+        if authorization_issue is not None:
+            return self._build_authorization_error_response(
+                request=request,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                issue=authorization_issue,
+                traces=[identity_trace, route_trace],
+                mode_issues=mode_issues,
+            )
         strategy = self.choose_execution_strategy(request, routed, mode=mode, llm_config=llm_config)
         strategy_trace = self._build_strategy_trace(strategy)
         if strategy.kind == "fixed_workflow":
@@ -139,6 +154,7 @@ class RehabAgentOrchestrator:
                 routed=routed,
                 route_trace=route_trace,
                 strategy_trace=strategy_trace,
+                identity_trace=identity_trace,
                 mode=mode,
                 llm_config=llm_config,
                 execution_mode=execution_mode,
@@ -154,8 +170,174 @@ class RehabAgentOrchestrator:
             execution_mode=execution_mode,
         )
         response.validation_issues = list(mode_issues) + list(response.validation_issues)
-        response.execution_trace = [route_trace, strategy_trace] + list(response.execution_trace)
+        response.execution_trace = [identity_trace, route_trace, strategy_trace] + list(response.execution_trace)
         return response
+
+    def _normalize_identity_context(self, request: OrchestratorRequest) -> tuple[OrchestratorRequest, str | None]:
+        identity = request.identity_context or self._identity_from_request_fields(request)
+        if identity is None:
+            return request, "missing_identity_context"
+        update: dict[str, Any] = {"identity_context": identity}
+        if identity.actor_role == "doctor":
+            doctor_id = identity.actor_doctor_id
+            if doctor_id is None:
+                return request, "identity_context.missing_actor_doctor_id"
+            requested_doctor_id = request.doctor_id or request.therapist_id
+            if requested_doctor_id is not None and int(requested_doctor_id) != int(doctor_id):
+                return request, "authorization.doctor_scope_violation"
+            update["doctor_id"] = doctor_id
+            update["therapist_id"] = doctor_id
+            if request.patient_id is not None and identity.target_patient_id is None:
+                identity = identity.model_copy(update={"target_patient_id": request.patient_id})
+                update["identity_context"] = identity
+            elif request.patient_id is None and identity.target_patient_id is not None:
+                update["patient_id"] = identity.target_patient_id
+        else:
+            patient_id = identity.actor_patient_id
+            if patient_id is None:
+                return request, "identity_context.missing_actor_patient_id"
+            if request.patient_id is not None and int(request.patient_id) != int(patient_id):
+                return request, "authorization.patient_scope_violation"
+            if request.patient_id is None:
+                update["patient_id"] = patient_id
+            update["doctor_id"] = None
+            update["therapist_id"] = None
+        return request.model_copy(update=update), None
+
+    def _identity_from_request_fields(self, request: OrchestratorRequest) -> SessionIdentityContext | None:
+        doctor_id = request.doctor_id or request.therapist_id
+        patient_id = request.patient_id
+        if doctor_id is None and patient_id is None:
+            return None
+        if doctor_id is not None:
+            return SessionIdentityContext(
+                actor_role="doctor",
+                actor_doctor_id=int(doctor_id),
+                target_doctor_id=int(doctor_id),
+                target_patient_id=int(patient_id) if patient_id is not None else None,
+            )
+        return SessionIdentityContext(
+            actor_role="patient",
+            actor_patient_id=int(patient_id),  # type: ignore[arg-type]
+            target_patient_id=int(patient_id),  # type: ignore[arg-type]
+        )
+
+    def _build_identity_trace(self, identity: SessionIdentityContext | None) -> StepExecutionResult:
+        return StepExecutionResult(
+            step_id="session_identity",
+            tool_name="identity_context",
+            success=identity is not None,
+            args={},
+            output_summary=f"actor_role={identity.actor_role}" if identity else "missing identity context",
+            raw_output=identity.model_dump(mode="json") if identity else None,
+            error=None if identity else "missing_identity_context",
+        )
+
+    def _build_identity_error_response(
+        self,
+        request: OrchestratorRequest,
+        llm_config: ResolvedLLMConfig,
+        issue: str,
+    ) -> OrchestratorResponse:
+        trace = StepExecutionResult(
+            step_id="session_identity",
+            tool_name="identity_context",
+            success=False,
+            args={},
+            output_summary="request rejected before routing",
+            raw_output=None,
+            error=issue,
+        )
+        return OrchestratorResponse(
+            success=False,
+            task_type=normalize_task_type(request.task_type).value,
+            execution_mode="not_started",
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output={"error": issue},
+            final_text=(
+                "缺少身份上下文：请求必须包含 doctor_id 或 patient_id。"
+                if issue == "missing_identity_context"
+                else "当前请求的身份字段与会话身份上下文不一致。"
+            ),
+            validation_issues=[issue],
+            execution_trace=[trace],
+        )
+
+    def _authorize_request(self, request: OrchestratorRequest, routed: RoutedDecision) -> str | None:
+        identity = request.identity_context
+        if identity is None:
+            return "missing_identity_context"
+        normalized_task = normalize_task_type(request.task_type)
+        extracted = self._extract_slots(request.raw_text or "")
+        target_patient_id = request.patient_id or extracted.get("patient_id")
+        target_plan_id = request.plan_id or extracted.get("plan_id")
+        if identity.actor_role == "patient":
+            actor_patient_id = identity.actor_patient_id
+            if actor_patient_id is None:
+                return "authorization.missing_actor_patient_id"
+            if target_patient_id is not None and int(target_patient_id) != int(actor_patient_id):
+                return "authorization.patient_scope_violation"
+            if normalized_task in {OrchestrationTaskType.SCREEN_RISK, OrchestrationTaskType.WEEKLY_REPORT}:
+                return "authorization.patient_cannot_run_group_workflow"
+            if routed.final_intent in {"risk_screening", "weekly_report"}:
+                return "authorization.patient_cannot_run_group_workflow"
+            if routed.final_scope == "doctor_aggregate":
+                return "authorization.patient_cannot_run_doctor_aggregate"
+            if target_plan_id is not None and not self.repository.get_plan_records(plan_id=target_plan_id, patient_id=actor_patient_id, limit=1):
+                return "authorization.patient_cannot_access_plan"
+            return None
+
+        actor_doctor_id = identity.actor_doctor_id
+        if actor_doctor_id is None:
+            return "authorization.missing_actor_doctor_id"
+        if request.doctor_id is not None and int(request.doctor_id) != int(actor_doctor_id):
+            return "authorization.doctor_scope_violation"
+        if request.therapist_id is not None and int(request.therapist_id) != int(actor_doctor_id):
+            return "authorization.doctor_scope_violation"
+        if target_plan_id is not None and not self.repository.get_plan_records(plan_id=target_plan_id, therapist_id=actor_doctor_id, limit=1):
+            return "authorization.doctor_cannot_access_plan"
+        if target_patient_id is not None and not self._doctor_can_access_patient(actor_doctor_id, target_patient_id):
+            return "authorization.doctor_cannot_access_patient"
+        return None
+
+    def _doctor_can_access_patient(self, doctor_id: int, patient_id: int) -> bool:
+        plan_rows = self.repository.get_plan_records(patient_id=patient_id, therapist_id=doctor_id, limit=1)
+        if plan_rows:
+            return True
+        execution_rows = self.repository.get_execution_logs(patient_id=patient_id, therapist_id=doctor_id, limit=1)
+        return bool(execution_rows)
+
+    def _build_authorization_error_response(
+        self,
+        *,
+        request: OrchestratorRequest,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        issue: str,
+        traces: list[StepExecutionResult],
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
+        auth_trace = StepExecutionResult(
+            step_id="authorization_scope",
+            tool_name="authorization_guard",
+            success=False,
+            args={},
+            output_summary="request rejected by session identity scope",
+            raw_output=request.identity_context.model_dump(mode="json") if request.identity_context else None,
+            error=issue,
+        )
+        return OrchestratorResponse(
+            success=False,
+            task_type=normalize_task_type(request.task_type).value,
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output={"error": issue},
+            final_text="当前身份上下文无权执行该请求或访问目标对象。",
+            validation_issues=list(mode_issues) + [issue],
+            execution_trace=traces + [auth_trace],
+        )
 
     def _run_fixed_workflow(
         self,
@@ -164,6 +346,7 @@ class RehabAgentOrchestrator:
         routed: RoutedDecision,
         route_trace: StepExecutionResult,
         strategy_trace: StepExecutionResult,
+        identity_trace: StepExecutionResult,
         mode: ExecutionMode,
         llm_config: ResolvedLLMConfig,
         execution_mode: str,
@@ -181,6 +364,7 @@ class RehabAgentOrchestrator:
             mode=mode,
             validation_issues=list(mode_issues),
         )
+        state.step_results.append(identity_trace)
         state.step_results.append(route_trace)
         state.step_results.append(strategy_trace)
 
@@ -314,22 +498,22 @@ class RehabAgentOrchestrator:
         context = dict(request.context or {})
         normalized_task = normalize_task_type(request.task_type)
         extracted = self._extract_slots(raw_query)
+        identity = request.identity_context
 
         if normalized_task == OrchestrationTaskType.UNKNOWN:
             normalized_task = self._infer_task_type(raw_query, context)
 
-        patient_id = self._coalesce(request.patient_id, extracted.get("patient_id"), context.get("patient_id"))
+        # Server-side priority: identity_context -> explicit request fields -> text targets -> loose conversation context.
+        # Demo defaults are intentionally excluded from the production orchestration path.
+        identity_patient_id = identity.effective_patient_id if identity else None
+        identity_doctor_id = identity.actor_doctor_id if identity and identity.actor_role == "doctor" else None
+        patient_id = self._coalesce(identity_patient_id, request.patient_id, extracted.get("patient_id"), context.get("patient_id"))
         plan_id = self._coalesce(request.plan_id, extracted.get("plan_id"), context.get("plan_id"))
-        therapist_id = self._coalesce(
-            request.therapist_id,
-            extracted.get("therapist_id"),
-            context.get("therapist_id"),
-        )
+        therapist_id = self._coalesce(identity_doctor_id, request.therapist_id, request.doctor_id, extracted.get("therapist_id"), context.get("therapist_id"))
         days = self._coalesce(request.days, extracted.get("days"), context.get("days"))
         top_k = self._coalesce(request.top_k, extracted.get("top_k"), context.get("top_k"), 10)
 
         if normalized_task in {OrchestrationTaskType.SCREEN_RISK, OrchestrationTaskType.WEEKLY_REPORT}:
-            therapist_id = therapist_id or self.settings.demo_default_therapist_id
             days = days or self.settings.default_weekly_report_days
         elif normalized_task == OrchestrationTaskType.REVIEW_PATIENT:
             days = days or self.settings.default_time_window_days

@@ -1405,13 +1405,20 @@ class AnalyticsManager:
         )
 
     def _resolve_doctor_context(self, request: OrchestratorRequest, *, analysis_scope: AnalyticsScope) -> tuple[int | None, bool]:
+        identity = request.identity_context
+        if identity is not None:
+            if analysis_scope == "doctor_aggregate":
+                return None, False
+            if identity.actor_role == "doctor":
+                return identity.actor_doctor_id, True
+            return None, False
         explicit_question_doctor = self._extract_doctor_id((request.raw_text or "").strip())
         context_doctor = self._coerce_int((request.context or {}).get("therapist_id"))
-        request_doctor = request.therapist_id
+        request_doctor = request.therapist_id or request.doctor_id
         explicit_doctor = explicit_question_doctor is not None or (request_doctor is not None and context_doctor != request_doctor)
         if analysis_scope == "doctor_aggregate":
             return None, explicit_doctor
-        doctor_id = explicit_question_doctor or request_doctor or context_doctor or self.settings.demo_default_therapist_id
+        doctor_id = explicit_question_doctor or request_doctor or context_doctor
         return doctor_id, explicit_doctor
 
     def _extract_time_slots(self, question: str, request: OrchestratorRequest) -> AnalyticsTimeSlots:

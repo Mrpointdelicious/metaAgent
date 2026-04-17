@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from config import Settings
+from models import SessionIdentityContext
 
 from .db_client import DatabaseConnectionError, MySQLReadOnlyClient
 from .mock_data import (
@@ -21,6 +22,44 @@ class RehabRepository:
         self.settings = settings
         self.client = MySQLReadOnlyClient(settings)
         self.last_backend = "mysql"
+        self.identity_context: SessionIdentityContext | None = None
+
+    def set_identity_context(self, identity_context: SessionIdentityContext | None) -> None:
+        self.identity_context = identity_context
+
+    def _authorized_plan_scope(
+        self,
+        *,
+        patient_id: int | None = None,
+        therapist_id: int | None = None,
+    ) -> tuple[int | None, int | None, bool]:
+        identity = self.identity_context
+        if identity is None:
+            return patient_id, therapist_id, True
+        if identity.actor_role == "doctor":
+            actor_doctor_id = identity.actor_doctor_id
+            if actor_doctor_id is None:
+                return patient_id, therapist_id, False
+            if therapist_id is not None and int(therapist_id) != int(actor_doctor_id):
+                return patient_id, therapist_id, False
+            return patient_id, int(actor_doctor_id), True
+        actor_patient_id = identity.actor_patient_id
+        if actor_patient_id is None:
+            return patient_id, therapist_id, False
+        if patient_id is not None and int(patient_id) != int(actor_patient_id):
+            return patient_id, therapist_id, False
+        return int(actor_patient_id), therapist_id, True
+
+    def _authorized_patient_scope(self, *, patient_id: int | None = None) -> tuple[int | None, bool]:
+        identity = self.identity_context
+        if identity is None or identity.actor_role == "doctor":
+            return patient_id, True
+        actor_patient_id = identity.actor_patient_id
+        if actor_patient_id is None:
+            return patient_id, False
+        if patient_id is not None and int(patient_id) != int(actor_patient_id):
+            return patient_id, False
+        return int(actor_patient_id), True
 
     def _run_query(
         self,
@@ -41,6 +80,10 @@ class RehabRepository:
             return mock_loader(**mock_kwargs)
 
     def get_plan_anchor(self, *, patient_id: int | None = None, therapist_id: int | None = None) -> datetime | None:
+        patient_id, therapist_id, allowed = self._authorized_plan_scope(patient_id=patient_id, therapist_id=therapist_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return None
         sql = """
         SELECT MAX(COALESCE(BookingTime, CreateTime)) AS latest_anchor
         FROM dbrehaplan
@@ -107,6 +150,10 @@ class RehabRepository:
         return name_map
 
     def get_walk_anchor(self, *, patient_id: int | None = None) -> datetime | None:
+        patient_id, allowed = self._authorized_patient_scope(patient_id=patient_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return None
         sql = "SELECT MAX(createTime) AS latest_anchor FROM dbwalk WHERE 1 = 1"
         params: list[Any] = []
         if patient_id is not None:
@@ -133,6 +180,10 @@ class RehabRepository:
         end: datetime | None = None,
         limit: int = 500,
     ) -> list[dict[str, Any]]:
+        patient_id, therapist_id, allowed = self._authorized_plan_scope(patient_id=patient_id, therapist_id=therapist_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return []
         sql = """
         SELECT
             p.*,
@@ -185,6 +236,10 @@ class RehabRepository:
         end: datetime | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
+        patient_id, therapist_id, allowed = self._authorized_plan_scope(patient_id=patient_id, therapist_id=therapist_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return []
         sql = """
         SELECT
             dl.*,
@@ -239,6 +294,10 @@ class RehabRepository:
         end: datetime | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
+        patient_id, therapist_id, allowed = self._authorized_plan_scope(patient_id=patient_id, therapist_id=therapist_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return []
         sql = """
         SELECT
             r.*,
@@ -290,6 +349,10 @@ class RehabRepository:
         end: datetime | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        patient_id, allowed = self._authorized_patient_scope(patient_id=patient_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return []
         sql = """
         SELECT
             id,
@@ -331,6 +394,10 @@ class RehabRepository:
         patient_id: int | None = None,
         walk_plan_ids: Iterable[int] | None = None,
     ) -> list[dict[str, Any]]:
+        patient_id, allowed = self._authorized_patient_scope(patient_id=patient_id)
+        if not allowed:
+            self.last_backend = "authorization"
+            return []
         sql = """
         SELECT
             w.id AS walk_plan_id,
