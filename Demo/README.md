@@ -77,7 +77,7 @@ python Demo/main.py
 
 `Demo/main.py` 是 legacy/local debug shell，仅用于历史兼容和手工实验。它不是生产入口，也不应被当作正式问题路由器。
 
-`Demo/dialogue.py` 仍可为旧 debug shell 提供本地便利解析，但它不是正式 router、不是身份真相源、不是权限边界。
+`Demo/dialogue.py` 仅作为历史兼容代码保留；正式入口和当前 legacy debug shell 都不依赖它做路由、身份判定或权限控制。
 
 ## 正式服务入口
 

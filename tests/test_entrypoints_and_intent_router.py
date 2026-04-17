@@ -44,14 +44,23 @@ class EntrypointAndIntentRouterTests(unittest.TestCase):
         self.assertEqual(request.identity_context.actor_doctor_id, 30001)
         self.assertEqual(request.raw_text, "查询医生30001的名字")
 
+    def test_request_factory_accepts_query_alias(self) -> None:
+        request = build_orchestrator_request_from_payload({"doctor_id": 30001, "query": "看一下最近7天高风险患者"})
+
+        self.assertEqual(request.identity_context.actor_role, "doctor")
+        self.assertEqual(request.raw_text, "看一下最近7天高风险患者")
+
     def test_doctor_and_patient_demos_do_not_import_dialogue_router(self) -> None:
         doctor_source = Path("Demo/doctor_demo.py").read_text(encoding="utf-8")
         patient_source = Path("Demo/patient_demo.py").read_text(encoding="utf-8")
+        legacy_main_source = Path("Demo/main.py").read_text(encoding="utf-8")
 
         self.assertNotIn("parse_natural_language_request", doctor_source)
         self.assertNotIn("parse_natural_language_request", patient_source)
+        self.assertNotIn("parse_natural_language_request", legacy_main_source)
         self.assertIn("build_orchestrator_request", doctor_source)
         self.assertIn("build_orchestrator_request", patient_source)
+        self.assertIn("build_orchestrator_request", legacy_main_source)
 
     def test_doctor_name_lookup_does_not_route_to_risk_screening(self) -> None:
         identity = build_session_identity_context(doctor_id=30001)

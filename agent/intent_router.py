@@ -16,8 +16,8 @@ from .schemas import (
 
 logger = logging.getLogger(__name__)
 
-WEEKLY_KEYWORDS = ("周报", "weekly", "风险摘要", "summary")
-SCREEN_KEYWORDS = ("筛选", "高风险", "优先复核", "risk", "screen")
+WEEKLY_KEYWORDS = ("周报", "weekly", "风险摘要", "summary", "摘要")
+SCREEN_KEYWORDS = ("筛选", "高风险", "风险筛选", "优先复核", "risk", "screen")
 REVIEW_KEYWORDS = ("复核", "review card", "review", "计划", "患者", "病人", "patient", "plan")
 OPEN_ANALYTICS_KEYWORDS = (
     "哪些",
@@ -42,43 +42,17 @@ ABSENT_MISSING_KEYWORDS = ("最近没来", "没有来", "没来", "未到训", "
 PLAN_ACTIVITY_KEYWORDS = ("训练计划", "定患者训练计划", "定计划", "活跃计划", "计划")
 DOCTOR_AGGREGATE_KEYWORDS = ("哪些医生", "哪些治疗师", "各医生", "各治疗师", "医生列表", "治疗师列表")
 BASELINE_KEYWORDS = ("baseline", "基线", "前一阶段", "前一段时间", "前80-30天", "前80天到前30天")
-
-
-# Real UTF-8 aliases are added here because older demo-era constants in this
-# file may contain mojibake copies kept for backward compatibility with tests.
-WEEKLY_KEYWORDS = WEEKLY_KEYWORDS + ("周报", "风险摘要", "摘要")
-SCREEN_KEYWORDS = SCREEN_KEYWORDS + ("筛选", "高风险", "风险筛选", "优先复核")
-REVIEW_KEYWORDS = REVIEW_KEYWORDS + ("复核", "计划", "患者", "病人")
-OPEN_ANALYTICS_KEYWORDS = OPEN_ANALYTICS_KEYWORDS + (
-    "哪些",
-    "多少",
-    "以前来过",
-    "之前来过",
-    "曾经来过",
-    "没有来",
-    "没来",
-    "未到训",
-    "未到",
-    "比较",
-    "统计",
-    "名单",
-    "差集",
-    "训练计划",
-    "定计划",
-    "活跃计划",
-)
-ABSENT_PRIOR_VISIT_KEYWORDS = ABSENT_PRIOR_VISIT_KEYWORDS + ("以前来过", "之前来过", "曾经来过", "来过")
-ABSENT_MISSING_KEYWORDS = ABSENT_MISSING_KEYWORDS + ("最近没来", "没有来", "没来", "未到训", "没到", "未到")
-PLAN_ACTIVITY_KEYWORDS = PLAN_ACTIVITY_KEYWORDS + ("训练计划", "定患者训练计划", "定计划", "活跃计划", "计划")
-DOCTOR_AGGREGATE_KEYWORDS = DOCTOR_AGGREGATE_KEYWORDS + ("哪些医生", "哪些治疗师", "各医生", "各治疗师", "医生列表", "治疗师列表")
-BASELINE_KEYWORDS = BASELINE_KEYWORDS + ("基线", "前一阶段", "前一段时间", "前80-30天", "前80天到前30天")
 LOOKUP_SIGNAL_KEYWORDS = ("名字", "姓名", "叫什么", "是谁", "who is", "name")
+DOCTOR_LABELS = ("医生", "治疗师", "康复师", "doctor", "therapist")
+PATIENT_LABELS = ("患者", "病人", "patient")
+PLAN_LABELS = ("计划", "plan")
 
 
 class IntentRouter:
     def route(self, request: OrchestratorRequest) -> IntentDecision:
         normalized = normalize_task_type(request.task_type)
         identity = request.identity_context
+
         if identity and identity.actor_role == "patient" and normalized in {
             OrchestrationTaskType.SCREEN_RISK,
             OrchestrationTaskType.WEEKLY_REPORT,
@@ -91,6 +65,7 @@ class IntentRouter:
                 analysis_scope=None,
                 doctor_id_source="none",
             )
+
         if normalized == OrchestrationTaskType.REVIEW_PATIENT:
             return IntentDecision(intent="single_patient_review", confidence=0.99, rationale="Task type explicitly requests patient review.")
         if normalized == OrchestrationTaskType.SCREEN_RISK:
@@ -98,7 +73,7 @@ class IntentRouter:
         if normalized == OrchestrationTaskType.WEEKLY_REPORT:
             return IntentDecision(intent="weekly_report", confidence=0.99, rationale="Task type explicitly requests weekly report.")
         if normalized == OrchestrationTaskType.LOOKUP_QUERY:
-            lookup = self._detect_lookup_query(request, request.raw_text or "")
+            lookup = self._detect_lookup_query(request.raw_text or "")
             return lookup or IntentDecision(
                 intent="lookup_query",
                 confidence=0.55,
@@ -123,7 +98,7 @@ class IntentRouter:
                 fallback_rationale="No fixed task matched, falling back to open analytics.",
             )
 
-        lookup_decision = self._detect_lookup_query(request, raw_text)
+        lookup_decision = self._detect_lookup_query(raw_text)
         if lookup_decision is not None:
             return lookup_decision
 
@@ -131,12 +106,14 @@ class IntentRouter:
             return IntentDecision(intent="weekly_report", confidence=0.9, rationale="Matched weekly report keywords.")
         if any(keyword in raw_text or keyword in lowered for keyword in SCREEN_KEYWORDS):
             return IntentDecision(intent="risk_screening", confidence=0.88, rationale="Matched risk screening keywords.")
+
         if self._is_identifier_only_query(raw_text):
             return self._build_open_analytics_decision(
                 request,
                 base_confidence=0.35,
                 fallback_rationale="Identifier-only request is ambiguous; leaving route open for LLM refinement or clarification.",
             )
+
         if self._has_patient_or_plan_identifier(raw_text) or any(
             keyword in raw_text or keyword in lowered for keyword in REVIEW_KEYWORDS
         ):
@@ -164,17 +141,15 @@ class IntentRouter:
             fallback_rationale="No fixed workflow matched, falling back to open analytics.",
         )
 
-    def _detect_lookup_query(self, request: OrchestratorRequest, text: str) -> IntentDecision | None:
-        del request
+    def _detect_lookup_query(self, text: str) -> IntentDecision | None:
         if not text:
             return None
         lowered = text.lower()
-        has_lookup_signal = any(keyword in text or keyword in lowered for keyword in LOOKUP_SIGNAL_KEYWORDS)
-        if not has_lookup_signal:
+        if not any(keyword in text or keyword in lowered for keyword in LOOKUP_SIGNAL_KEYWORDS):
             return None
 
-        doctor_id = self._extract_entity_id(text, ("医生", "治疗师", "康复师", "doctor", "therapist"))
-        patient_id = self._extract_entity_id(text, ("患者", "病人", "patient"))
+        doctor_id = self._extract_entity_id(text, DOCTOR_LABELS)
+        patient_id = self._extract_entity_id(text, PATIENT_LABELS)
         if doctor_id is not None:
             return IntentDecision(
                 intent="lookup_query",
@@ -204,33 +179,6 @@ class IntentRouter:
                 lookup_entity_type="unknown",
                 lookup_user_id=bare_id,
             )
-        return None
-
-    def _is_identifier_only_query(self, text: str) -> bool:
-        compact = re.sub(r"[\s,，。?？:：-]+", "", text).lower()
-        if not compact:
-            return False
-        if re.fullmatch(r"(?:医生|治疗师|康复师|doctor|therapist)(?:id)?\d+", compact, flags=re.IGNORECASE):
-            return True
-        if re.fullmatch(r"(?:患者|病人|patient)(?:id)?\d+", compact, flags=re.IGNORECASE):
-            return True
-        return bool(re.fullmatch(r"\d+", compact))
-
-    def _extract_entity_id(self, text: str, labels: tuple[str, ...]) -> int | None:
-        for label in labels:
-            match = re.search(rf"{re.escape(label)}\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
-
-    def _extract_bare_lookup_id(self, text: str) -> int | None:
-        for pattern in (
-            r"(?:查询|查一下|看一下|看看)?\s*(\d+)\s*(?:是谁|叫什么|的名字|的姓名)",
-            r"(?:who\s+is|name\s+of)\s*(\d+)",
-        ):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
         return None
 
     def _build_open_analytics_decision(
@@ -277,14 +225,11 @@ class IntentRouter:
         return None, None
 
     def _has_patient_or_plan_identifier(self, text: str) -> bool:
-        return bool(
-            re.search(r"(患者|病人|patient)\s*(?:id)?\s*[:：]?\s*\d+", text, flags=re.IGNORECASE)
-            or re.search(r"(计划|plan)\s*(?:id)?\s*[:：]?\s*\d+", text, flags=re.IGNORECASE)
-        )
+        return bool(self._extract_entity_id(text, PATIENT_LABELS) is not None or self._extract_entity_id(text, PLAN_LABELS) is not None)
 
     def _has_doctor_scope(self, text: str) -> bool:
         lowered = text.lower()
-        return any(keyword in text or keyword in lowered for keyword in ("医生", "治疗师", "康复师", "doctor", "therapist"))
+        return any(keyword in text or keyword in lowered for keyword in DOCTOR_LABELS)
 
     def _has_doctor_aggregate_subject(self, text: str) -> bool:
         lowered = text.lower()
@@ -294,7 +239,7 @@ class IntentRouter:
 
     def _has_time_window(self, text: str) -> bool:
         lowered = text.lower()
-        if any(keyword in text or keyword in lowered for keyword in ("本周", "本月", "最近", "近", "这", "last week", "last month")):
+        if any(keyword in text or keyword in lowered for keyword in ("本周", "本月", "最近", "近", "过去", "last week", "last month")):
             return True
         return bool(re.search(r"(\d+)\s*天", text) or re.search(r"last\s*(\d+)\s*days?", lowered))
 
@@ -340,35 +285,32 @@ class IntentRouter:
             return "session"
         return None
 
-    def _extract_doctor_id(self, text: str) -> int | None:
-        match = re.search(
-            r"(?:医生|治疗师|康复师|doctor|therapist)\s*(?:id)?\s*[:：]?\s*(\d+)",
-            text,
-            flags=re.IGNORECASE,
-        )
-        return int(match.group(1)) if match else None
-
-    def _has_patient_or_plan_identifier(self, text: str) -> bool:
-        return bool(
-            re.search(r"(?:患者|病人|patient)\s*(?:id)?\s*[:：]?\s*\d+", text, flags=re.IGNORECASE)
-            or re.search(r"(?:计划|plan)\s*(?:id)?\s*[:：]?\s*\d+", text, flags=re.IGNORECASE)
-        )
-
-    def _has_doctor_scope(self, text: str) -> bool:
-        lowered = text.lower()
-        return any(
-            keyword in text or keyword in lowered
-            for keyword in ("医生", "治疗师", "康复师", "doctor", "therapist", "鍖荤敓", "娌荤枟甯?", "搴峰甯?")
-        )
-
-    def _has_time_window(self, text: str) -> bool:
-        lowered = text.lower()
-        if any(
-            keyword in text or keyword in lowered
-            for keyword in ("本周", "本月", "最近", "近", "过去", "last week", "last month", "鏈懆", "鏈湀", "鏈€杩?", "杩?")
-        ):
+    def _is_identifier_only_query(self, text: str) -> bool:
+        compact = re.sub(r"[\s,，。?？:：-]+", "", text).lower()
+        if not compact:
+            return False
+        if re.fullmatch(r"(?:医生|治疗师|康复师|doctor|therapist)(?:id)?\d+", compact, flags=re.IGNORECASE):
             return True
-        return bool(re.search(r"(\d+)\s*天", text) or re.search(r"last\s*(\d+)\s*days?", lowered))
+        if re.fullmatch(r"(?:患者|病人|patient)(?:id)?\d+", compact, flags=re.IGNORECASE):
+            return True
+        return bool(re.fullmatch(r"\d+", compact))
+
+    def _extract_entity_id(self, text: str, labels: tuple[str, ...]) -> int | None:
+        for label in labels:
+            match = re.search(rf"{re.escape(label)}\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
 
     def _extract_doctor_id(self, text: str) -> int | None:
-        return self._extract_entity_id(text, ("医生", "治疗师", "康复师", "doctor", "therapist", "鍖荤敓", "娌荤枟甯?", "搴峰甯?"))
+        return self._extract_entity_id(text, DOCTOR_LABELS)
+
+    def _extract_bare_lookup_id(self, text: str) -> int | None:
+        for pattern in (
+            r"(?:查询|查一下|看一下|看看)?\s*(\d+)\s*(?:是谁|叫什么|的名字|的姓名)",
+            r"(?:who\s+is|name\s+of)\s*(\d+)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
