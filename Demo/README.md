@@ -15,13 +15,31 @@ server.request_factory
 ## 医生演示入口
 
 ```bash
-python Demo/doctor_demo.py --doctor-id 30001
+python Demo/doctor_demo.py --doctor-id 56
 ```
 
 或单次问题：
 
 ```bash
-python Demo/doctor_demo.py --doctor-id 30001 --question "看一下最近7天高风险患者"
+python Demo/doctor_demo.py --doctor-id 56 --question "看一下最近7天高风险患者"
+```
+
+### 真实数据库推荐医生 ID
+
+以下 ID 来自当前 MySQL 真实库统计，按 `dbrehaplan` 计划数、`dbdevicelog` 设备日志数、`dbreport` 报告数、患者覆盖数综合排序。`DoctorId=0` 和明显测试账号未作为 Demo 示例。
+
+| doctor_id | dbuser.Name | 计划数 | 患者数 | 设备日志数 | 报告数 | 最近计划时间 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| `56` | `wanghaiyun` | 856 | 120 | 1262 | 577 | 2025-02-28 |
+| `83` | `王小明` | 515 | 82 | 703 | 369 | 2025-02-27 |
+| `285` | `陈小朵` | 42 | 7 | 55 | 18 | 2024-10-16 |
+
+演示时可优先使用：
+
+```bash
+python Demo/doctor_demo.py --doctor-id 56 --question "看一下最近7天高风险患者"
+python Demo/doctor_demo.py --doctor-id 83 --question "给我最近30天的周报"
+python Demo/doctor_demo.py --doctor-id 285 --question "查询医生285的名字"
 ```
 
 特点：
