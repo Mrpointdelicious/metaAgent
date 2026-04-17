@@ -93,6 +93,14 @@ MOCK_WALK_DETAIL_ROWS: list[dict[str, Any]] = [
     {"walk_plan_id": 6001, "itemId": 0, "userId": 20001, "startTime": "2025/09/10 15:00:00", "duration": 180, "walk_details": '{"g_strightSpeed": 1.1, "g_trainingHours": 2, "g_strightVolume": 10}', "report_details": '{"distance": 22.0, "avg_Speed": 1.05, "completionRate": 0.92, "correctRate": 0.88, "errorRate": 0.08}'},
 ]
 
+MOCK_USER_ROWS: list[dict[str, Any]] = [
+    {"Id": 56, "Name": "Demo Doctor 56"},
+    {"Id": 146, "Name": "Demo Patient 146"},
+    {"Id": 20001, "Name": "Mock Patient Alpha"},
+    {"Id": 20002, "Name": "Mock Patient Beta"},
+    {"Id": 30001, "Name": "Mock Doctor One"},
+]
+
 
 def _within_range(value: datetime | None, start: datetime | None, end: datetime | None) -> bool:
     if value is None:
@@ -173,3 +181,10 @@ def get_mock_walk_detail_rows(*, patient_id: int | None = None, walk_plan_ids: I
             continue
         rows.append(deepcopy(row))
     return rows
+
+
+def get_mock_user_rows(*, user_ids: Iterable[int] | None = None) -> list[dict[str, Any]]:
+    id_set = {int(item) for item in (user_ids or []) if item is not None}
+    if not id_set:
+        return []
+    return [deepcopy(row) for row in MOCK_USER_ROWS if int(row["Id"]) in id_set]

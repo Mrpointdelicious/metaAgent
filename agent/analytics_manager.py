@@ -6,7 +6,7 @@ from datetime import datetime, time, timedelta
 from typing import Any
 
 from config import ResolvedLLMConfig, Settings, get_settings
-from models import DoctorAnalyticsResultRow, PatientSet, RankedPatients, TimeRange
+from models import AnalyticsResultRow, DoctorAnalyticsResultRow, PatientSet, RankedPatients, TimeRange
 from services import AnalyticsService
 from services.shared import build_time_range, parse_datetime_flexible, resolve_time_anchor
 from tools import ToolSpec
@@ -378,6 +378,7 @@ class AnalyticsManager:
         structured_output.setdefault("analysis_scope", result.scope or routed_decision.final_scope)
         structured_output.setdefault("summary", result.final_text)
         structured_output["planned_query_source"] = source.model_dump(mode="json")
+        self._enrich_structured_output_names(structured_output)
         if "query_plan" not in structured_output:
             structured_output["query_plan"] = QueryPlan(
                 normalized_question=result.normalized_question,
@@ -421,7 +422,8 @@ class AnalyticsManager:
             for index, call in enumerate(result.tool_calls, start=1)
         )
         validation_issues: list[str] = []
-        if not result.final_text.strip():
+        final_text = self._agent_final_text_with_result_rows(result.final_text, structured_output)
+        if not final_text.strip():
             validation_issues.append("agents_sdk_runtime.empty_final_text")
         return OrchestratorResponse(
             success=not validation_issues,
@@ -430,7 +432,7 @@ class AnalyticsManager:
             llm_provider=llm_config.provider,
             llm_model=llm_config.model,
             structured_output=structured_output,
-            final_text=result.final_text,
+            final_text=final_text,
             validation_issues=validation_issues,
             execution_trace=trace,
         )
@@ -504,12 +506,15 @@ class AnalyticsManager:
             notes: list[str] = []
             if tool_name in {"list_patients_seen_by_doctor", "list_patients_with_active_plans"}:
                 notes.append("single_doctor scoped; include doctor_id")
+                notes.append("returns patient_name when dbuser.Name is available")
             if tool_name == "list_doctors_with_active_plans":
                 notes.append("doctor_aggregate scoped; do not pass doctor_id")
+                notes.append("returns doctor_name when dbuser.Name is available")
             if tool_name == "set_diff":
                 notes.append("may use base_set_ref and subtract_set_ref to refer to previous patient-set steps")
             if tool_name in {"get_patient_last_visit", "get_patient_plan_status", "rank_patients"}:
                 notes.append("may use patient_set_ref or patient_ids_ref to fan out from a previous patient-set step")
+                notes.append("returns patient_name and doctor_name where applicable")
             catalog.append(
                 {
                     "tool_name": metadata["tool_name"],
@@ -1625,16 +1630,100 @@ class AnalyticsManager:
 
     def _summarize_output(self, tool_name: str, payload: Any) -> str:
         if tool_name in {"list_patients_seen_by_doctor", "list_patients_with_active_plans", "set_diff"} and isinstance(payload, dict):
-            return f"patient set count={payload.get('count', 0)}"
+            examples = self._patient_examples_from_payload(payload)
+            suffix = f" examples={examples}" if examples else ""
+            return f"patient set count={payload.get('count', 0)}{suffix}"
         if tool_name == "list_doctors_with_active_plans":
-            return f"doctor rows={len(payload or [])}" if isinstance(payload, list) else "doctor rows=0"
+            if isinstance(payload, list):
+                examples = self._doctor_examples_from_rows(payload)
+                suffix = f" examples={examples}" if examples else ""
+                return f"doctor rows={len(payload or [])}{suffix}"
+            return "doctor rows=0"
         if tool_name == "get_patient_last_visit" and isinstance(payload, dict):
-            return f"last_visit={payload.get('last_visit_time') or 'NA'}"
+            label = self._patient_display_label(payload.get("patient_id"), payload.get("patient_name"))
+            return f"{label} last_visit={payload.get('last_visit_time') or 'NA'}"
         if tool_name == "get_patient_plan_status" and isinstance(payload, dict):
-            return f"active_plan={payload.get('has_active_plan')} planned={payload.get('planned_sessions')} attended={payload.get('attended_sessions')}"
+            label = self._patient_display_label(payload.get("patient_id"), payload.get("patient_name"))
+            return f"{label} active_plan={payload.get('has_active_plan')} planned={payload.get('planned_sessions')} attended={payload.get('attended_sessions')}"
         if tool_name == "rank_patients" and isinstance(payload, dict):
-            return f"ranked_rows={len(payload.get('rows') or [])}"
+            rows = payload.get("rows") or []
+            examples = self._patient_examples_from_rows(rows)
+            suffix = f" examples={examples}" if examples else ""
+            return f"ranked_rows={len(rows)}{suffix}"
         return "tool finished"
+
+    def _enrich_structured_output_names(self, structured_output: dict[str, Any]) -> None:
+        rows = structured_output.get("result_rows")
+        if not isinstance(rows, list) or not rows:
+            return
+        dict_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if hasattr(row, "model_dump"):
+                dict_rows.append(row.model_dump(mode="json"))
+            elif isinstance(row, dict):
+                dict_rows.append(dict(row))
+        if dict_rows:
+            structured_output["result_rows"] = self.analytics_service.enrich_user_names(dict_rows)
+
+    def _agent_final_text_with_result_rows(self, final_text: str, structured_output: dict[str, Any]) -> str:
+        rows = structured_output.get("result_rows")
+        if not isinstance(rows, list) or not rows:
+            return final_text
+        scope = structured_output.get("analysis_scope") or structured_output.get("scope")
+        lines = [final_text.strip()] if final_text.strip() else []
+        lines.append("Result rows:")
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            if scope == "doctor_aggregate":
+                doctor_label = self._doctor_display_label(row.get("doctor_id"), row.get("doctor_name"))
+                lines.append(f"{index}. {doctor_label} | active_plan_patient_count {row.get('active_plan_patient_count', 0)} | active_plan_count {row.get('active_plan_count', 0)}")
+            else:
+                patient_label = self._patient_display_label(row.get("patient_id"), row.get("patient_name"))
+                lines.append(f"{index}. {patient_label} | rank_score {row.get('rank_score', row.get('rank', 'NA'))} | {row.get('rank_reason') or row.get('note') or 'no ranking note'}")
+        return "\n".join(lines)
+
+    def _patient_display_label(self, patient_id: Any, patient_name: Any = None) -> str:
+        if patient_name:
+            return f"{patient_name}（患者{patient_id}）" if patient_id is not None else str(patient_name)
+        return f"患者{patient_id}" if patient_id is not None else "患者N/A"
+
+    def _doctor_display_label(self, doctor_id: Any, doctor_name: Any = None) -> str:
+        if doctor_name:
+            return f"{doctor_name}（医生{doctor_id}）" if doctor_id is not None else str(doctor_name)
+        return f"医生{doctor_id}" if doctor_id is not None else "医生N/A"
+
+    def _patient_examples_from_payload(self, payload: dict[str, Any]) -> str:
+        patients = payload.get("patients")
+        if isinstance(patients, list):
+            return self._patient_examples_from_rows(patients)
+        patient_names = payload.get("patient_names")
+        patient_ids = payload.get("patient_ids") or []
+        if isinstance(patient_names, dict):
+            rows = [
+                {"patient_id": patient_id, "patient_name": patient_names.get(patient_id) or patient_names.get(str(patient_id))}
+                for patient_id in patient_ids[:3]
+            ]
+            return self._patient_examples_from_rows(rows)
+        return ""
+
+    def _patient_examples_from_rows(self, rows: list[Any]) -> str:
+        labels: list[str] = []
+        for row in rows[:3]:
+            if isinstance(row, dict):
+                patient_id = row.get("patient_id")
+                if patient_id is not None:
+                    labels.append(self._patient_display_label(patient_id, row.get("patient_name")))
+        return ", ".join(labels)
+
+    def _doctor_examples_from_rows(self, rows: list[Any]) -> str:
+        labels: list[str] = []
+        for row in rows[:3]:
+            if isinstance(row, dict):
+                doctor_id = row.get("doctor_id")
+                if doctor_id is not None:
+                    labels.append(self._doctor_display_label(doctor_id, row.get("doctor_name")))
+        return ", ".join(labels)
 
     def _render_final_text(self, output: AnalyticsStructuredOutput, *, explicit_doctor: bool) -> str:
         lines = [
@@ -1667,11 +1756,15 @@ class AnalyticsManager:
                 lines.append("Doctor rows:")
                 for index, row in enumerate(output.result_rows, start=1):
                     doctor_row = DoctorAnalyticsResultRow.model_validate(row)
-                    lines.append(f"{index}. doctor {doctor_row.doctor_id} | active_plan_patient_count {doctor_row.active_plan_patient_count} | active_plan_count {doctor_row.active_plan_count} | {doctor_row.note or 'no note'}")
+                    doctor_label = self._doctor_display_label(doctor_row.doctor_id, doctor_row.doctor_name)
+                    lines.append(f"{index}. {doctor_label} | active_plan_patient_count {doctor_row.active_plan_patient_count} | active_plan_count {doctor_row.active_plan_count} | {doctor_row.note or 'no note'}")
             else:
                 lines.append("Patient rows:")
                 for index, row in enumerate(output.result_rows, start=1):
-                    lines.append(f"{index}. patient {row.patient_id} | last_visit {row.last_visit_time or 'NA'} | active_plan_in_window {self._localize_bool(row.has_active_plan_in_window)} | planned/attended {row.planned_sessions or 0}/{row.attended_sessions or 0} | {row.rank_reason or 'no ranking note'}")
+                    patient_row = AnalyticsResultRow.model_validate(row)
+                    patient_label = self._patient_display_label(patient_row.patient_id, patient_row.patient_name)
+                    doctor_text = f" | doctor {self._doctor_display_label(patient_row.doctor_id, patient_row.doctor_name)}" if patient_row.doctor_id is not None else ""
+                    lines.append(f"{index}. {patient_label}{doctor_text} | last_visit {patient_row.last_visit_time or 'NA'} | active_plan_in_window {self._localize_bool(patient_row.has_active_plan_in_window)} | planned/attended {patient_row.planned_sessions or 0}/{patient_row.attended_sessions or 0} | {patient_row.rank_reason or 'no ranking note'}")
         else:
             lines.append("Result rows: empty")
 

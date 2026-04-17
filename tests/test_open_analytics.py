@@ -23,10 +23,12 @@ from agent.schemas import (
     AgentAnalyticsResult,
     AgentToolCallRecord,
     ExecutionStrategy,
+    IntentDecision,
     LLMPlannedQuery,
     LLMPlannedStep,
     OrchestrationTaskType,
     OrchestratorRequest,
+    RoutedDecision,
 )
 
 CASE_1_QUESTION = "查看医生56这30天有哪些以前来过的患者没有来"
@@ -79,7 +81,7 @@ class SuccessfulFakeAgentRuntime:
             final_text="Agent runtime result.",
             structured_output={
                 "summary": "Agent runtime result.",
-                "result_rows": [{"patient_id": 138, "rank": 1}],
+                "result_rows": [{"patient_id": 20001, "rank": 1}],
                 "fallback_required": False,
             },
             tool_calls=[
@@ -144,6 +146,26 @@ def _template_strategy(confidence: float | None = None) -> ExecutionStrategy:
 
 def _agent_strategy(confidence: float | None = None) -> ExecutionStrategy:
     return ExecutionStrategy(kind="agent_planned", reason="unit test agent planned", confidence=confidence)
+
+
+def _patient_name_routed_decision() -> RoutedDecision:
+    rule = IntentDecision(
+        intent="open_analytics_query",
+        confidence=0.9,
+        rationale="unit test patient name display",
+        analytics_subtype="absent_old_patients_recent_window",
+        analysis_scope="single_doctor",
+        doctor_id_source="session",
+    )
+    return RoutedDecision(
+        rule_decision=rule,
+        final_intent="open_analytics_query",
+        final_subtype="absent_old_patients_recent_window",
+        final_scope="single_doctor",
+        doctor_id_source="session",
+        confidence=0.9,
+        rationale="unit test patient name display",
+    )
 
 
 class ValidFakePlanner:
@@ -269,6 +291,56 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertEqual(routed.final_scope, "single_doctor")
         self.assertEqual(routed.doctor_id_source, "explicit")
 
+    def test_patient_result_rows_display_enriched_names(self) -> None:
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            therapist_id=30001,
+            days=1,
+            raw_text="unit test patient name display",
+        )
+        response = self.manager.run(
+            request=request,
+            routed_decision=_patient_name_routed_decision(),
+            strategy=_template_strategy(0.9),
+            mode="direct",
+            llm_config=_llm_config(),
+            execution_mode="direct",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertTrue(payload["result_rows"])
+        self.assertEqual(payload["result_rows"][0]["patient_name"], "Mock Patient Alpha")
+        self.assertEqual(payload["result_rows"][0]["doctor_name"], "Mock Doctor One")
+        self.assertIn("Mock Patient Alpha（患者20001）", response.final_text)
+        self.assertIn("Mock Doctor One（医生30001）", response.final_text)
+
+    def test_missing_user_names_fall_back_to_id_labels(self) -> None:
+        manager = _build_manager()
+        manager.analytics_service.repository.get_user_name_map = lambda user_ids: {}  # type: ignore[method-assign]
+        request = OrchestratorRequest(
+            task_type=OrchestrationTaskType.OPEN_ANALYTICS_QUERY.value,
+            therapist_id=30001,
+            days=1,
+            raw_text="unit test missing user names",
+        )
+
+        response = manager.run(
+            request=request,
+            routed_decision=_patient_name_routed_decision(),
+            strategy=_template_strategy(0.9),
+            mode="direct",
+            llm_config=_llm_config(),
+            execution_mode="direct",
+        )
+        payload = response.structured_output
+
+        self.assertTrue(response.success)
+        self.assertTrue(payload["result_rows"])
+        self.assertIsNone(payload["result_rows"][0]["patient_name"])
+        self.assertIn("患者20001", response.final_text)
+        self.assertIn("医生30001", response.final_text)
+
     def test_doctor_aggregate(self) -> None:
         question = CASE_3_QUESTION
         request = OrchestratorRequest(
@@ -296,6 +368,8 @@ class OpenAnalyticsTests(unittest.TestCase):
         self.assertIsNone(payload["doctor_id"])
         self.assertTrue(payload["result_rows"])
         self.assertEqual(payload["result_rows"][0]["doctor_id"], 30001)
+        self.assertEqual(payload["result_rows"][0]["doctor_name"], "Mock Doctor One")
+        self.assertIn("Mock Doctor One（医生30001）", response.final_text)
 
         routed = merge_rule_and_llm(decision, None)
         self.assertEqual(routed.final_intent, "open_analytics_query")
@@ -352,7 +426,9 @@ class OpenAnalyticsTests(unittest.TestCase):
 
         self.assertTrue(response.success)
         self.assertEqual(payload["planned_query_source"]["source"], "agents_sdk_runtime")
+        self.assertEqual(payload["result_rows"][0]["patient_name"], "Mock Patient Alpha")
         self.assertEqual(payload["agent_runtime"]["tool_call_count"], 1)
+        self.assertIn("Mock Patient Alpha（患者20001）", response.final_text)
         self.assertIn("list_patients_seen_by_doctor", runtime.seen_tool_names)
         self.assertTrue(any(item.tool_name == "open_analytics_agent" and item.success for item in response.execution_trace))
         self.assertFalse(any(item.tool_name == "plan_validator" for item in response.execution_trace))

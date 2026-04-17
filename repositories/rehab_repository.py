@@ -10,6 +10,7 @@ from .mock_data import (
     get_mock_execution_rows,
     get_mock_plan_rows,
     get_mock_report_rows,
+    get_mock_user_rows,
     get_mock_walk_detail_rows,
     get_mock_walk_rows,
 )
@@ -62,6 +63,48 @@ class RehabRepository:
             anchors = [row["BookingTime"] or row["CreateTime"] for row in rows]
             return max(anchors) if anchors else None
         return rows[0]["latest_anchor"] if rows else None
+
+    def get_users_by_ids(self, user_ids: Iterable[int]) -> list[dict[str, Any]]:
+        unique_ids = sorted({int(item) for item in user_ids if item is not None})
+        if not unique_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(unique_ids))
+        sql = f"""
+        SELECT
+            Id AS user_id,
+            NULLIF(TRIM(Name), '') AS user_name
+        FROM dbuser
+        WHERE Id IN ({placeholders})
+        """
+        rows = self._run_query(
+            sql,
+            unique_ids,
+            get_mock_user_rows,
+            mock_kwargs={"user_ids": unique_ids},
+        )
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            user_id = row.get("user_id", row.get("Id"))
+            if user_id is None:
+                continue
+            name = row.get("user_name", row.get("Name"))
+            normalized.append(
+                {
+                    "user_id": int(user_id),
+                    "user_name": str(name).strip() if name is not None and str(name).strip() else None,
+                }
+            )
+        return normalized
+
+    def get_user_name_map(self, user_ids: Iterable[int]) -> dict[int, str]:
+        name_map: dict[int, str] = {}
+        for row in self.get_users_by_ids(user_ids):
+            user_id = row.get("user_id")
+            user_name = row.get("user_name")
+            if user_id is None or not user_name:
+                continue
+            name_map[int(user_id)] = str(user_name)
+        return name_map
 
     def get_walk_anchor(self, *, patient_id: int | None = None) -> datetime | None:
         sql = "SELECT MAX(createTime) AS latest_anchor FROM dbwalk WHERE 1 = 1"
@@ -341,7 +384,8 @@ class RehabRepository:
             if patient_id is None or patient_id in patient_ids:
                 continue
             patient_ids.append(patient_id)
-        return [{"patient_id": patient_id} for patient_id in sorted(patient_ids)]
+        name_map = self.get_user_name_map(patient_ids)
+        return [{"patient_id": patient_id, "patient_name": name_map.get(patient_id)} for patient_id in sorted(patient_ids)]
 
     def get_patients_with_active_plans(
         self,
@@ -374,6 +418,9 @@ class RehabRepository:
             current["plan_count"] += 1
             if anchor and (current["latest_plan_time"] is None or anchor > current["latest_plan_time"]):
                 current["latest_plan_time"] = anchor
+        name_map = self.get_user_name_map(grouped.keys())
+        for patient_id, item in grouped.items():
+            item["patient_name"] = name_map.get(patient_id)
         return [grouped[key] for key in sorted(grouped)]
 
     def get_doctors_with_active_plans(
@@ -416,6 +463,9 @@ class RehabRepository:
                     "active_plan_patient_count": len(item["patient_ids"]),
                 }
             )
+        name_map = self.get_user_name_map(grouped.keys())
+        for item in result_rows:
+            item["doctor_name"] = name_map.get(item["doctor_id"])
         return result_rows
 
     def get_patient_last_visit(
@@ -432,9 +482,13 @@ class RehabRepository:
         if not rows:
             return None
         latest = max(rows, key=lambda item: item.get("StartTime") or datetime.min)
+        latest_doctor_id = latest.get("DoctorId")
+        name_map = self.get_user_name_map([patient_id, latest_doctor_id])
         return {
             "patient_id": patient_id,
-            "doctor_id": latest.get("DoctorId"),
+            "patient_name": name_map.get(patient_id),
+            "doctor_id": latest_doctor_id,
+            "doctor_name": name_map.get(latest_doctor_id),
             "last_visit_time": latest.get("StartTime"),
             "last_plan_id": latest.get("PlanId"),
             "last_device_id": latest.get("DeviceId"),
@@ -475,9 +529,12 @@ class RehabRepository:
             anchor = row.get("BookingTime") or row.get("CreateTime")
             if anchor and (latest_plan_time is None or anchor > latest_plan_time):
                 latest_plan_time = anchor
+        name_map = self.get_user_name_map([patient_id, doctor_id] if doctor_id is not None else [patient_id])
         return {
             "patient_id": patient_id,
+            "patient_name": name_map.get(patient_id),
             "doctor_id": doctor_id,
+            "doctor_name": name_map.get(doctor_id) if doctor_id is not None else None,
             "has_active_plan": bool(plan_rows),
             "planned_sessions": len(plan_rows),
             "attended_sessions": len(attended_plan_ids),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time
+from typing import Any
 from uuid import uuid4
 
 from config import Settings
@@ -8,6 +9,7 @@ from models import (
     AnalyticsResultRow,
     DoctorAnalyticsResultRow,
     LastVisitInfo,
+    PatientIdentity,
     PatientSet,
     PlanStatus,
     RankedPatientRow,
@@ -26,6 +28,36 @@ class AnalyticsService:
         self._last_visit_cache: dict[int, LastVisitInfo] = {}
         self._plan_status_cache: dict[tuple[int, int | None, str | None, str | None], PlanStatus] = {}
 
+    def enrich_user_names(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        user_ids: set[int] = set()
+        for row in rows:
+            patient_id = row.get("patient_id", row.get("UserId"))
+            doctor_id = row.get("doctor_id", row.get("DoctorId"))
+            if patient_id is not None and not row.get("patient_name"):
+                user_ids.add(int(patient_id))
+            if doctor_id is not None and not row.get("doctor_name"):
+                user_ids.add(int(doctor_id))
+        name_map = self.repository.get_user_name_map(user_ids)
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            patient_id = item.get("patient_id", item.get("UserId"))
+            doctor_id = item.get("doctor_id", item.get("DoctorId"))
+            if patient_id is not None:
+                item.setdefault("patient_id", int(patient_id))
+                item["patient_name"] = item.get("patient_name") or name_map.get(int(patient_id))
+            if doctor_id is not None:
+                item.setdefault("doctor_id", int(doctor_id))
+                item["doctor_name"] = item.get("doctor_name") or name_map.get(int(doctor_id))
+            enriched.append(item)
+        return enriched
+
+    def enrich_patient_names(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self.enrich_user_names(rows)
+
+    def enrich_doctor_names(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return self.enrich_user_names(rows)
+
     def list_patients_seen_by_doctor(
         self,
         doctor_id: int,
@@ -41,7 +73,13 @@ class AnalyticsService:
             end=end_dt,
             source=source,
         )
+        rows = self.enrich_patient_names(rows)
         patient_ids = sorted({int(row["patient_id"]) for row in rows if row.get("patient_id") is not None})
+        patient_names = {
+            int(row["patient_id"]): str(row["patient_name"])
+            for row in rows
+            if row.get("patient_id") is not None and row.get("patient_name")
+        }
         description = self._describe_window(
             prefix=f"医生 {doctor_id} 在指定时间窗内实际到训过的患者集合",
             start_date=start_date,
@@ -50,6 +88,7 @@ class AnalyticsService:
         note = None if patient_ids else "当前条件下未找到到训患者。"
         return self._register_set(
             patient_ids=patient_ids,
+            patient_names=patient_names,
             description=description,
             note=note,
         )
@@ -67,7 +106,13 @@ class AnalyticsService:
             start=start_dt,
             end=end_dt,
         )
+        rows = self.enrich_patient_names(rows)
         patient_ids = sorted({int(row["patient_id"]) for row in rows if row.get("patient_id") is not None})
+        patient_names = {
+            int(row["patient_id"]): str(row["patient_name"])
+            for row in rows
+            if row.get("patient_id") is not None and row.get("patient_name")
+        }
         description = self._describe_window(
             prefix=f"医生 {doctor_id} 在指定时间窗内存在计划的患者集合",
             start_date=start_date,
@@ -76,6 +121,7 @@ class AnalyticsService:
         note = None if patient_ids else "当前条件下未找到活跃计划患者。"
         return self._register_set(
             patient_ids=patient_ids,
+            patient_names=patient_names,
             description=description,
             note=note,
         )
@@ -91,6 +137,7 @@ class AnalyticsService:
             start=start_dt,
             end=end_dt,
         )
+        rows = self.enrich_doctor_names(rows)
         result_rows: list[DoctorAnalyticsResultRow] = []
         for row in rows:
             doctor_id = row.get("doctor_id")
@@ -102,6 +149,7 @@ class AnalyticsService:
             result_rows.append(
                 DoctorAnalyticsResultRow(
                     doctor_id=int(doctor_id),
+                    doctor_name=row.get("doctor_name"),
                     active_plan_patient_count=active_plan_patient_count,
                     active_plan_count=active_plan_count,
                     note=note,
@@ -118,10 +166,12 @@ class AnalyticsService:
         if subtract is None:
             raise ValueError(f"unknown_set:{subtract_set_id}")
         patient_ids = sorted(set(base.patient_ids) - set(subtract.patient_ids))
+        patient_names = {patient_id: base.patient_names[patient_id] for patient_id in patient_ids if patient_id in base.patient_names}
         description = f"{base.description or base.set_id} 减去 {subtract.description or subtract.set_id}"
         note = None if patient_ids else "差集为空。"
         return self._register_set(
             patient_ids=patient_ids,
+            patient_names=patient_names,
             description=description,
             note=note,
         )
@@ -136,16 +186,22 @@ class AnalyticsService:
             doctor_id=doctor_id,
         )
         if row is None:
+            name_map = self.repository.get_user_name_map([patient_id, doctor_id] if doctor_id is not None else [patient_id])
             result = LastVisitInfo(
                 patient_id=patient_id,
+                patient_name=name_map.get(patient_id),
                 doctor_id=doctor_id,
+                doctor_name=name_map.get(doctor_id) if doctor_id is not None else None,
                 note="未找到到训记录。",
             )
             self._last_visit_cache[patient_id] = result
             return result
+        row = self.enrich_user_names([row])[0]
         result = LastVisitInfo(
             patient_id=patient_id,
+            patient_name=row.get("patient_name"),
             doctor_id=row.get("doctor_id"),
+            doctor_name=row.get("doctor_name"),
             last_visit_time=self._to_iso(row.get("last_visit_time")),
             last_plan_id=row.get("last_plan_id"),
             last_device_id=row.get("last_device_id"),
@@ -170,6 +226,7 @@ class AnalyticsService:
             start=start_dt,
             end=end_dt,
         )
+        row = self.enrich_user_names([row])[0]
         planned_sessions = int(row.get("planned_sessions") or 0)
         attended_sessions = int(row.get("attended_sessions") or 0)
         missed = int(row.get("missed_planned_sessions") or 0)
@@ -184,7 +241,9 @@ class AnalyticsService:
             note_parts.append("窗口内计划与到训基本一致。")
         result = PlanStatus(
             patient_id=patient_id,
+            patient_name=row.get("patient_name"),
             doctor_id=doctor_id,
+            doctor_name=row.get("doctor_name"),
             window_start=start_date,
             window_end=end_date,
             has_active_plan=bool(row.get("has_active_plan")),
@@ -204,6 +263,7 @@ class AnalyticsService:
         top_k: int | None = None,
     ) -> RankedPatients:
         unique_ids = list(dict.fromkeys(patient_ids))
+        name_map = self.repository.get_user_name_map(unique_ids)
         rows: list[RankedPatientRow] = []
         if strategy == "active_plan_but_absent":
             sortable: list[tuple[int, float, str]] = []
@@ -219,7 +279,7 @@ class AnalyticsService:
                 sortable.append((patient_id, score, reason))
             sortable.sort(key=lambda item: item[1], reverse=True)
             rows = [
-                RankedPatientRow(patient_id=patient_id, rank_score=round(score, 2), rank_reason=reason)
+                RankedPatientRow(patient_id=patient_id, patient_name=name_map.get(patient_id), rank_score=round(score, 2), rank_reason=reason)
                 for patient_id, score, reason in sortable
             ]
             note = "优先按“窗口内仍有计划但未到训”排序，其次参考最近一次到训距今时间。"
@@ -235,6 +295,7 @@ class AnalyticsService:
             rows = [
                 RankedPatientRow(
                     patient_id=patient_id,
+                    patient_name=name_map.get(patient_id),
                     rank_score=None if score == float("inf") else round(score, 2),
                     rank_reason=reason,
                 )
@@ -245,6 +306,7 @@ class AnalyticsService:
             rows = [
                 RankedPatientRow(
                     patient_id=patient_id,
+                    patient_name=name_map.get(patient_id),
                     rank_score=None,
                     rank_reason="MVP 尚未接入统一风险快照，当前按输入顺序保留。",
                 )
@@ -264,14 +326,22 @@ class AnalyticsService:
 
     def build_result_rows(self, ranked_patients: RankedPatients) -> list[AnalyticsResultRow]:
         result_rows: list[AnalyticsResultRow] = []
+        missing_name_ids = [row.patient_id for row in ranked_patients.rows if not row.patient_name]
+        fallback_name_map = self.repository.get_user_name_map(missing_name_ids)
         for row in ranked_patients.rows:
             patient_id = row.patient_id
             last_visit = self._last_visit_cache.get(patient_id)
             plan_status = self._find_latest_plan_status(patient_id)
+            patient_name = row.patient_name or (plan_status.patient_name if plan_status else None) or (last_visit.patient_name if last_visit else None) or fallback_name_map.get(patient_id)
+            doctor_id = plan_status.doctor_id if plan_status and plan_status.doctor_id is not None else last_visit.doctor_id if last_visit else None
+            doctor_name = plan_status.doctor_name if plan_status and plan_status.doctor_name else last_visit.doctor_name if last_visit else None
             notes = [item for item in [plan_status.note if plan_status else None, last_visit.note if last_visit else None] if item]
             result_rows.append(
                 AnalyticsResultRow(
                     patient_id=patient_id,
+                    patient_name=patient_name,
+                    doctor_id=doctor_id,
+                    doctor_name=doctor_name,
                     last_visit_time=last_visit.last_visit_time if last_visit else None,
                     has_active_plan_in_window=plan_status.has_active_plan if plan_status else None,
                     planned_sessions=plan_status.planned_sessions if plan_status else None,
@@ -288,13 +358,26 @@ class AnalyticsService:
         self,
         *,
         patient_ids: list[int],
+        patient_names: dict[int, str] | None = None,
         description: str,
         note: str | None,
     ) -> PatientSet:
         patient_ids = list(dict.fromkeys(patient_ids))
+        if patient_names is None:
+            patient_names = self.repository.get_user_name_map(patient_ids)
+        else:
+            missing_ids = [patient_id for patient_id in patient_ids if patient_id not in patient_names]
+            if missing_ids:
+                patient_names = {**patient_names, **self.repository.get_user_name_map(missing_ids)}
+        patient_names = {int(patient_id): name for patient_id, name in patient_names.items() if name}
         patient_set = PatientSet(
             set_id=f"set_{uuid4().hex[:10]}",
             patient_ids=patient_ids,
+            patients=[
+                PatientIdentity(patient_id=patient_id, patient_name=patient_names.get(patient_id))
+                for patient_id in patient_ids
+            ],
+            patient_names=patient_names,
             count=len(patient_ids),
             description=description,
             source_backend=self.repository.last_backend,

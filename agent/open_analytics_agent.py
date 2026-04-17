@@ -222,7 +222,8 @@ class OpenAnalyticsAgentRuntime:
         metadata = tool.metadata()
         notes: list[str] = []
         if tool.tool_name in {"list_patients_seen_by_doctor", "list_patients_with_active_plans"}:
-            notes.append("Returns PatientSet JSON with set_id, patient_ids, and count. Save set_id for set_diff.")
+            notes.append("Returns PatientSet JSON with set_id, patient_ids, patients, patient_names, and count. Save set_id for set_diff.")
+            notes.append("Patient names are already enriched by the service layer; do not query dbuser.")
         if tool.tool_name == "set_diff":
             notes.append("Arguments must be base_set_id and subtract_set_id from previous PatientSet.set_id values.")
             notes.append("Use baseline set_id as base_set_id and recent set_id as subtract_set_id.")
@@ -231,6 +232,7 @@ class OpenAnalyticsAgentRuntime:
             notes.append("Supported strategy values are active_plan_but_absent, last_visit_oldest, and highest_risk.")
         if tool.tool_name == "list_doctors_with_active_plans":
             notes.append("Doctor aggregate tool. Do not pass doctor_id.")
+            notes.append("Doctor names are already enriched by the service layer; do not query dbuser.")
         return {
             "tool_name": metadata["tool_name"],
             "description": metadata["description"],
@@ -387,12 +389,62 @@ class OpenAnalyticsAgentRuntime:
     def _summarize_tool_output(self, output: Any) -> str:
         if isinstance(output, dict):
             if "count" in output:
-                return f"count={output.get('count')}"
+                examples = self._patient_examples_from_payload(output)
+                suffix = f" examples={examples}" if examples else ""
+                return f"count={output.get('count')}{suffix}"
             if "patient_ids" in output:
-                return f"patient_count={len(output.get('patient_ids') or [])}"
+                examples = self._patient_examples_from_payload(output)
+                suffix = f" examples={examples}" if examples else ""
+                return f"patient_count={len(output.get('patient_ids') or [])}{suffix}"
             if "rows" in output:
-                return f"rows={len(output.get('rows') or [])}"
+                rows = output.get("rows") or []
+                examples = self._patient_examples_from_rows(rows)
+                suffix = f" examples={examples}" if examples else ""
+                return f"rows={len(rows)}{suffix}"
         if isinstance(output, list):
-            return f"rows={len(output)}"
+            examples = self._doctor_examples_from_rows(output)
+            suffix = f" examples={examples}" if examples else ""
+            return f"rows={len(output)}{suffix}"
         text = str(output)
         return text[:240] + ("..." if len(text) > 240 else "")
+
+    def _patient_examples_from_payload(self, payload: dict[str, Any]) -> str:
+        patients = payload.get("patients")
+        if isinstance(patients, list):
+            return self._patient_examples_from_rows(patients)
+        patient_names = payload.get("patient_names")
+        patient_ids = payload.get("patient_ids") or []
+        if isinstance(patient_names, dict):
+            rows = [
+                {
+                    "patient_id": patient_id,
+                    "patient_name": patient_names.get(patient_id) or patient_names.get(str(patient_id)),
+                }
+                for patient_id in patient_ids[:3]
+            ]
+            return self._patient_examples_from_rows(rows)
+        return ""
+
+    def _patient_examples_from_rows(self, rows: list[Any]) -> str:
+        labels: list[str] = []
+        for row in rows[:3]:
+            if not isinstance(row, dict):
+                continue
+            patient_id = row.get("patient_id")
+            if patient_id is None:
+                continue
+            patient_name = row.get("patient_name")
+            labels.append(f"{patient_name}（患者{patient_id}）" if patient_name else f"患者{patient_id}")
+        return ", ".join(labels)
+
+    def _doctor_examples_from_rows(self, rows: list[Any]) -> str:
+        labels: list[str] = []
+        for row in rows[:3]:
+            if not isinstance(row, dict):
+                continue
+            doctor_id = row.get("doctor_id")
+            if doctor_id is None:
+                continue
+            doctor_name = row.get("doctor_name")
+            labels.append(f"{doctor_name}（医生{doctor_id}）" if doctor_name else f"医生{doctor_id}")
+        return ", ".join(labels)
