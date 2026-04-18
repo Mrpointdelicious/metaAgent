@@ -728,7 +728,6 @@ class RehabAgentOrchestrator:
         active = self.result_set_store.get_active_ref(request.identity_context)
         if active is None and self._should_seed_patient_result_set(request):
             seed_artifact, seed_traces = self._seed_patient_result_set(request)
-            active = seed_artifact.active_result_set if hasattr(seed_artifact, "active_result_set") else None
             active = self.result_set_store.get_active_ref(request.identity_context)
             traces.extend(seed_traces)
 
@@ -813,8 +812,7 @@ class RehabAgentOrchestrator:
         return "我的患者" in text or "my patients" in text or "all my patients" in text
 
     def _seed_patient_result_set(self, request: OrchestratorRequest):
-        days = self._lookup_days(request)
-        args = {"days": days} if days is not None else {}
+        args: dict[str, Any] = {}
         tool = self.analytics_tool_registry["list_my_patients"]
         output = tool.invoke(mode="direct", args=args)
         lookup_trace = StepExecutionResult(

@@ -142,3 +142,24 @@ python Demo/patient_demo.py --patient-id 20001 --session-id patient-s1 --convers
 如果不传 `--session-id` 或 `--conversation-id`，Demo 会在启动时通过 `server.request_factory.ensure_session_ids(...)` 生成一次，并在当前进程的所有轮次中保持不变。每一轮都会重新构造一个前端 payload，再交给 `build_orchestrator_request_from_payload(...)` 和正式 orchestrator 主链。
 
 `Demo/main.py` 仍是 legacy/local debug shell，但也遵循同样原则：显式身份、固定 session/conversation、无手工历史拼接。
+
+## 结果集 Follow-up 演示
+
+连续追问依赖两层服务端能力：
+
+- SDK session 保存原始历史。
+- result-set artifact / active result set 保存上一轮可复用集合。
+
+Demo 只模拟前端持续携带同一组身份和会话字段，不自己拼接历史，也不自己维护工作集。比如医生端启动后连续输入：
+
+```bash
+python Demo/doctor_demo.py --doctor-id 56 --session-id s1 --conversation-id c1
+```
+
+```text
+查询我所有的患者
+这些患者中哪些在这30天内有训练？
+显示他们完成计划的具体时间
+```
+
+第一轮名单类工具会在服务端注册 `active_result_set`；后续“这些患者 / 他们”会由 `IntentRouter` 命中 `result_set_query`，再调用 `filter_result_set_*` 或 `enrich_result_set_*` 工具。若当前线程没有 active result set，服务端返回 `followup.missing_active_result_set`，不会由 Demo 兜底改写问题。

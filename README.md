@@ -25,6 +25,7 @@ Demo 只做适配与演示，不承担正式问题路由、身份判定、权限
 -> SessionIdentityContext 注入
 -> IntentRouter 规则路由
 -> LLMRouter 按需 refine intent / subtype / scope
+-> result_set_query follow-up 直达结果集工具族（命中时）
 -> choose_execution_strategy
 -> fixed_workflow / template_analytics / agent_planned
 -> shared response / trace
@@ -64,6 +65,7 @@ agents_sdk_runtime -> llm_planner -> template fallback
 - 固定 workflow：单患者复核、风险筛选、周报/风险摘要。
 - 开放分析：患者集合、双窗口分析、医生聚合等 subtype/scope 初判。
 - lookup/entity query：如“查询医生59的名字”“患者146叫什么”“59是谁”。
+- result-set follow-up：如“这些患者中哪些在这30天内有训练”“显示他们完成计划的具体时间”。
 - 保守判定：只含 ID 或低置信问题不会被硬压到高频固定任务，而是保留为低置信开放分析或交给 LLM refine。
 
 lookup 查询不会暴露 `dbuser` 表给 Agent；姓名查询由 repository/service 层完成。
@@ -84,6 +86,53 @@ Agent 可见工具白名单会按身份裁剪：
 - 患者会话：可见 `lookup_accessible_user_name`、`list_my_doctors`，不可见 `list_my_patients`。
 
 因此 Agent 不能自行决定权限范围，也不会获得直接查询 `dbuser` 或万能 related-user 查询工具。
+
+## 结果集 Follow-up
+
+当前已经把“上一轮得到的集合”提升为一等对象。`agent/intent_router.py` 新增 `result_set_query` 意图族，用于处理“这些患者 / 他们 / 上面那批人 / 刚才那批患者”这类不是查新对象、而是继续操作当前结果集的问题。
+
+`result_set_query` 只保留粗粒度动作槽位：
+
+- `operation=filter`：筛选当前结果集。
+- `operation=enrich`：为当前结果集补充字段。
+- `operation=sort` / `detail`：作为后续扩展入口。
+
+不把族内一开始切成大量 subtype，是为了让路由层只负责判定“这是结果集 follow-up”，细动作由 `LLMRouter` refine 出 `filter_kind`、`target_field`、`days` 等参数。工作集真相仍由代码维护，不由 LLM 生成。
+
+结果集模型位于 `models/result_set.py`：
+
+- `ResultSetArtifact`：`result_set_id`、`result_set_type`、`owner_scope`、`count`、`summary`、`rows`、`source_tool`、`source_intent`、`created_at`、`expires_at`。
+- `ActiveResultSetRef`：只保留 `result_set_id`、`result_set_type`、`count`、`summary` 等短引用。
+- `ThreadWorkingContext`：保存 `active_result_set_id`、`active_result_set_type`、`active_result_count`、`last_result_summary`、`default_time_window_days`。
+
+`server/result_set_store.py` 负责 artifact 与 thread working context。当前实现是进程内 TTL store，已经包含 owner scope 校验、过期时间、active result set 注入接口；后续可把同一接口迁移到 Redis 或独立 thread state store。大结果集本体保存在 artifact 中，进入下一轮 request 的上下文只携带短引用，不把完整列表长期塞进 prompt。
+
+会注册工作集的工具：
+
+- `list_my_patients(...)` / `list_my_doctors(...)`：名单类结果，会注册为 `patient_set` / `doctor_set`。
+- `filter_result_set_by_training(...)`
+- `filter_result_set_by_absence(...)`
+- `filter_result_set_by_plan_completion(...)`
+- `enrich_result_set_with_completion_time(...)`
+
+不会强制注册工作集的工具：
+
+- `lookup_accessible_user_name(...)`
+- 单点详情工具
+- 纯统计值工具
+
+第一批结果集工具位于 `tools/result_set_tools.py` 和 `services/result_set_service.py`：
+
+- `filter_result_set_by_training(result_set_id, days)`：筛出时间窗内有训练记录的患者。
+- `filter_result_set_by_absence(result_set_id, days)`：筛出时间窗内没有训练日志的患者。
+- `filter_result_set_by_plan_completion(result_set_id, days)`：筛出时间窗内完成训练计划的患者。
+- `enrich_result_set_with_completion_time(result_set_id)`：为当前患者集合补充完成计划时间。
+
+这些工具不信任裸 `result_set_id`。读取 artifact 时必须校验 `owner_scope` 与当前 `SessionIdentityContext` 一致，并继续通过 repository/service 做权限与数据过滤。工具返回的集合会注册为新的 result set，并更新当前线程的 active result set。
+
+展示层默认名称优先：有姓名时显示姓名；姓名缺失时 fallback 为 `患者138` / `医生56`。内部结构仍保留 `patient_id` / `doctor_id`，用于授权、审计、调试和后续工具调用。
+
+follow-up 准入也被收紧：如果检测到明显 follow-up 指示词且有 active result set，优先进入 `result_set_query`；如果没有 active result set，返回 `followup.missing_active_result_set`，不会再误落入 `fixed_workflow`。
 
 ## 执行策略
 
@@ -206,9 +255,9 @@ AGENT_SESSION_TTL_SECONDS=86400
 
 Redis 适合当前场景，因为业务主数据仍在 MySQL，而会话原始历史是短期状态，需要低延迟读写、TTL、隔离和快速清理。`memory` backend 只用于单进程测试和本地调试，不作为生产会话存储。
 
-本轮只落地第一层 raw history。后续多层上下文会继续扩展：
+Session 仍只是原始历史层；当前同时新增了 result-set artifact / active result set，用来保存可继续操作的业务集合引用。后续多层上下文会继续扩展：
 
 - raw transcript：由 SDK session / Redis session 保存完整原始消息历史。
 - working memory：窗口化摘要，压缩最近多轮重点，减少 prompt 压力。
-- thread state store：保存结构化状态，例如当前患者集合、筛选条件、默认时间窗。
-- result artifacts：大结果集只存引用或 artifact id，不把 120 名患者等大对象长期塞进 prompt。
+- thread state store：当前已有最小 `ThreadWorkingContext`，后续会扩展筛选条件、排序状态和业务选择对象。
+- result artifacts：当前已有 result-set artifact，后续可迁移到 Redis 或独立 artifact store，并增加大结果分页与引用管理。
