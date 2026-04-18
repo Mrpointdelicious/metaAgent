@@ -144,6 +144,7 @@ class LLMRouter:
             "Supported scopes: single_doctor, doctor_aggregate, patient_single. "
             "Lookup queries such as doctor name / patient name / who is this ID should use intent=lookup_query, "
             "lookup_subtype=lookup_user_name, lookup_entity_type doctor/patient/unknown, and lookup_user_id. "
+            "Roster queries such as my patients or my doctors should use lookup_subtype=list_my_patients or list_my_doctors. "
             "Scope rules: explicit doctor ID wins; single doctor analytics may inherit session doctor ID; "
             "doctor aggregate questions such as which doctors / each doctor / whole hospital must ignore session doctor as a filter."
         )

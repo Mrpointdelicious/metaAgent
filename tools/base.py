@@ -78,6 +78,14 @@ class RankPatientsInput(BaseModel):
     top_k: int | None = Field(default=None, ge=1, le=1000, description="Optional result limit.")
 
 
+class LookupAccessibleUserInput(BaseModel):
+    user_id: int = Field(description="User ID to look up within the current identity scope.")
+
+
+class OptionalDaysInput(BaseModel):
+    days: int | None = Field(default=None, ge=1, le=3650, description="Optional relationship window in days.")
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     tool_name: str

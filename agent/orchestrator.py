@@ -15,6 +15,7 @@ from services import (
     PlanService,
     ReflectionService,
     ReportService,
+    UserLookupService,
 )
 from tools import (
     ToolSpec,
@@ -25,6 +26,7 @@ from tools import (
     build_plan_tools,
     build_reflection_tools,
     build_report_tools,
+    build_user_lookup_tools,
     build_tool_registry,
 )
 from .analytics_manager import AnalyticsManager
@@ -74,6 +76,7 @@ class RehabAgentOrchestrator:
         self.gait_service = GaitService(self.repository, self.settings)
         self.deviation_service = DeviationService(self.settings)
         self.reflection_service = ReflectionService()
+        self.user_lookup_service = UserLookupService(self.repository, self.settings)
         self.report_service = ReportService(
             self.repository,
             self.plan_service,
@@ -95,7 +98,8 @@ class RehabAgentOrchestrator:
         self.gait_tools = build_gait_tools(self.gait_service)
         self.report_tools = build_report_tools(self.report_service)
         self.reflection_tools = build_reflection_tools(self.report_service)
-        self.analytics_tools = build_analytics_tools(self.analytics_service)
+        self.user_lookup_tools = build_user_lookup_tools(self.user_lookup_service)
+        self.analytics_tools = build_analytics_tools(self.analytics_service) + self.user_lookup_tools
         self.analytics_tool_registry = build_tool_registry(self.analytics_tools)
         self.llm_planner = LLMPlanner(settings=self.settings)
         self.plan_validator = PlanValidator(tool_registry=self.analytics_tool_registry)
@@ -283,7 +287,7 @@ class RehabAgentOrchestrator:
         target_patient_id = request.patient_id or extracted.get("patient_id")
         target_plan_id = request.plan_id or extracted.get("plan_id")
         if routed.final_intent == "lookup_query":
-            return self._authorize_lookup_request(identity, routed)
+            return None
         if identity.actor_role == "patient":
             actor_patient_id = identity.actor_patient_id
             if actor_patient_id is None:
@@ -416,6 +420,193 @@ class RehabAgentOrchestrator:
             validation_issues=list(mode_issues),
             execution_trace=[identity_trace, route_trace, lookup_trace],
         )
+
+    def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
+        if entity_type == "doctor":
+            return f"医生{user_id}"
+        if entity_type == "patient":
+            return f"患者{user_id}"
+        return f"用户{user_id}"
+
+    def _run_lookup_query(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed: RoutedDecision,
+        identity_trace: StepExecutionResult,
+        route_trace: StepExecutionResult,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
+        subtype = routed.lookup_subtype or "lookup_user_name"
+        if subtype == "list_my_patients":
+            return self._run_roster_lookup_query(
+                request=request,
+                subtype=subtype,
+                tool_name="list_my_patients",
+                identity_trace=identity_trace,
+                route_trace=route_trace,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                mode_issues=mode_issues,
+            )
+        if subtype == "list_my_doctors":
+            return self._run_roster_lookup_query(
+                request=request,
+                subtype=subtype,
+                tool_name="list_my_doctors",
+                identity_trace=identity_trace,
+                route_trace=route_trace,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
+                mode_issues=mode_issues,
+            )
+
+        user_id = routed.lookup_user_id or self._default_lookup_user_id(request)
+        entity_type = self._default_lookup_entity_type(request, routed.lookup_entity_type)
+        if user_id is None:
+            lookup_trace = StepExecutionResult(
+                step_id="lookup_user_name",
+                tool_name="lookup_accessible_user_name",
+                success=False,
+                args={"entity_type": entity_type},
+                output_summary="missing lookup user_id",
+                raw_output=None,
+                error="lookup.missing_user_id",
+            )
+            return OrchestratorResponse(
+                success=False,
+                task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
+                execution_mode=execution_mode,
+                llm_provider=llm_config.provider,
+                llm_model=llm_config.model,
+                structured_output={"error": "lookup.missing_user_id", "lookup_subtype": subtype},
+                final_text="缺少要查询的用户 ID，无法完成姓名查询。",
+                validation_issues=list(mode_issues) + ["lookup.missing_user_id"],
+                execution_trace=[identity_trace, route_trace, lookup_trace],
+            )
+
+        tool = self.analytics_tool_registry["lookup_accessible_user_name"]
+        output = tool.invoke(mode="direct", args={"user_id": int(user_id)})
+        label = self._lookup_entity_label(output.get("user_role") or entity_type, int(user_id))
+        success = bool(output.get("is_accessible") and output.get("user_name"))
+        lookup_trace = StepExecutionResult(
+            step_id="lookup_user_name",
+            tool_name="lookup_accessible_user_name",
+            success=success,
+            args={"entity_type": entity_type, "user_id": user_id},
+            output_summary=f"{label} -> {output.get('user_name') or 'not_accessible_or_name_missing'}",
+            raw_output=output,
+            error=None if success else output.get("reason") or "lookup.not_accessible_or_not_found",
+        )
+        final_text = f"{label} 的姓名是 {output.get('user_name')}。" if success else "未找到可访问的用户信息。"
+        structured_output = {
+            "lookup_subtype": subtype,
+            "entity_type": output.get("user_role") or entity_type,
+            "display_label": label,
+            "source_tool": "lookup_accessible_user_name",
+            **output,
+        }
+        return OrchestratorResponse(
+            success=success,
+            task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output=structured_output,
+            final_text=final_text,
+            validation_issues=list(mode_issues) if success else list(mode_issues) + [lookup_trace.error or "lookup.not_accessible_or_not_found"],
+            execution_trace=[identity_trace, route_trace, lookup_trace],
+        )
+
+    def _run_roster_lookup_query(
+        self,
+        *,
+        request: OrchestratorRequest,
+        subtype: str,
+        tool_name: str,
+        identity_trace: StepExecutionResult,
+        route_trace: StepExecutionResult,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
+        days = self._lookup_days(request)
+        args = {"days": days} if days is not None else {}
+        tool = self.analytics_tool_registry[tool_name]
+        output = tool.invoke(mode="direct", args=args)
+        success = bool(output.get("is_accessible"))
+        lookup_trace = StepExecutionResult(
+            step_id=subtype,
+            tool_name=tool_name,
+            success=success,
+            args=args,
+            output_summary=f"{tool_name} count={output.get('count', 0)}",
+            raw_output=output,
+            error=None if success else output.get("reason") or "lookup.identity_scope_denied",
+        )
+        structured_output = {
+            "lookup_subtype": subtype,
+            "source_tool": tool_name,
+            **output,
+        }
+        return OrchestratorResponse(
+            success=success,
+            task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output=structured_output,
+            final_text=self._render_roster_lookup(tool_name, output),
+            validation_issues=list(mode_issues) if success else list(mode_issues) + [lookup_trace.error or "lookup.identity_scope_denied"],
+            execution_trace=[identity_trace, route_trace, lookup_trace],
+        )
+
+    def _default_lookup_user_id(self, request: OrchestratorRequest) -> int | None:
+        identity = request.identity_context
+        if identity is None:
+            return None
+        if identity.actor_role == "doctor":
+            return identity.actor_doctor_id
+        return identity.actor_patient_id
+
+    def _default_lookup_entity_type(self, request: OrchestratorRequest, entity_type: str | None) -> str:
+        if entity_type and entity_type != "unknown":
+            return entity_type
+        identity = request.identity_context
+        if identity is None:
+            return "unknown"
+        return identity.actor_role
+
+    def _lookup_days(self, request: OrchestratorRequest) -> int | None:
+        if request.days is not None:
+            return int(request.days)
+        extracted = self._extract_slots(request.raw_text or "")
+        days = extracted.get("days")
+        return int(days) if days is not None else None
+
+    def _render_roster_lookup(self, tool_name: str, output: dict[str, Any]) -> str:
+        if not output.get("is_accessible"):
+            return "当前身份无权执行该名单查询。"
+        rows = output.get("rows") or []
+        if tool_name == "list_my_patients":
+            lines = [f"共找到 {len(rows)} 名相关患者。"]
+            lines.extend(f"- {self._patient_display(row)}" for row in rows[:20])
+            return "\n".join(lines)
+        lines = [f"共找到 {len(rows)} 名相关医生。"]
+        lines.extend(f"- {self._doctor_display(row)}" for row in rows[:20])
+        return "\n".join(lines)
+
+    def _patient_display(self, row: dict[str, Any]) -> str:
+        patient_id = row.get("patient_id")
+        patient_name = row.get("patient_name")
+        return f"{patient_name}（患者{patient_id}）" if patient_name else f"患者{patient_id}"
+
+    def _doctor_display(self, row: dict[str, Any]) -> str:
+        doctor_id = row.get("doctor_id")
+        doctor_name = row.get("doctor_name")
+        return f"{doctor_name}（医生{doctor_id}）" if doctor_name else f"医生{doctor_id}"
 
     def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
         if entity_type == "doctor":
@@ -1011,6 +1202,17 @@ class RehabAgentOrchestrator:
         if not text:
             return {}
         lowered = text.lower()
+        if any(token in text for token in ("本周", "最近一周", "近一周")):
+            return 7
+        if any(token in text for token in ("本月", "最近一个月", "近一个月")):
+            return 30
+        for pattern in (
+            r"(?:最近|过去|近|当前)\s*(\d+)\s*天",
+            r"(\d+)\s*天",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
         return {
             "patient_id": self._extract_identifier(text, ("患者", "病人", "patient")),
             "plan_id": self._extract_identifier(text, ("计划", "plan")),
@@ -1235,6 +1437,50 @@ class RehabAgentOrchestrator:
         if any(keyword in text or keyword in lowered for keyword in BRIEF_KEYWORDS):
             return "brief"
         return None
+
+    def _extract_identifier(self, text: str, labels: tuple[str, ...]) -> int | None:
+        expanded_labels = list(labels)
+        if any(label in labels for label in ("doctor", "therapist")):
+            expanded_labels.extend(["医生", "治疗师", "康复师"])
+        if any(label in labels for label in ("patient",)):
+            expanded_labels.extend(["患者", "病人"])
+        if any(label in labels for label in ("plan",)):
+            expanded_labels.append("计划")
+        for label in expanded_labels:
+            pattern = rf"{re.escape(label)}\s*(?:id)?\s*[:：]?\s*(\d+)"
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _extract_days(self, text: str) -> int | None:
+        lowered = text.lower()
+        if any(token in text for token in ("本周", "最近一周", "近一周")) or "last week" in lowered:
+            return 7
+        if any(token in text for token in ("本月", "最近一个月", "近一个月")) or "last month" in lowered:
+            return 30
+        for pattern in (
+            r"(?:最近|过去|近|当前)\s*(\d+)\s*天",
+            r"(\d+)\s*天",
+            r"last\s*(\d+)\s*days?",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _extract_slots(self, text: str) -> dict[str, Any]:
+        if not text:
+            return {}
+        return {
+            "patient_id": self._extract_identifier(text, ("患者", "病人", "patient")),
+            "plan_id": self._extract_identifier(text, ("计划", "plan")),
+            "therapist_id": self._extract_identifier(text, ("医生", "治疗师", "康复师", "doctor", "therapist")),
+            "days": self._extract_days(text),
+            "top_k": self._extract_top_k(text),
+            "need_gait_evidence": any(keyword in text.lower() for keyword in ("gait", "walkway", "walk")),
+            "response_style": self._extract_response_style(text),
+        }
 
     def _is_follow_up(self, text: str) -> bool:
         lowered = text.lower()

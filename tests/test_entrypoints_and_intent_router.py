@@ -111,7 +111,7 @@ class EntrypointAndIntentRouterTests(unittest.TestCase):
         response = _build_orchestrator().run(request)
 
         self.assertFalse(response.success)
-        self.assertIn("authorization.patient_cannot_access_lookup_target", response.validation_issues)
+        self.assertIn("not_accessible_or_not_found", response.validation_issues)
 
     def test_bare_entity_lookup_uses_lookup_path(self) -> None:
         request = build_orchestrator_request(

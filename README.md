@@ -68,6 +68,23 @@ agents_sdk_runtime -> llm_planner -> template fallback
 
 lookup 查询不会暴露 `dbuser` 表给 Agent；姓名查询由 repository/service 层完成。
 
+### 身份感知用户查询工具
+
+当前新增 3 个窄工具，供 direct 路径与 Agents SDK runtime 复用：
+
+- `lookup_accessible_user_name(user_id)`：只在当前会话身份可访问该用户时返回姓名。
+- `list_my_patients(days=None)`：医生会话使用，列出与当前医生接诊过或存在训练计划关系的患者。
+- `list_my_doctors(days=None)`：患者会话使用，列出与当前患者接诊过或存在训练计划关系的医生。
+
+权限控制不依赖 prompt。`services/user_lookup_service.py` 负责权威授权判断，`repositories/rehab_repository.py` 负责用计划记录与执行日志判定“相关”关系，并通过批量 `dbuser` 查询补齐名称。
+
+Agent 可见工具白名单会按身份裁剪：
+
+- 医生会话：可见 `lookup_accessible_user_name`、`list_my_patients`，不可见 `list_my_doctors`。
+- 患者会话：可见 `lookup_accessible_user_name`、`list_my_doctors`，不可见 `list_my_patients`。
+
+因此 Agent 不能自行决定权限范围，也不会获得直接查询 `dbuser` 或万能 related-user 查询工具。
+
 ## 执行策略
 
 `choose_execution_strategy` 是顶层策略裁决点：

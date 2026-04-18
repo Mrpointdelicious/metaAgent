@@ -6,6 +6,7 @@ from .outcome_service import OutcomeService
 from .plan_service import PlanService
 from .reflection_service import ReflectionService
 from .report_service import ReportService
+from .user_lookup_service import UserLookupService
 
 __all__ = [
     "AnalyticsService",
@@ -16,4 +17,5 @@ __all__ = [
     "PlanService",
     "ReflectionService",
     "ReportService",
+    "UserLookupService",
 ]

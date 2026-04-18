@@ -171,7 +171,7 @@ class AnalyticsManager:
         prefix_trace: list[StepExecutionResult] = []
         runtime_issue: str | None = None
         if self.agent_runtime.can_run(mode=mode, llm_config=llm_config):
-            tool_specs = self._agent_tool_specs(routed_decision)
+            tool_specs = self._agent_tool_specs(routed_decision, request=request)
             try:
                 agent_request = self._request_with_agent_runtime_context(request, routed_decision)
                 agent_result = self.agent_runtime.run(
@@ -276,7 +276,7 @@ class AnalyticsManager:
         planner_trace: list[StepExecutionResult] = list(prefix_trace or [])
         fallback_note: str | None = None
         try:
-            tool_catalog = self._tool_catalog(routed_decision)
+            tool_catalog = self._tool_catalog(routed_decision, request=request)
             planned = self.llm_planner.plan(
                 request=request,
                 routed_decision=routed_decision,
@@ -484,7 +484,7 @@ class AnalyticsManager:
         if isinstance(response.structured_output, dict):
             response.structured_output["planned_query_source"] = source.model_dump(mode="json")
 
-    def _tool_catalog(self, routed_decision: RoutedDecision) -> list[dict[str, Any]]:
+    def _tool_catalog(self, routed_decision: RoutedDecision, request: OrchestratorRequest | None = None) -> list[dict[str, Any]]:
         scope = routed_decision.final_scope
         if scope == "doctor_aggregate":
             allowed_names = {"list_doctors_with_active_plans"}
@@ -497,6 +497,7 @@ class AnalyticsManager:
                 "get_patient_plan_status",
                 "rank_patients",
             }
+        allowed_names.update(self._identity_tool_names(request))
         catalog: list[dict[str, Any]] = []
         for tool_name in allowed_names:
             tool = self.analytics_tool_registry.get(tool_name)
@@ -515,6 +516,12 @@ class AnalyticsManager:
             if tool_name in {"get_patient_last_visit", "get_patient_plan_status", "rank_patients"}:
                 notes.append("may use patient_set_ref or patient_ids_ref to fan out from a previous patient-set step")
                 notes.append("returns patient_name and doctor_name where applicable")
+            if tool_name == "lookup_accessible_user_name":
+                notes.append("identity-scoped user lookup; service layer enforces access")
+            if tool_name == "list_my_patients":
+                notes.append("doctor identity only; returns related patients by visits or plans")
+            if tool_name == "list_my_doctors":
+                notes.append("patient identity only; returns related doctors by visits or plans")
             catalog.append(
                 {
                     "tool_name": metadata["tool_name"],
@@ -526,7 +533,7 @@ class AnalyticsManager:
             )
         return sorted(catalog, key=lambda item: item["tool_name"])
 
-    def _agent_tool_specs(self, routed_decision: RoutedDecision) -> list[ToolSpec]:
+    def _agent_tool_specs(self, routed_decision: RoutedDecision, request: OrchestratorRequest | None = None) -> list[ToolSpec]:
         if routed_decision.final_scope == "doctor_aggregate":
             allowed_names = {"list_doctors_with_active_plans"}
         else:
@@ -536,12 +543,23 @@ class AnalyticsManager:
                 "set_diff",
                 "rank_patients",
             }
+        allowed_names.update(self._identity_tool_names(request))
         tool_specs: list[ToolSpec] = []
         for tool_name in sorted(allowed_names):
             tool = self.analytics_tool_registry.get(tool_name)
             if tool is not None and tool.get_agent_tool() is not None:
                 tool_specs.append(tool)
         return tool_specs
+
+    def _identity_tool_names(self, request: OrchestratorRequest | None) -> set[str]:
+        identity = request.identity_context if request is not None else None
+        if identity is None:
+            return set()
+        if identity.actor_role == "doctor":
+            return {"lookup_accessible_user_name", "list_my_patients"}
+        if identity.actor_role == "patient":
+            return {"lookup_accessible_user_name", "list_my_doctors"}
+        return set()
 
     def _normalize_llm_plan(
         self,

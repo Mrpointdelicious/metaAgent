@@ -53,7 +53,7 @@ OpenAnalyticsSubtype = Literal[
 AnalyticsScope = Literal["single_doctor", "doctor_aggregate", "patient_single"]
 AnalyticsParseMode = Literal["single_window", "dual_window", "fallback"]
 DoctorIdSource = Literal["explicit", "session", "none"]
-LookupSubtype = Literal["lookup_user_name"]
+LookupSubtype = Literal["lookup_user_name", "list_my_patients", "list_my_doctors"]
 LookupEntityType = Literal["doctor", "patient", "unknown"]
 
 AnalyticsIntentName = Literal[

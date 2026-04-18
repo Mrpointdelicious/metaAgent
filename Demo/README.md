@@ -69,6 +69,24 @@ python Demo/patient_demo.py --patient-id 20001 --question "患者20001叫什么"
 - 患者身份不能进入多患者风险筛选或医生聚合。
 - 最终请求统一走正式 orchestrator 主链。
 
+## 身份感知用户查询示例
+
+Demo 只负责显式注入身份，用户查询的权限判断由 service/repository 层完成。当前新增 3 个窄工具：
+
+- `lookup_accessible_user_name(user_id)`：查询当前身份可访问用户的姓名。
+- `list_my_patients(days=None)`：医生会话列出与自己相关的患者。
+- `list_my_doctors(days=None)`：患者会话列出与自己相关的医生。
+
+医生会话下 Agent 白名单只包含 `lookup_accessible_user_name` 和 `list_my_patients`；患者会话下只包含 `lookup_accessible_user_name` 和 `list_my_doctors`。不允许通过 prompt 或 Agent 自行判断权限，也不暴露直接查询 `dbuser` 的工具。
+
+示例：
+
+```bash
+python Demo/doctor_demo.py --doctor-id 56 --question "我的名字"
+python Demo/doctor_demo.py --doctor-id 56 --question "列出我所有的患者"
+python Demo/patient_demo.py --patient-id 20001 --question "列出和我有关的医生"
+```
+
 ## Legacy Debug Shell
 
 ```bash

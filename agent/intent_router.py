@@ -48,6 +48,11 @@ PATIENT_LABELS = ("患者", "病人", "patient")
 PLAN_LABELS = ("计划", "plan")
 
 
+SELF_NAME_LOOKUP_KEYWORDS = ("我的名字", "我叫什么", "查询我的名字", "my name", "what is my name")
+MY_PATIENTS_LOOKUP_KEYWORDS = ("我的患者", "所有的患者", "相关患者", "list my patients", "my patients")
+MY_DOCTORS_LOOKUP_KEYWORDS = ("我的医生", "相关的医生", "有关的医生", "医生有哪些", "list my doctors", "my doctors")
+
+
 class IntentRouter:
     def route(self, request: OrchestratorRequest) -> IntentDecision:
         normalized = normalize_task_type(request.task_type)
@@ -73,7 +78,7 @@ class IntentRouter:
         if normalized == OrchestrationTaskType.WEEKLY_REPORT:
             return IntentDecision(intent="weekly_report", confidence=0.99, rationale="Task type explicitly requests weekly report.")
         if normalized == OrchestrationTaskType.LOOKUP_QUERY:
-            lookup = self._detect_lookup_query(request.raw_text or "")
+            lookup = self._detect_lookup_query(request)
             return lookup or IntentDecision(
                 intent="lookup_query",
                 confidence=0.55,
@@ -98,7 +103,7 @@ class IntentRouter:
                 fallback_rationale="No fixed task matched, falling back to open analytics.",
             )
 
-        lookup_decision = self._detect_lookup_query(raw_text)
+        lookup_decision = self._detect_lookup_query(request)
         if lookup_decision is not None:
             return lookup_decision
 
@@ -141,12 +146,40 @@ class IntentRouter:
             fallback_rationale="No fixed workflow matched, falling back to open analytics.",
         )
 
-    def _detect_lookup_query(self, text: str) -> IntentDecision | None:
+    def _detect_lookup_query(self, request: OrchestratorRequest) -> IntentDecision | None:
+        text = request.raw_text or ""
         if not text:
             return None
         lowered = text.lower()
-        if not any(keyword in text or keyword in lowered for keyword in LOOKUP_SIGNAL_KEYWORDS):
+        roster_lookup = self._detect_roster_lookup_query(text, lowered)
+        if roster_lookup is not None:
+            return roster_lookup
+        has_lookup_signal = any(keyword in text or keyword in lowered for keyword in LOOKUP_SIGNAL_KEYWORDS)
+        has_lookup_signal = has_lookup_signal or any(keyword in text or keyword in lowered for keyword in SELF_NAME_LOOKUP_KEYWORDS)
+        has_lookup_signal = has_lookup_signal or any(keyword in text for keyword in ("名字", "姓名", "叫什么", "是谁"))
+        if not has_lookup_signal:
             return None
+
+        if any(keyword in text or keyword in lowered for keyword in SELF_NAME_LOOKUP_KEYWORDS):
+            identity = request.identity_context
+            if identity is not None and identity.actor_role == "doctor" and identity.actor_doctor_id is not None:
+                return IntentDecision(
+                    intent="lookup_query",
+                    confidence=0.94,
+                    rationale="Matched self name lookup for current doctor identity.",
+                    lookup_subtype="lookup_user_name",
+                    lookup_entity_type="doctor",
+                    lookup_user_id=int(identity.actor_doctor_id),
+                )
+            if identity is not None and identity.actor_role == "patient" and identity.actor_patient_id is not None:
+                return IntentDecision(
+                    intent="lookup_query",
+                    confidence=0.94,
+                    rationale="Matched self name lookup for current patient identity.",
+                    lookup_subtype="lookup_user_name",
+                    lookup_entity_type="patient",
+                    lookup_user_id=int(identity.actor_patient_id),
+                )
 
         doctor_id = self._extract_entity_id(text, DOCTOR_LABELS)
         patient_id = self._extract_entity_id(text, PATIENT_LABELS)
@@ -180,6 +213,30 @@ class IntentRouter:
                 lookup_user_id=bare_id,
             )
         return None
+
+    def _detect_roster_lookup_query(self, text: str, lowered: str) -> IntentDecision | None:
+        if self._has_any(text, lowered, MY_PATIENTS_LOOKUP_KEYWORDS) and self._has_roster_action(text, lowered):
+            return IntentDecision(
+                intent="lookup_query",
+                confidence=0.92,
+                rationale="Matched identity-scoped patient roster lookup.",
+                lookup_subtype="list_my_patients",
+                lookup_entity_type="patient",
+                lookup_user_id=None,
+            )
+        if self._has_any(text, lowered, MY_DOCTORS_LOOKUP_KEYWORDS) and self._has_roster_action(text, lowered):
+            return IntentDecision(
+                intent="lookup_query",
+                confidence=0.92,
+                rationale="Matched identity-scoped doctor roster lookup.",
+                lookup_subtype="list_my_doctors",
+                lookup_entity_type="doctor",
+                lookup_user_id=None,
+            )
+        return None
+
+    def _has_roster_action(self, text: str, lowered: str) -> bool:
+        return any(token in text or token in lowered for token in ("列出", "有哪些", "查询", "查看", "名单", "list", "show", "all"))
 
     def _build_open_analytics_decision(
         self,
@@ -296,6 +353,20 @@ class IntentRouter:
         return bool(re.fullmatch(r"\d+", compact))
 
     def _extract_entity_id(self, text: str, labels: tuple[str, ...]) -> int | None:
+        if labels is DOCTOR_LABELS:
+            for label in ("医生", "治疗师", "康复师"):
+                match = re.search(rf"{label}\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+        elif labels is PATIENT_LABELS:
+            for label in ("患者", "病人"):
+                match = re.search(rf"{label}\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+        elif labels is PLAN_LABELS:
+            match = re.search(r"计划\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
         for label in labels:
             match = re.search(rf"{re.escape(label)}\s*(?:id)?\s*[:：]?\s*(\d+)", text, flags=re.IGNORECASE)
             if match:
@@ -306,6 +377,13 @@ class IntentRouter:
         return self._extract_entity_id(text, DOCTOR_LABELS)
 
     def _extract_bare_lookup_id(self, text: str) -> int | None:
+        for pattern in (
+            r"(?:查询|查看|看一下|看看)?\s*(\d+)\s*(?:是谁|叫什么|的名字|的姓名)",
+            r"(?:谁是|姓名是)\s*(\d+)",
+        ):
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return int(match.group(1))
         for pattern in (
             r"(?:查询|查一下|看一下|看看)?\s*(\d+)\s*(?:是谁|叫什么|的名字|的姓名)",
             r"(?:who\s+is|name\s+of)\s*(\d+)",

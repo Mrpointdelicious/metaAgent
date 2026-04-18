@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Iterable
 
 from config import Settings
@@ -148,6 +148,77 @@ class RehabRepository:
                 continue
             name_map[int(user_id)] = str(user_name)
         return name_map
+
+    def get_related_patients_for_doctor(
+        self,
+        doctor_id: int,
+        *,
+        days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        _patient_id, scoped_doctor_id, allowed = self._authorized_plan_scope(therapist_id=doctor_id)
+        if not allowed or scoped_doctor_id is None:
+            self.last_backend = "authorization"
+            return []
+
+        start = self._relationship_start(days)
+        plan_rows = self.get_plan_records(therapist_id=scoped_doctor_id, start=start, limit=5000)
+        execution_rows = self.get_execution_logs(therapist_id=scoped_doctor_id, start=start, limit=5000)
+        patient_ids: set[int] = set()
+        for row in plan_rows:
+            patient_id = row.get("UserId") or row.get("patient_id")
+            if patient_id is not None:
+                patient_ids.add(int(patient_id))
+        for row in execution_rows:
+            patient_id = row.get("UserId") or row.get("patient_id")
+            if patient_id is not None:
+                patient_ids.add(int(patient_id))
+
+        name_map = self.get_user_name_map(patient_ids)
+        return [
+            {
+                "patient_id": patient_id,
+                "patient_name": name_map.get(patient_id),
+            }
+            for patient_id in sorted(patient_ids)
+        ]
+
+    def get_related_doctors_for_patient(
+        self,
+        patient_id: int,
+        *,
+        days: int | None = None,
+    ) -> list[dict[str, Any]]:
+        scoped_patient_id, _doctor_id, allowed = self._authorized_plan_scope(patient_id=patient_id)
+        if not allowed or scoped_patient_id is None:
+            self.last_backend = "authorization"
+            return []
+
+        start = self._relationship_start(days)
+        plan_rows = self.get_plan_records(patient_id=scoped_patient_id, start=start, limit=5000)
+        execution_rows = self.get_execution_logs(patient_id=scoped_patient_id, start=start, limit=5000)
+        doctor_ids: set[int] = set()
+        for row in plan_rows:
+            doctor_id = row.get("DoctorId") or row.get("doctor_id")
+            if doctor_id is not None:
+                doctor_ids.add(int(doctor_id))
+        for row in execution_rows:
+            doctor_id = row.get("DoctorId") or row.get("doctor_id")
+            if doctor_id is not None:
+                doctor_ids.add(int(doctor_id))
+
+        name_map = self.get_user_name_map(doctor_ids)
+        return [
+            {
+                "doctor_id": doctor_id,
+                "doctor_name": name_map.get(doctor_id),
+            }
+            for doctor_id in sorted(doctor_ids)
+        ]
+
+    def _relationship_start(self, days: int | None) -> datetime | None:
+        if days is None:
+            return None
+        return datetime.now() - timedelta(days=int(days))
 
     def get_walk_anchor(self, *, patient_id: int | None = None) -> datetime | None:
         patient_id, allowed = self._authorized_patient_scope(patient_id=patient_id)
