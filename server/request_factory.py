@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from agent.schemas import OrchestrationTaskType, OrchestratorRequest
@@ -12,6 +13,28 @@ def normalize_question_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _normalize_service_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def ensure_session_ids(payload: dict[str, Any]) -> tuple[str, str]:
+    """Normalize service-level session identifiers in one place.
+
+    The request factory writes these IDs into SessionIdentityContext. The SDK
+    runtime later uses session_id as the raw-history key; conversation_id is a
+    business tracing ID and does not merge session histories.
+    """
+
+    session_id = _normalize_service_id(payload.get("session_id")) or f"sess_{uuid.uuid4().hex}"
+    conversation_id = _normalize_service_id(payload.get("conversation_id")) or f"conv_{uuid.uuid4().hex}"
+    payload["session_id"] = session_id
+    payload["conversation_id"] = conversation_id
+    return session_id, conversation_id
 
 
 def build_orchestrator_request(
@@ -34,6 +57,8 @@ def build_orchestrator_request(
     need_gait_evidence: bool | None = None,
     response_style: str | None = None,
     context: dict[str, Any] | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> OrchestratorRequest:
     """Build the only formal request shape used by server and demo adapters.
 
@@ -43,7 +68,18 @@ def build_orchestrator_request(
     """
 
     if identity_context is None:
-        identity_context = build_session_identity_context(doctor_id=doctor_id, patient_id=patient_id)
+        session_id = _normalize_service_id(session_id)
+        conversation_id = _normalize_service_id(conversation_id)
+        if session_id is None or conversation_id is None:
+            generated_session_id, generated_conversation_id = ensure_session_ids({})
+            session_id = session_id or generated_session_id
+            conversation_id = conversation_id or generated_conversation_id
+        identity_context = build_session_identity_context(
+            doctor_id=doctor_id,
+            patient_id=patient_id,
+            session_id=session_id,
+            conversation_id=conversation_id,
+        )
 
     effective_doctor_id = doctor_id
     effective_patient_id = patient_id
@@ -75,6 +111,8 @@ def build_orchestrator_request(
 
 
 def build_orchestrator_request_from_payload(payload: dict[str, Any]) -> OrchestratorRequest:
+    payload = dict(payload)
+    session_id, conversation_id = ensure_session_ids(payload)
     doctor_id = payload.get("doctor_id", payload.get("therapist_id"))
     patient_id = payload.get("patient_id")
     identity_context = build_session_identity_context(
@@ -82,8 +120,8 @@ def build_orchestrator_request_from_payload(payload: dict[str, Any]) -> Orchestr
         patient_id=patient_id,
         tenant_id=payload.get("tenant_id"),
         org_id=payload.get("org_id"),
-        session_id=payload.get("session_id"),
-        conversation_id=payload.get("conversation_id"),
+        session_id=session_id,
+        conversation_id=conversation_id,
         authorized_scope=payload.get("authorized_scope"),
     )
     return build_orchestrator_request(

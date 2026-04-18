@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 LLMProvider = Literal["openai", "qwen", "deepseek"]
+AgentSessionBackend = Literal["redis", "memory"]
 
 
 class ResolvedLLMConfig(BaseModel):
@@ -37,6 +38,12 @@ class Settings(BaseSettings):
 
     llm_provider: LLMProvider = "qwen"
     agents_tracing_enabled: bool = False
+
+    agent_session_backend: AgentSessionBackend = "redis"
+    agent_session_redis_url: str | None = "redis://127.0.0.1:6379/0"
+    agent_session_redis_key_prefix: str = "metaagent:agents:session"
+    agent_session_ttl_seconds: int | None = 60 * 60 * 24
+    agent_session_history_limit: int | None = None
 
     openai_api_key: str | None = None
     openai_model: str | None = None

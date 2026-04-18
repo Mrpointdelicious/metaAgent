@@ -122,3 +122,23 @@ python server/main.py
 - `agent/llm_router.py`：低置信或模糊场景 refine。
 
 Demo 层只负责读取本地参数、构造身份化 request、调用 orchestrator、打印输出。
+
+## Session 模拟前端行为
+
+`Demo/doctor_demo.py` 和 `Demo/patient_demo.py` 现在按前端调用方式工作：启动时确定一组身份、`session_id` 和 `conversation_id`，之后整个交互循环都复用同一组字段。Demo 不拼接聊天历史，也不维护正式记忆逻辑；原始历史由 `server/session_manager.py` 提供的 SDK session 管理。
+
+医生端：
+
+```bash
+python Demo/doctor_demo.py --doctor-id 56 --session-id s1 --conversation-id c1
+```
+
+患者端：
+
+```bash
+python Demo/patient_demo.py --patient-id 20001 --session-id patient-s1 --conversation-id patient-c1
+```
+
+如果不传 `--session-id` 或 `--conversation-id`，Demo 会在启动时通过 `server.request_factory.ensure_session_ids(...)` 生成一次，并在当前进程的所有轮次中保持不变。每一轮都会重新构造一个前端 payload，再交给 `build_orchestrator_request_from_payload(...)` 和正式 orchestrator 主链。
+
+`Demo/main.py` 仍是 legacy/local debug shell，但也遵循同样原则：显式身份、固定 session/conversation、无手工历史拼接。

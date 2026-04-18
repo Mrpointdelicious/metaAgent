@@ -164,3 +164,51 @@ services/     业务逻辑与权限作用域执行
 tools/        受控工具包装
 tests/        主链、开放分析、身份与路由测试
 ```
+
+## Session 原始历史记忆
+
+当前已经启用 OpenAI Agents SDK session 作为第一层原始历史记忆。以前 `server/request_factory.py` 只把 `session_id` / `conversation_id` 写入 `SessionIdentityContext`，但 `agent/open_analytics_agent.py` 调用 `Runner.run_sync(...)` 时没有传入 `session`，所以 SDK 不会自动读取或写入多轮原始历史；多轮只靠入口继续传 `doctor_id` / `patient_id`，不能保证 follow-up 复用上一轮上下文。
+
+现在的链路是：
+
+```text
+frontend payload
+-> server.request_factory.ensure_session_ids
+-> SessionIdentityContext.session_id / conversation_id
+-> OpenAnalyticsAgentRuntime._session_for_request
+-> AgentSessionManager.get_or_create_session(session_id)
+-> Runner.run_sync(..., session=agent_session)
+```
+
+`session_id` 是 SDK 原始历史的唯一主键：相同 `session_id` 复用同一段 raw transcript，不同 `session_id` 互相隔离。`conversation_id` 是业务追踪字段，可以用于日志、前端会话或后续 thread state 关联，但不会把不同 `session_id` 的 SDK 历史合并。
+
+正式入口 payload 支持并建议显式传入：
+
+```json
+{
+  "doctor_id": 56,
+  "session_id": "s1",
+  "conversation_id": "c1",
+  "question": "查询我所有的患者"
+}
+```
+
+同一个前端会话的后续请求必须继续携带同一个 `session_id` / `conversation_id`。如果 payload 缺少其中任一字段，`server/request_factory.py` 会用固定规则生成 `sess_<uuid>` / `conv_<uuid>`，`server/main.py` 会在响应里返回最终使用的值，调用方应保存并在下一轮继续传回。
+
+Session 存储由 `server/session_manager.py` 统一管理。生产配置优先使用 OpenAI Agents SDK 官方 `RedisSession`：
+
+```text
+AGENT_SESSION_BACKEND=redis
+AGENT_SESSION_REDIS_URL=redis://127.0.0.1:6379/0
+AGENT_SESSION_REDIS_KEY_PREFIX=metaagent:agents:session
+AGENT_SESSION_TTL_SECONDS=86400
+```
+
+Redis 适合当前场景，因为业务主数据仍在 MySQL，而会话原始历史是短期状态，需要低延迟读写、TTL、隔离和快速清理。`memory` backend 只用于单进程测试和本地调试，不作为生产会话存储。
+
+本轮只落地第一层 raw history。后续多层上下文会继续扩展：
+
+- raw transcript：由 SDK session / Redis session 保存完整原始消息历史。
+- working memory：窗口化摘要，压缩最近多轮重点，减少 prompt 压力。
+- thread state store：保存结构化状态，例如当前患者集合、筛选条件、默认时间窗。
+- result artifacts：大结果集只存引用或 artifact id，不把 120 名患者等大对象长期塞进 prompt。

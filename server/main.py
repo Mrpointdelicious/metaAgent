@@ -16,6 +16,13 @@ from server.session_context import MissingIdentityContextError
 
 
 def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Formal service adapter: frontend payload -> request factory -> orchestrator.
+
+    Raw multi-turn history is not concatenated here. The request factory
+    standardizes session_id/conversation_id, and the Agent runtime uses
+    session_id to fetch the SDK session store.
+    """
+
     try:
         request = build_orchestrator_request_from_payload(payload)
     except MissingIdentityContextError as exc:
@@ -23,12 +30,17 @@ def handle_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "success": False,
             "task_type": payload.get("task_type") or "unknown",
             "structured_output": {"error": "missing_identity_context"},
-            "final_text": "缺少身份上下文：请求必须包含 doctor_id 或 patient_id。",
+            "final_text": "Missing identity context: request must include doctor_id or patient_id.",
             "validation_issues": [str(exc)],
             "execution_trace": [],
         }
+
     response = RehabAgentOrchestrator(get_settings()).run(request)
-    return response.model_dump(mode="json")
+    payload_response = response.model_dump(mode="json")
+    if request.identity_context is not None:
+        payload_response["session_id"] = request.identity_context.session_id
+        payload_response["conversation_id"] = request.identity_context.conversation_id
+    return payload_response
 
 
 def main() -> int:

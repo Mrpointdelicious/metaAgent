@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from config import ResolvedLLMConfig, Settings, get_settings
+from server.session_manager import AgentSessionManager
 from tools import ToolSpec
 
 from .agent_prompts import OPEN_ANALYTICS_AGENT_INSTRUCTIONS, build_open_analytics_agent_input
@@ -16,9 +17,16 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAnalyticsAgentRuntime:
-    def __init__(self, settings: Settings | None = None, *, max_turns: int = 12):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        max_turns: int = 12,
+        session_manager: AgentSessionManager | None = None,
+    ):
         self.settings = settings or get_settings()
         self.max_turns = max_turns
+        self.session_manager = session_manager or AgentSessionManager(self.settings)
 
     def can_run(
         self,
@@ -27,6 +35,13 @@ class OpenAnalyticsAgentRuntime:
         llm_config: ResolvedLLMConfig,
     ) -> bool:
         return mode == "agents_sdk" and llm_config.can_use_agents_sdk and bool(llm_config.model)
+
+    def _session_for_request(self, request: OrchestratorRequest) -> Any:
+        identity = request.identity_context
+        session_id = str(identity.session_id).strip() if identity and identity.session_id else ""
+        if not session_id:
+            raise RuntimeError("agents_sdk_runtime.session_missing: identity_context.session_id is required")
+        return self.session_manager.get_or_create_session(session_id)
 
     def run(
         self,
@@ -90,11 +105,13 @@ class OpenAnalyticsAgentRuntime:
             trace_include_sensitive_data=False,
             workflow_name="open_analytics_agent",
         )
+        agent_session = self._session_for_request(request)
         result = Runner.run_sync(
             agent,
             run_input,
             max_turns=self.max_turns,
             run_config=run_config,
+            session=agent_session,
         )
         parsed = self._parse_final_output(
             result.final_output,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -11,8 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from agent import RehabAgentOrchestrator
 from config import get_settings
 from Demo.cli import print_response
-from server.request_factory import build_orchestrator_request
-from server.session_context import build_session_identity_context
+from server.request_factory import build_orchestrator_request_from_payload, ensure_session_ids
 
 
 def _configure_console_encoding() -> None:
@@ -26,9 +26,32 @@ def _configure_console_encoding() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Doctor identity demo entry.")
     parser.add_argument("--doctor-id", type=int, required=True, help="Authenticated doctor ID for this demo session.")
+    parser.add_argument("--session-id", help="Frontend session_id to reuse for this demo run.")
+    parser.add_argument("--conversation-id", help="Frontend conversation_id to reuse for this demo run.")
     parser.add_argument("--question", help="Optional one-shot question. If omitted, starts an interactive loop.")
     parser.add_argument("--show-trace", action="store_true")
     return parser
+
+
+def build_demo_base_payload(
+    *,
+    doctor_id: int,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "doctor_id": doctor_id,
+        "session_id": session_id,
+        "conversation_id": conversation_id,
+    }
+    ensure_session_ids(payload)
+    return payload
+
+
+def build_turn_payload(base_payload: dict[str, Any], text: str) -> dict[str, Any]:
+    payload = dict(base_payload)
+    payload["question"] = text
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,18 +59,23 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = get_settings()
     orchestrator = RehabAgentOrchestrator(settings)
-    identity = build_session_identity_context(doctor_id=args.doctor_id)
+    base_payload = build_demo_base_payload(
+        doctor_id=args.doctor_id,
+        session_id=args.session_id,
+        conversation_id=args.conversation_id,
+    )
 
     def run_text(text: str) -> None:
-        request = build_orchestrator_request(
-            raw_text=text,
-            doctor_id=args.doctor_id,
-            identity_context=identity,
-        )
+        request = build_orchestrator_request_from_payload(build_turn_payload(base_payload, text))
         response = orchestrator.run(request)
         print_response(response, json_output=False, show_trace=args.show_trace)
 
-    print(f"Doctor demo started with doctor_id={args.doctor_id}.")
+    print(
+        "Doctor demo started with "
+        f"doctor_id={args.doctor_id}, "
+        f"session_id={base_payload['session_id']}, "
+        f"conversation_id={base_payload['conversation_id']}."
+    )
     if args.question:
         run_text(args.question)
         return 0
