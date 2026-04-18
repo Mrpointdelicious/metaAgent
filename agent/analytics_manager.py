@@ -534,7 +534,14 @@ class AnalyticsManager:
         return sorted(catalog, key=lambda item: item["tool_name"])
 
     def _agent_tool_specs(self, routed_decision: RoutedDecision, request: OrchestratorRequest | None = None) -> list[ToolSpec]:
-        if routed_decision.final_scope == "doctor_aggregate":
+        if routed_decision.final_intent == "result_set_query":
+            allowed_names = {
+                "filter_result_set_by_training",
+                "filter_result_set_by_absence",
+                "filter_result_set_by_plan_completion",
+                "enrich_result_set_with_completion_time",
+            }
+        elif routed_decision.final_scope == "doctor_aggregate":
             allowed_names = {"list_doctors_with_active_plans"}
         else:
             allowed_names = {

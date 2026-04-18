@@ -51,6 +51,26 @@ PLAN_LABELS = ("计划", "plan")
 SELF_NAME_LOOKUP_KEYWORDS = ("我的名字", "我叫什么", "查询我的名字", "my name", "what is my name")
 MY_PATIENTS_LOOKUP_KEYWORDS = ("我的患者", "所有的患者", "相关患者", "list my patients", "my patients")
 MY_DOCTORS_LOOKUP_KEYWORDS = ("我的医生", "相关的医生", "有关的医生", "医生有哪些", "list my doctors", "my doctors")
+FOLLOW_UP_RESULT_SET_KEYWORDS = (
+    "这些患者",
+    "以上这些患者",
+    "上面这些患者",
+    "他们",
+    "上面那批人",
+    "刚才那批患者",
+    "这批患者",
+    "这些人",
+    "these patients",
+    "those patients",
+    "they",
+    "them",
+    "previous patients",
+)
+MY_PATIENTS_RESULT_SET_KEYWORDS = ("我的患者", "我所有的患者", "my patients", "all my patients")
+TRAINING_ACTION_KEYWORDS = ("训练", "到训", "有训练", "training", "trained")
+ABSENCE_ACTION_KEYWORDS = ("没来", "未到训", "缺席", "没有训练", "没训练", "absent", "absence", "no training")
+COMPLETION_ACTION_KEYWORDS = ("完成", "完成计划", "训练计划", "completion", "completed")
+COMPLETION_TIME_KEYWORDS = ("完成时间", "具体时间", "completion time", "when completed")
 
 
 class IntentRouter:
@@ -87,6 +107,19 @@ class IntentRouter:
                 lookup_entity_type="unknown",
                 lookup_user_id=None,
             )
+        if normalized == OrchestrationTaskType.RESULT_SET_QUERY:
+            text = (request.raw_text or "").strip()
+            operation, filter_kind, target_field = self._result_set_operation_slots(text, text.lower())
+            active = self._active_result_set(request)
+            return IntentDecision(
+                intent="result_set_query",
+                confidence=0.99,
+                rationale="Task type explicitly requests a result-set follow-up.",
+                result_set_operation=operation,
+                result_set_filter_kind=filter_kind,
+                result_set_target_field=target_field,
+                result_set_id=active.get("result_set_id") if isinstance(active, dict) else None,
+            )
         if normalized == OrchestrationTaskType.OPEN_ANALYTICS_QUERY:
             return self._build_open_analytics_decision(
                 request,
@@ -102,6 +135,10 @@ class IntentRouter:
                 base_confidence=0.2,
                 fallback_rationale="No fixed task matched, falling back to open analytics.",
             )
+
+        result_set_decision = self._detect_result_set_query(request, raw_text, lowered)
+        if result_set_decision is not None:
+            return result_set_decision
 
         lookup_decision = self._detect_lookup_query(request)
         if lookup_decision is not None:
@@ -145,6 +182,59 @@ class IntentRouter:
             base_confidence=0.45,
             fallback_rationale="No fixed workflow matched, falling back to open analytics.",
         )
+
+    def _detect_result_set_query(self, request: OrchestratorRequest, text: str, lowered: str) -> IntentDecision | None:
+        active = self._active_result_set(request)
+        has_followup_reference = self._has_any(text, lowered, FOLLOW_UP_RESULT_SET_KEYWORDS)
+        has_identity_roster_reference = (
+            request.identity_context is not None
+            and request.identity_context.actor_role == "doctor"
+            and self._has_any(text, lowered, MY_PATIENTS_RESULT_SET_KEYWORDS)
+            and self._has_result_set_operation_signal(text, lowered)
+        )
+        if not has_followup_reference and not has_identity_roster_reference:
+            return None
+
+        operation, filter_kind, target_field = self._result_set_operation_slots(text, lowered)
+        if has_followup_reference and active is None and not has_identity_roster_reference:
+            return IntentDecision(
+                intent="result_set_query",
+                confidence=0.91,
+                rationale="Matched result-set follow-up wording, but no active result set is available.",
+                result_set_operation=operation,
+                result_set_filter_kind=filter_kind,
+                result_set_target_field=target_field,
+            )
+        return IntentDecision(
+            intent="result_set_query",
+            confidence=0.93,
+            rationale="Matched result-set follow-up or identity roster operation wording.",
+            result_set_operation=operation,
+            result_set_filter_kind=filter_kind,
+            result_set_target_field=target_field,
+            result_set_id=active.get("result_set_id") if isinstance(active, dict) else None,
+        )
+
+    def _active_result_set(self, request: OrchestratorRequest) -> dict | None:
+        active = (request.context or {}).get("active_result_set")
+        return active if isinstance(active, dict) and active.get("result_set_id") else None
+
+    def _has_result_set_operation_signal(self, text: str, lowered: str) -> bool:
+        return any(
+            self._has_any(text, lowered, keywords)
+            for keywords in (TRAINING_ACTION_KEYWORDS, ABSENCE_ACTION_KEYWORDS, COMPLETION_ACTION_KEYWORDS, COMPLETION_TIME_KEYWORDS)
+        )
+
+    def _result_set_operation_slots(self, text: str, lowered: str) -> tuple[str | None, str | None, str | None]:
+        if self._has_any(text, lowered, COMPLETION_TIME_KEYWORDS):
+            return "enrich", None, "completion_time"
+        if self._has_any(text, lowered, ABSENCE_ACTION_KEYWORDS):
+            return "filter", "absence", None
+        if self._has_any(text, lowered, COMPLETION_ACTION_KEYWORDS):
+            return "filter", "plan_completion", None
+        if self._has_any(text, lowered, TRAINING_ACTION_KEYWORDS):
+            return "filter", "training", None
+        return "detail", None, None
 
     def _detect_lookup_query(self, request: OrchestratorRequest) -> IntentDecision | None:
         text = request.raw_text or ""

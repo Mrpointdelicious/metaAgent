@@ -86,6 +86,15 @@ class OptionalDaysInput(BaseModel):
     days: int | None = Field(default=None, ge=1, le=3650, description="Optional relationship window in days.")
 
 
+class ResultSetWindowInput(BaseModel):
+    result_set_id: str = Field(description="Registered result set ID.")
+    days: int = Field(default=30, ge=1, le=3650, description="Relative time window in days.")
+
+
+class ResultSetInput(BaseModel):
+    result_set_id: str = Field(description="Registered result set ID.")
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     tool_name: str

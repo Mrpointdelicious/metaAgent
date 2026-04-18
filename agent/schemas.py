@@ -27,6 +27,7 @@ class OrchestrationTaskType(str, Enum):
     GAIT_REVIEW = "gait_review"
     OPEN_ANALYTICS_QUERY = "open_analytics_query"
     LOOKUP_QUERY = "lookup_query"
+    RESULT_SET_QUERY = "result_set_query"
     UNKNOWN = "unknown"
 
 
@@ -38,6 +39,7 @@ TaskType = Literal[
     "gait_review",
     "open_analytics_query",
     "lookup_query",
+    "result_set_query",
     "unknown",
     "single_review",
     "risk_screen",
@@ -55,6 +57,9 @@ AnalyticsParseMode = Literal["single_window", "dual_window", "fallback"]
 DoctorIdSource = Literal["explicit", "session", "none"]
 LookupSubtype = Literal["lookup_user_name", "list_my_patients", "list_my_doctors"]
 LookupEntityType = Literal["doctor", "patient", "unknown"]
+ResultSetOperation = Literal["filter", "enrich", "sort", "detail"]
+ResultSetFilterKind = Literal["training", "absence", "plan_completion"]
+ResultSetTargetField = Literal["completion_time", "last_training_time", "risk", "last_visit"]
 
 AnalyticsIntentName = Literal[
     "single_patient_review",
@@ -62,6 +67,7 @@ AnalyticsIntentName = Literal[
     "weekly_report",
     "open_analytics_query",
     "lookup_query",
+    "result_set_query",
 ]
 
 
@@ -78,6 +84,7 @@ _NORMALIZED_TO_LEGACY: dict[OrchestrationTaskType, str] = {
     OrchestrationTaskType.GAIT_REVIEW: "unsupported",
     OrchestrationTaskType.OPEN_ANALYTICS_QUERY: "unsupported",
     OrchestrationTaskType.LOOKUP_QUERY: "unsupported",
+    OrchestrationTaskType.RESULT_SET_QUERY: "unsupported",
     OrchestrationTaskType.UNKNOWN: "unsupported",
 }
 
@@ -191,6 +198,10 @@ class IntentDecision(BaseModel):
     lookup_subtype: LookupSubtype | None = Field(default=None, description="Lookup subtype for lightweight entity queries.")
     lookup_entity_type: LookupEntityType | None = Field(default=None, description="Entity type targeted by a lookup query.")
     lookup_user_id: int | None = Field(default=None, description="User ID targeted by a lookup query.")
+    result_set_operation: ResultSetOperation | None = Field(default=None, description="Coarse operation for result-set follow-up.")
+    result_set_filter_kind: ResultSetFilterKind | None = Field(default=None, description="Filter capability for result-set follow-up.")
+    result_set_target_field: ResultSetTargetField | None = Field(default=None, description="Field requested by result-set enrich/detail follow-up.")
+    result_set_id: str | None = Field(default=None, description="Explicit or active result set ID.")
 
 
 class LLMRouteDecision(BaseModel):
@@ -201,6 +212,10 @@ class LLMRouteDecision(BaseModel):
     lookup_subtype: LookupSubtype | None = Field(default=None, description="LLM-refined lookup subtype.")
     lookup_entity_type: LookupEntityType | None = Field(default=None, description="LLM-refined lookup entity type.")
     lookup_user_id: int | None = Field(default=None, description="LLM-refined lookup user ID.")
+    result_set_operation: ResultSetOperation | None = Field(default=None, description="LLM-refined result-set operation.")
+    result_set_filter_kind: ResultSetFilterKind | None = Field(default=None, description="LLM-refined result-set filter kind.")
+    result_set_target_field: ResultSetTargetField | None = Field(default=None, description="LLM-refined target field.")
+    days: int | None = Field(default=None, description="LLM-refined relative time window.")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="LLM routing confidence.")
     rationale: str = Field(default="", description="Why the LLM chose this route.")
 
@@ -215,6 +230,11 @@ class RoutedDecision(BaseModel):
     lookup_subtype: LookupSubtype | None = Field(default=None, description="Merged lookup subtype.")
     lookup_entity_type: LookupEntityType | None = Field(default=None, description="Merged lookup entity type.")
     lookup_user_id: int | None = Field(default=None, description="Merged lookup user ID.")
+    result_set_operation: ResultSetOperation | None = Field(default=None, description="Merged result-set operation.")
+    result_set_filter_kind: ResultSetFilterKind | None = Field(default=None, description="Merged result-set filter kind.")
+    result_set_target_field: ResultSetTargetField | None = Field(default=None, description="Merged result-set target field.")
+    result_set_id: str | None = Field(default=None, description="Merged active or explicit result set ID.")
+    days: int | None = Field(default=None, description="Merged relative time window.")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0, description="Merged confidence.")
     rationale: str = Field(default="", description="Merged routing rationale.")
 

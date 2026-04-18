@@ -15,8 +15,10 @@ from services import (
     PlanService,
     ReflectionService,
     ReportService,
+    ResultSetService,
     UserLookupService,
 )
+from server.result_set_store import ResultSetStore, get_result_set_store
 from tools import (
     ToolSpec,
     build_analytics_tools,
@@ -26,6 +28,7 @@ from tools import (
     build_plan_tools,
     build_reflection_tools,
     build_report_tools,
+    build_result_set_tools,
     build_user_lookup_tools,
     build_tool_registry,
 )
@@ -63,10 +66,11 @@ UNRELIABLE_PHRASES = ("根据数据库推测", "大概", "猜测", "可能是数
 
 
 class RehabAgentOrchestrator:
-    def __init__(self, settings: Settings | None = None):
+    def __init__(self, settings: Settings | None = None, *, result_set_store: ResultSetStore | None = None):
         self.settings = settings or get_settings()
         self.intent_router = IntentRouter()
         self.llm_router = LLMRouter(settings=self.settings)
+        self.result_set_store = result_set_store or get_result_set_store()
 
         self.repository = RehabRepository(self.settings)
         self.analytics_service = AnalyticsService(self.repository, self.settings)
@@ -77,6 +81,7 @@ class RehabAgentOrchestrator:
         self.deviation_service = DeviationService(self.settings)
         self.reflection_service = ReflectionService()
         self.user_lookup_service = UserLookupService(self.repository, self.settings)
+        self.result_set_service = ResultSetService(self.repository, self.result_set_store)
         self.report_service = ReportService(
             self.repository,
             self.plan_service,
@@ -99,7 +104,8 @@ class RehabAgentOrchestrator:
         self.report_tools = build_report_tools(self.report_service)
         self.reflection_tools = build_reflection_tools(self.report_service)
         self.user_lookup_tools = build_user_lookup_tools(self.user_lookup_service)
-        self.analytics_tools = build_analytics_tools(self.analytics_service) + self.user_lookup_tools
+        self.result_set_tools = build_result_set_tools(self.result_set_service)
+        self.analytics_tools = build_analytics_tools(self.analytics_service) + self.user_lookup_tools + self.result_set_tools
         self.analytics_tool_registry = build_tool_registry(self.analytics_tools)
         self.llm_planner = LLMPlanner(settings=self.settings)
         self.plan_validator = PlanValidator(tool_registry=self.analytics_tool_registry)
@@ -129,6 +135,7 @@ class RehabAgentOrchestrator:
         )
         if identity_error is not None:
             return self._build_identity_error_response(request, llm_config, identity_error)
+        request = self._attach_working_context(request)
         self.repository.set_identity_context(request.identity_context)
         identity_trace = self._build_identity_trace(request.identity_context)
         mode, execution_mode, mode_issues = self._resolve_mode(request, llm_config)
@@ -148,6 +155,16 @@ class RehabAgentOrchestrator:
                 execution_mode=execution_mode,
                 issue=authorization_issue,
                 traces=[identity_trace, route_trace],
+                mode_issues=mode_issues,
+            )
+        if routed.final_intent == "result_set_query":
+            return self._run_result_set_query(
+                request=request,
+                routed=routed,
+                identity_trace=identity_trace,
+                route_trace=route_trace,
+                llm_config=llm_config,
+                execution_mode=execution_mode,
                 mode_issues=mode_issues,
             )
         if routed.final_intent == "lookup_query":
@@ -218,6 +235,13 @@ class RehabAgentOrchestrator:
             update["therapist_id"] = None
         return request.model_copy(update=update), None
 
+    def _attach_working_context(self, request: OrchestratorRequest) -> OrchestratorRequest:
+        context = self.result_set_store.apply_to_context(
+            request.identity_context,
+            request.context or {},
+        )
+        return request.model_copy(update={"context": context})
+
     def _identity_from_request_fields(self, request: OrchestratorRequest) -> SessionIdentityContext | None:
         doctor_id = request.doctor_id or request.therapist_id
         patient_id = request.patient_id
@@ -286,7 +310,7 @@ class RehabAgentOrchestrator:
         extracted = self._extract_slots(request.raw_text or "")
         target_patient_id = request.patient_id or extracted.get("patient_id")
         target_plan_id = request.plan_id or extracted.get("plan_id")
-        if routed.final_intent == "lookup_query":
+        if routed.final_intent in {"lookup_query", "result_set_query"}:
             return None
         if identity.actor_role == "patient":
             actor_patient_id = identity.actor_patient_id
@@ -551,6 +575,19 @@ class RehabAgentOrchestrator:
             "source_tool": tool_name,
             **output,
         }
+        traces = [identity_trace, route_trace, lookup_trace]
+        if success:
+            artifact, artifact_trace = self._register_result_set_from_rows(
+                request=request,
+                rows=output.get("rows") or [],
+                result_set_type="patient_set" if tool_name == "list_my_patients" else "doctor_set",
+                summary=f"{tool_name} returned {output.get('count', 0)} rows.",
+                source_tool=tool_name,
+                source_intent="lookup_query",
+            )
+            structured_output["active_result_set"] = artifact.model_dump(mode="json", exclude={"rows"})
+            structured_output["result_set_id"] = artifact.result_set_id
+            traces.append(artifact_trace)
         return OrchestratorResponse(
             success=success,
             task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
@@ -560,7 +597,7 @@ class RehabAgentOrchestrator:
             structured_output=structured_output,
             final_text=self._render_roster_lookup(tool_name, output),
             validation_issues=list(mode_issues) if success else list(mode_issues) + [lookup_trace.error or "lookup.identity_scope_denied"],
-            execution_trace=[identity_trace, route_trace, lookup_trace],
+            execution_trace=traces,
         )
 
     def _default_lookup_user_id(self, request: OrchestratorRequest) -> int | None:
@@ -601,12 +638,42 @@ class RehabAgentOrchestrator:
     def _patient_display(self, row: dict[str, Any]) -> str:
         patient_id = row.get("patient_id")
         patient_name = row.get("patient_name")
-        return f"{patient_name}（患者{patient_id}）" if patient_name else f"患者{patient_id}"
+        return str(patient_name) if patient_name else f"患者{patient_id}"
 
     def _doctor_display(self, row: dict[str, Any]) -> str:
         doctor_id = row.get("doctor_id")
         doctor_name = row.get("doctor_name")
-        return f"{doctor_name}（医生{doctor_id}）" if doctor_name else f"医生{doctor_id}"
+        return str(doctor_name) if doctor_name else f"医生{doctor_id}"
+
+    def _register_result_set_from_rows(
+        self,
+        *,
+        request: OrchestratorRequest,
+        rows: list[dict[str, Any]],
+        result_set_type: str,
+        summary: str,
+        source_tool: str,
+        source_intent: str,
+    ):
+        if request.identity_context is None:
+            raise ValueError("result_set.identity_context_required")
+        artifact = self.result_set_store.register_result_set(
+            identity_context=request.identity_context,
+            rows=[dict(row) for row in rows],
+            result_set_type=result_set_type,
+            summary=summary,
+            source_tool=source_tool,
+            source_intent=source_intent,
+        )
+        trace = StepExecutionResult(
+            step_id="result_set_register",
+            tool_name="result_set_store",
+            success=True,
+            args={"source_tool": source_tool, "result_set_type": result_set_type},
+            output_summary=f"active_result_set={artifact.result_set_id}; count={artifact.count}",
+            raw_output=artifact.model_dump(mode="json", exclude={"rows"}),
+        )
+        return artifact, trace
 
     def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
         if entity_type == "doctor":
@@ -645,6 +712,172 @@ class RehabAgentOrchestrator:
             validation_issues=list(mode_issues) + [issue],
             execution_trace=traces + [auth_trace],
         )
+
+    def _run_result_set_query(
+        self,
+        *,
+        request: OrchestratorRequest,
+        routed: RoutedDecision,
+        identity_trace: StepExecutionResult,
+        route_trace: StepExecutionResult,
+        llm_config: ResolvedLLMConfig,
+        execution_mode: str,
+        mode_issues: list[str],
+    ) -> OrchestratorResponse:
+        traces = [identity_trace, route_trace]
+        active = self.result_set_store.get_active_ref(request.identity_context)
+        if active is None and self._should_seed_patient_result_set(request):
+            seed_artifact, seed_traces = self._seed_patient_result_set(request)
+            active = seed_artifact.active_result_set if hasattr(seed_artifact, "active_result_set") else None
+            active = self.result_set_store.get_active_ref(request.identity_context)
+            traces.extend(seed_traces)
+
+        if active is None:
+            missing_trace = StepExecutionResult(
+                step_id="active_result_set",
+                tool_name="result_set_store",
+                success=False,
+                args={},
+                output_summary="missing active result set for follow-up",
+                raw_output=request.context,
+                error="followup.missing_active_result_set",
+            )
+            return OrchestratorResponse(
+                success=False,
+                task_type=OrchestrationTaskType.RESULT_SET_QUERY.value,
+                execution_mode=execution_mode,
+                llm_provider=llm_config.provider,
+                llm_model=llm_config.model,
+                structured_output={"error": "followup.missing_active_result_set"},
+                final_text="没有可继续操作的上一轮结果集，请先生成一个患者名单或结果列表。",
+                validation_issues=list(mode_issues) + ["followup.missing_active_result_set"],
+                execution_trace=traces + [missing_trace],
+            )
+
+        tool_name = self._result_set_tool_name(routed)
+        if tool_name is None:
+            unsupported_trace = StepExecutionResult(
+                step_id="result_set_operation",
+                tool_name="result_set_router",
+                success=False,
+                args=routed.model_dump(mode="json"),
+                output_summary="unsupported result-set operation",
+                raw_output=routed.model_dump(mode="json"),
+                error="result_set.unsupported_operation",
+            )
+            return OrchestratorResponse(
+                success=False,
+                task_type=OrchestrationTaskType.RESULT_SET_QUERY.value,
+                execution_mode=execution_mode,
+                llm_provider=llm_config.provider,
+                llm_model=llm_config.model,
+                structured_output={"error": "result_set.unsupported_operation"},
+                final_text="当前结果集操作还不支持。",
+                validation_issues=list(mode_issues) + ["result_set.unsupported_operation"],
+                execution_trace=traces + [unsupported_trace],
+            )
+
+        days = self._result_set_days(request, routed)
+        args: dict[str, Any] = {"result_set_id": active.result_set_id}
+        if tool_name != "enrich_result_set_with_completion_time":
+            args["days"] = days
+        tool = self.analytics_tool_registry[tool_name]
+        output = tool.invoke(mode="direct", args=args)
+        success = bool(output.get("is_accessible"))
+        result_trace = StepExecutionResult(
+            step_id=tool_name,
+            tool_name=tool_name,
+            success=success,
+            args=args,
+            output_summary=f"{tool_name} count={output.get('count', 0)}",
+            raw_output=output,
+            error=None if success else output.get("reason") or "result_set.operation_failed",
+        )
+        return OrchestratorResponse(
+            success=success,
+            task_type=OrchestrationTaskType.RESULT_SET_QUERY.value,
+            execution_mode=execution_mode,
+            llm_provider=llm_config.provider,
+            llm_model=llm_config.model,
+            structured_output=output,
+            final_text=self._render_result_set_output(output),
+            validation_issues=list(mode_issues) if success else list(mode_issues) + [result_trace.error or "result_set.operation_failed"],
+            execution_trace=traces + [result_trace],
+        )
+
+    def _should_seed_patient_result_set(self, request: OrchestratorRequest) -> bool:
+        identity = request.identity_context
+        if identity is None or identity.actor_role != "doctor":
+            return False
+        text = (request.raw_text or "").lower()
+        return "我的患者" in text or "my patients" in text or "all my patients" in text
+
+    def _seed_patient_result_set(self, request: OrchestratorRequest):
+        days = self._lookup_days(request)
+        args = {"days": days} if days is not None else {}
+        tool = self.analytics_tool_registry["list_my_patients"]
+        output = tool.invoke(mode="direct", args=args)
+        lookup_trace = StepExecutionResult(
+            step_id="seed_active_result_set",
+            tool_name="list_my_patients",
+            success=bool(output.get("is_accessible")),
+            args=args,
+            output_summary=f"seed patient result set count={output.get('count', 0)}",
+            raw_output=output,
+            error=None if output.get("is_accessible") else output.get("reason") or "lookup.identity_scope_denied",
+        )
+        artifact, artifact_trace = self._register_result_set_from_rows(
+            request=request,
+            rows=output.get("rows") or [],
+            result_set_type="patient_set",
+            summary=f"list_my_patients returned {output.get('count', 0)} rows.",
+            source_tool="list_my_patients",
+            source_intent="result_set_query",
+        )
+        return artifact, [lookup_trace, artifact_trace]
+
+    def _result_set_tool_name(self, routed: RoutedDecision) -> str | None:
+        if routed.result_set_operation == "enrich" and routed.result_set_target_field == "completion_time":
+            return "enrich_result_set_with_completion_time"
+        if routed.result_set_operation == "filter":
+            if routed.result_set_filter_kind == "training":
+                return "filter_result_set_by_training"
+            if routed.result_set_filter_kind == "absence":
+                return "filter_result_set_by_absence"
+            if routed.result_set_filter_kind == "plan_completion":
+                return "filter_result_set_by_plan_completion"
+        return None
+
+    def _result_set_days(self, request: OrchestratorRequest, routed: RoutedDecision) -> int:
+        if routed.days is not None:
+            return int(routed.days)
+        if request.days is not None:
+            return int(request.days)
+        extracted = self._extract_slots(request.raw_text or "")
+        days = extracted.get("days")
+        if days is not None:
+            return int(days)
+        return int((request.context or {}).get("default_time_window_days") or self.settings.default_time_window_days)
+
+    def _render_result_set_output(self, output: dict[str, Any]) -> str:
+        if not output.get("is_accessible"):
+            return "当前身份上下文无权访问该结果集。"
+        rows = output.get("rows") or []
+        lines = [str(output.get("summary") or f"结果集包含 {len(rows)} 条记录。")]
+        for index, row in enumerate(rows[:20], start=1):
+            label = self._patient_display(row) if row.get("patient_id") is not None else self._doctor_display(row)
+            details: list[str] = []
+            if row.get("completion_time"):
+                details.append(f"completion_time {row.get('completion_time')}")
+            if row.get("last_training_time"):
+                details.append(f"last_training_time {row.get('last_training_time')}")
+            if row.get("training_count_in_window") is not None:
+                details.append(f"training_count {row.get('training_count_in_window')}")
+            if row.get("completed_plan_count_in_window") is not None:
+                details.append(f"completed_plan_count {row.get('completed_plan_count_in_window')}")
+            suffix = " | " + " | ".join(details) if details else ""
+            lines.append(f"{index}. {label}{suffix}")
+        return "\n".join(lines)
 
     def _run_fixed_workflow(
         self,
@@ -796,6 +1029,7 @@ class RehabAgentOrchestrator:
                 f"final_subtype={routed.final_subtype or 'none'}; "
                 f"final_scope={routed.final_scope or 'none'}; "
                 f"lookup={routed.lookup_entity_type or 'none'}:{routed.lookup_user_id or 'none'}; "
+                f"result_set={routed.result_set_operation or 'none'}:{routed.result_set_filter_kind or routed.result_set_target_field or 'none'}; "
                 f"llm_refined={llm_called}"
             ),
             raw_output=routed.model_dump(mode="json"),

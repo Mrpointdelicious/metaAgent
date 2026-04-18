@@ -49,6 +49,13 @@ class LLMRouter:
                 or self._has_doctor_aggregate_signal(text)
                 or self._is_follow_up(text)
             )
+        if rule_decision.intent == "result_set_query":
+            return (
+                rule_decision.confidence < 0.9
+                or rule_decision.result_set_operation is None
+                or (rule_decision.result_set_operation == "filter" and rule_decision.result_set_filter_kind is None)
+                or (rule_decision.result_set_operation == "enrich" and rule_decision.result_set_target_field is None)
+            )
 
         return rule_decision.confidence < 0.75 or self._is_follow_up(text)
 
@@ -137,14 +144,17 @@ class LLMRouter:
         return (
             "You are a routing classifier for a rehab analytics application. "
             "Return only JSON that matches the provided schema. "
-            "You identify intent, open analytics subtype, scope, doctor_id_source, confidence, and rationale. "
+            "You identify intent, open analytics subtype, scope, result-set operation fields, confidence, and rationale. "
             "Never generate SQL. Never call tools. Never execute the request. "
-            "Supported intents: single_patient_review, risk_screening, weekly_report, open_analytics_query, lookup_query. "
+            "Supported intents: single_patient_review, risk_screening, weekly_report, open_analytics_query, lookup_query, result_set_query. "
             "Supported open analytics subtypes: absent_old_patients_recent_window, absent_from_baseline_window, doctors_with_active_plans. "
             "Supported scopes: single_doctor, doctor_aggregate, patient_single. "
             "Lookup queries such as doctor name / patient name / who is this ID should use intent=lookup_query, "
             "lookup_subtype=lookup_user_name, lookup_entity_type doctor/patient/unknown, and lookup_user_id. "
             "Roster queries such as my patients or my doctors should use lookup_subtype=list_my_patients or list_my_doctors. "
+            "Result-set follow-ups such as these patients / those patients / they / previous patients should use intent=result_set_query. "
+            "For result_set_query use result_set_operation filter/enrich/sort/detail; filter kinds include training, absence, plan_completion; "
+            "enrich target fields include completion_time. "
             "Scope rules: explicit doctor ID wins; single doctor analytics may inherit session doctor ID; "
             "doctor aggregate questions such as which doctors / each doctor / whole hospital must ignore session doctor as a filter."
         )
@@ -185,6 +195,9 @@ class LLMRouter:
             lookup_subtype=rule_decision.lookup_subtype,
             lookup_entity_type=rule_decision.lookup_entity_type,
             lookup_user_id=rule_decision.lookup_user_id,
+            result_set_operation=rule_decision.result_set_operation,
+            result_set_filter_kind=rule_decision.result_set_filter_kind,
+            result_set_target_field=rule_decision.result_set_target_field,
             confidence=rule_decision.confidence,
             rationale=rationale,
         )
@@ -227,6 +240,10 @@ def merge_rule_and_llm(
             lookup_subtype=rule_decision.lookup_subtype,
             lookup_entity_type=rule_decision.lookup_entity_type,
             lookup_user_id=rule_decision.lookup_user_id,
+            result_set_operation=rule_decision.result_set_operation,
+            result_set_filter_kind=rule_decision.result_set_filter_kind,
+            result_set_target_field=rule_decision.result_set_target_field,
+            result_set_id=rule_decision.result_set_id,
             confidence=rule_decision.confidence,
             rationale=f"rule_only: {rule_decision.rationale}",
         )
@@ -242,6 +259,11 @@ def merge_rule_and_llm(
             lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
             lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
             lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
+            result_set_operation=llm_decision.result_set_operation or rule_decision.result_set_operation,
+            result_set_filter_kind=llm_decision.result_set_filter_kind or rule_decision.result_set_filter_kind,
+            result_set_target_field=llm_decision.result_set_target_field or rule_decision.result_set_target_field,
+            result_set_id=rule_decision.result_set_id,
+            days=llm_decision.days,
             confidence=rule_decision.confidence,
             rationale=f"kept high-confidence fixed rule decision; llm={llm_decision.rationale}",
         )
@@ -261,8 +283,34 @@ def merge_rule_and_llm(
             lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
             lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
             lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
+            result_set_operation=llm_decision.result_set_operation or rule_decision.result_set_operation,
+            result_set_filter_kind=llm_decision.result_set_filter_kind or rule_decision.result_set_filter_kind,
+            result_set_target_field=llm_decision.result_set_target_field or rule_decision.result_set_target_field,
+            result_set_id=rule_decision.result_set_id,
+            days=llm_decision.days,
             confidence=confidence,
             rationale=f"open analytics merged rule and llm; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
+        )
+
+    if rule_decision.intent == "result_set_query":
+        confidence = max(rule_decision.confidence, llm_decision.confidence)
+        return RoutedDecision(
+            rule_decision=rule_decision,
+            llm_decision=llm_decision,
+            final_intent="result_set_query",
+            final_subtype=None,
+            final_scope=None,
+            doctor_id_source=rule_decision.doctor_id_source,
+            lookup_subtype=None,
+            lookup_entity_type=None,
+            lookup_user_id=None,
+            result_set_operation=llm_decision.result_set_operation or rule_decision.result_set_operation,
+            result_set_filter_kind=llm_decision.result_set_filter_kind or rule_decision.result_set_filter_kind,
+            result_set_target_field=llm_decision.result_set_target_field or rule_decision.result_set_target_field,
+            result_set_id=rule_decision.result_set_id,
+            days=llm_decision.days,
+            confidence=confidence,
+            rationale=f"result-set query merged rule and llm; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
         )
 
     if llm_decision.confidence > rule_decision.confidence + 0.15:
@@ -276,6 +324,11 @@ def merge_rule_and_llm(
             lookup_subtype=llm_decision.lookup_subtype or rule_decision.lookup_subtype,
             lookup_entity_type=llm_decision.lookup_entity_type or rule_decision.lookup_entity_type,
             lookup_user_id=llm_decision.lookup_user_id or rule_decision.lookup_user_id,
+            result_set_operation=llm_decision.result_set_operation or rule_decision.result_set_operation,
+            result_set_filter_kind=llm_decision.result_set_filter_kind or rule_decision.result_set_filter_kind,
+            result_set_target_field=llm_decision.result_set_target_field or rule_decision.result_set_target_field,
+            result_set_id=rule_decision.result_set_id,
+            days=llm_decision.days,
             confidence=llm_decision.confidence,
             rationale=f"llm override because confidence is materially higher; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
         )
@@ -290,6 +343,11 @@ def merge_rule_and_llm(
         lookup_subtype=rule_decision.lookup_subtype or llm_decision.lookup_subtype,
         lookup_entity_type=rule_decision.lookup_entity_type or llm_decision.lookup_entity_type,
         lookup_user_id=rule_decision.lookup_user_id or llm_decision.lookup_user_id,
+        result_set_operation=rule_decision.result_set_operation or llm_decision.result_set_operation,
+        result_set_filter_kind=rule_decision.result_set_filter_kind or llm_decision.result_set_filter_kind,
+        result_set_target_field=rule_decision.result_set_target_field or llm_decision.result_set_target_field,
+        result_set_id=rule_decision.result_set_id,
+        days=llm_decision.days,
         confidence=max(rule_decision.confidence, llm_decision.confidence),
         rationale=f"kept rule intent with llm enrichment; rule={rule_decision.rationale}; llm={llm_decision.rationale}",
     )

@@ -80,6 +80,14 @@ def build_orchestrator_request(
             session_id=session_id,
             conversation_id=conversation_id,
         )
+    elif identity_context.session_id is None or identity_context.conversation_id is None:
+        generated_session_id, generated_conversation_id = ensure_session_ids({})
+        identity_context = identity_context.model_copy(
+            update={
+                "session_id": identity_context.session_id or generated_session_id,
+                "conversation_id": identity_context.conversation_id or generated_conversation_id,
+            }
+        )
 
     effective_doctor_id = doctor_id
     effective_patient_id = patient_id

@@ -1,5 +1,6 @@
 from .common import EvidenceItem, RiskLevel, TimeRange
 from .session import SessionIdentityContext
+from .result_set import ActiveResultSetRef, ResultSetArtifact, ThreadWorkingContext
 from .domain import (
     DeviationMetrics,
     ExecutionLog,
@@ -33,6 +34,7 @@ __all__ = [
     "ExecutionLog",
     "ExecutionSummary",
     "AnalyticsResultRow",
+    "ActiveResultSetRef",
     "DoctorAnalyticsResultRow",
     "GaitExplanationSummary",
     "GaitSessionExplanation",
@@ -48,9 +50,11 @@ __all__ = [
     "ReflectionResult",
     "RankedPatientRow",
     "RankedPatients",
+    "ResultSetArtifact",
     "ReviewCard",
     "RiskLevel",
     "SessionIdentityContext",
+    "ThreadWorkingContext",
     "TimeRange",
     "TrainingTask",
     "WeeklyRiskReport",

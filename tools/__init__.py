@@ -8,6 +8,7 @@ from .outcome_tools import build_outcome_tools
 from .plan_tools import build_plan_tools
 from .reflection_tools import build_reflection_tools
 from .report_tools import build_report_tools
+from .result_set_tools import build_result_set_tools
 from .user_lookup_tools import build_user_lookup_tools
 
 
@@ -28,6 +29,7 @@ __all__ = [
     "build_plan_tools",
     "build_reflection_tools",
     "build_report_tools",
+    "build_result_set_tools",
     "build_tool_registry",
     "build_user_lookup_tools",
 ]

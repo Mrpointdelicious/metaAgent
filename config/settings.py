@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     agent_session_redis_key_prefix: str = "metaagent:agents:session"
     agent_session_ttl_seconds: int | None = 60 * 60 * 24
     agent_session_history_limit: int | None = None
+    result_set_ttl_seconds: int | None = 60 * 60 * 24
 
     openai_api_key: str | None = None
     openai_model: str | None = None
