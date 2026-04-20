@@ -37,7 +37,7 @@ from .intent_router import IntentRouter
 from .llm_planner import LLMPlanner
 from .llm_router import LLMRouter, merge_rule_and_llm
 from .plan_validator import PlanValidator
-from .roster_query import extract_limit, has_patient_roster_subject
+from .roster_query import extract_roster_days, extract_roster_limit, has_patient_roster_seed_query
 
 from .schemas import (
     ExecutionStrategy,
@@ -552,12 +552,10 @@ class RehabAgentOrchestrator:
     def _lookup_days(self, request: OrchestratorRequest) -> int | None:
         if request.days is not None:
             return int(request.days)
-        extracted = self._extract_slots(request.raw_text or "")
-        days = extracted.get("days")
-        return int(days) if days is not None else None
+        return extract_roster_days(request.raw_text or "")
 
     def _roster_display_limit(self, request: OrchestratorRequest) -> int:
-        explicit_limit = extract_limit(request.raw_text or "")
+        explicit_limit = extract_roster_limit(request.raw_text or "")
         if explicit_limit is not None:
             return max(1, min(int(explicit_limit), 100))
         return max(1, min(int(request.top_k or 10), 100))
@@ -755,7 +753,7 @@ class RehabAgentOrchestrator:
         identity = request.identity_context
         if identity is None or identity.actor_role != "doctor":
             return False
-        return has_patient_roster_subject(request.raw_text or "")
+        return has_patient_roster_seed_query(request.raw_text or "")
 
     def _seed_patient_result_set(self, request: OrchestratorRequest):
         days = self._lookup_days(request)
@@ -1572,7 +1570,7 @@ class RehabAgentOrchestrator:
         )
 
     def _extract_top_k(self, text: str) -> int | None:
-        return extract_limit(text)
+        return extract_roster_limit(text)
 
     def _extract_response_style(self, text: str) -> str | None:
         lowered = text.lower()
@@ -1598,20 +1596,7 @@ class RehabAgentOrchestrator:
         return None
 
     def _extract_days(self, text: str) -> int | None:
-        lowered = text.lower()
-        if any(token in text for token in ("本周", "最近一周", "近一周")) or "last week" in lowered:
-            return 7
-        if any(token in text for token in ("本月", "最近一个月", "近一个月")) or "last month" in lowered:
-            return 30
-        for pattern in (
-            r"(?:最近|过去|近|当前)\s*(\d+)\s*天",
-            r"(\d+)\s*天",
-            r"last\s*(\d+)\s*days?",
-        ):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
+        return extract_roster_days(text)
 
     def _extract_slots(self, text: str) -> dict[str, Any]:
         if not text:

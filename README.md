@@ -346,6 +346,11 @@ are parsed there. Roster rendering uses `_roster_display_limit(...)`, which
 prefers an explicit text limit and otherwise falls back to `request.top_k`; it no
 longer silently slices to a hard-coded 20 rows.
 
+Patient roster seed normalization now also covers common Chinese visit wording
+such as patient/roster, query/search/find, visit/seen/attended, and rehab
+phrases. These doctor-scoped requests enter the roster lookup/seed path instead
+of falling into `fixed_workflow`.
+
 Deferred follow-up work:
 
 - Make roster queries consistently prefer the main agent-plan / lookup /
