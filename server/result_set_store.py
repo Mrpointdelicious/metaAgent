@@ -9,7 +9,33 @@ from config import Settings, get_settings
 from models import ActiveResultSetRef, ResultSetArtifact, SessionIdentityContext, ThreadWorkingContext
 
 
+RESULT_SET_REGISTERING_TOOLS = frozenset(
+    {
+        "list_my_patients",
+        "list_my_doctors",
+        "filter_result_set_by_training",
+        "filter_result_set_by_absence",
+        "filter_result_set_by_plan_completion",
+        "enrich_result_set_with_completion_time",
+    }
+)
+RESULT_SET_NON_REGISTERING_TOOLS = frozenset(
+    {
+        "lookup_accessible_user_name",
+        "single_point_detail_tools",
+        "pure_statistic_tools",
+    }
+)
+
+
 class ResultSetStore:
+    """In-process TTL store for result artifacts and single active thread state.
+
+    This store owns the write/overwrite rule for active result sets. Tools and
+    orchestrator code register reusable collection results here instead of
+    mutating ThreadWorkingContext directly.
+    """
+
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self._artifacts: dict[str, ResultSetArtifact] = {}
@@ -25,9 +51,11 @@ class ResultSetStore:
         return f"{tenant}:patient:{identity_context.actor_patient_id}"
 
     def thread_key_for_identity(self, identity_context: SessionIdentityContext | None) -> str | None:
-        if identity_context is None or not identity_context.session_id:
+        if identity_context is None:
             return None
-        return str(identity_context.session_id)
+        conversation_id = str(identity_context.conversation_id).strip() if identity_context.conversation_id else ""
+        session_id = str(identity_context.session_id).strip() if identity_context.session_id else ""
+        return conversation_id or session_id or None
 
     def get_thread_context(self, identity_context: SessionIdentityContext | None) -> ThreadWorkingContext | None:
         thread_key = self.thread_key_for_identity(identity_context)
@@ -65,11 +93,21 @@ class ResultSetStore:
         summary: str | None,
         source_tool: str,
         source_intent: str,
+        default_time_window_days: int | None = None,
         ttl_seconds: int | None = None,
     ) -> ResultSetArtifact:
+        """Save a reusable collection artifact and make it the only active set.
+
+        Centralized overwrite rule:
+        - successful reusable collection registration creates a new artifact;
+        - the new artifact replaces the thread's single active result set;
+        - explicit default_time_window_days updates the thread default window;
+        - callers that return non-collections or fail must not call this method.
+        """
+
         thread_key = self.thread_key_for_identity(identity_context)
         if thread_key is None:
-            raise ValueError("result_set.session_id_required")
+            raise ValueError("result_set.thread_id_required")
 
         now = datetime.now(timezone.utc)
         ttl = ttl_seconds if ttl_seconds is not None else self.settings.result_set_ttl_seconds
@@ -86,16 +124,14 @@ class ResultSetStore:
             expires_at=expires_at.isoformat() if expires_at else None,
             rows=[dict(row) for row in rows],
         )
-        state = ThreadWorkingContext(
-            session_id=thread_key,
-            active_result_set_id=artifact.result_set_id,
-            active_result_set_type=artifact.result_set_type,
-            active_result_count=artifact.count,
-            last_result_summary=artifact.summary,
-            default_time_window_days=self.settings.default_time_window_days,
-        )
         with self._lock:
             self._artifacts[artifact.result_set_id] = artifact
+            state = self._updated_thread_context_locked(
+                thread_key=thread_key,
+                identity_context=identity_context,
+                artifact=artifact,
+                default_time_window_days=default_time_window_days,
+            )
             self._thread_state[thread_key] = state
         return artifact.model_copy(deep=True)
 
@@ -122,7 +158,6 @@ class ResultSetStore:
         merged = dict(context or {})
         thread_context = self.get_thread_context(identity_context)
         if thread_context is None:
-            merged.setdefault("default_time_window_days", self.settings.default_time_window_days)
             return merged
         merged["thread_state"] = thread_context.model_dump(mode="json")
         merged["default_time_window_days"] = thread_context.default_time_window_days
@@ -134,6 +169,12 @@ class ResultSetStore:
             merged["active_result_count"] = active.count
             merged["last_result_summary"] = active.summary
         return merged
+
+    def get_default_time_window_days(self, identity_context: SessionIdentityContext | None) -> int | None:
+        context = self.get_thread_context(identity_context)
+        if context is None or context.default_time_window_days is None:
+            return None
+        return int(context.default_time_window_days)
 
     def clear(self) -> None:
         with self._lock:
@@ -149,6 +190,29 @@ class ResultSetStore:
         except ValueError:
             return False
         return datetime.now(timezone.utc) >= expires_at
+
+    def _updated_thread_context_locked(
+        self,
+        *,
+        thread_key: str,
+        identity_context: SessionIdentityContext,
+        artifact: ResultSetArtifact,
+        default_time_window_days: int | None,
+    ) -> ThreadWorkingContext:
+        existing = self._thread_state.get(thread_key)
+        next_default = default_time_window_days
+        if next_default is None and existing is not None:
+            next_default = existing.default_time_window_days
+        return ThreadWorkingContext(
+            thread_id=thread_key,
+            session_id=identity_context.session_id,
+            conversation_id=identity_context.conversation_id,
+            active_result_set_id=artifact.result_set_id,
+            active_result_set_type=artifact.result_set_type,
+            active_result_count=artifact.count,
+            last_result_summary=artifact.summary,
+            default_time_window_days=next_default,
+        )
 
 
 _DEFAULT_RESULT_SET_STORE = ResultSetStore()

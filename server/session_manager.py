@@ -47,10 +47,11 @@ class InMemoryAgentSession:
 
 
 class AgentSessionManager:
-    """Creates and caches OpenAI Agents SDK sessions keyed by service session_id.
+    """Creates and caches OpenAI Agents SDK sessions keyed by thread ID.
 
-    `session_id` is the raw-history key. `conversation_id` remains a business
-    tracing field on `SessionIdentityContext`; it does not merge SDK histories.
+    The caller should pass `conversation_id` when available so raw history is
+    isolated by conversation thread. `session_id` remains a fallback for older
+    callers that do not yet provide a conversation identifier.
     The production backend is the Agents SDK RedisSession. The in-memory backend
     exists for unit tests and local debugging where Redis is intentionally absent.
     """
@@ -63,7 +64,7 @@ class AgentSessionManager:
     def get_or_create_session(self, session_id: str) -> Any:
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
-            raise ValueError("session_id is required for SDK session history")
+            raise ValueError("thread_id is required for SDK session history")
 
         with self._lock:
             existing = self._sessions.get(normalized_session_id)

@@ -26,12 +26,20 @@ class ActiveResultSetRef(BaseModel):
 
 
 class ThreadWorkingContext(BaseModel):
-    session_id: str
-    active_result_set_id: str | None = None
-    active_result_set_type: str | None = None
-    active_result_count: int | None = None
-    last_result_summary: str | None = None
-    default_time_window_days: int | None = None
+    """Minimal single-active-result-set state for one conversation thread.
+
+    The active result set is a short reference to a reusable collection
+    artifact. Code updates this state only through ResultSetStore.
+    """
+
+    thread_id: str | None = Field(default=None, description="Store key for this thread; conversation_id when available, otherwise session_id.")
+    session_id: str | None = Field(default=None, description="Frontend/session identifier kept for traceability.")
+    conversation_id: str | None = Field(default=None, description="Conversation/thread identifier used for isolation when available.")
+    active_result_set_id: str | None = Field(default=None, description="Single active reusable result set ID for this thread.")
+    active_result_set_type: str | None = Field(default=None, description="Type of the active result set, such as patient_set or doctor_set.")
+    active_result_count: int | None = Field(default=None, description="Number of rows in the active result set.")
+    last_result_summary: str | None = Field(default=None, description="Human-readable summary of the active result set.")
+    default_time_window_days: int | None = Field(default=None, description="Explicitly selected default relative window for follow-up result-set tools.")
 
     @property
     def active_result_set(self) -> ActiveResultSetRef | None:

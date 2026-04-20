@@ -5,12 +5,14 @@ from typing import Any
 from config import Settings
 from models import SessionIdentityContext
 from repositories import RehabRepository
+from server.result_set_store import ResultSetStore
 
 
 class UserLookupService:
-    def __init__(self, repository: RehabRepository, settings: Settings | None = None):
+    def __init__(self, repository: RehabRepository, settings: Settings | None = None, result_set_store: ResultSetStore | None = None):
         self.repository = repository
         self.settings = settings
+        self.result_set_store = result_set_store
 
     def lookup_accessible_user_name(
         self,
@@ -76,7 +78,15 @@ class UserLookupService:
             "count": len(normalized_rows),
             "rows": normalized_rows,
             "days": days,
-        }
+        } | self._register_collection_result(
+            identity_context,
+            rows=normalized_rows,
+            result_set_type="patient_set",
+            summary=f"list_my_patients returned {len(normalized_rows)} rows.",
+            source_tool="list_my_patients",
+            source_intent="lookup_query",
+            days=days,
+        )
 
     def list_my_doctors(
         self,
@@ -108,7 +118,15 @@ class UserLookupService:
             "count": len(normalized_rows),
             "rows": normalized_rows,
             "days": days,
-        }
+        } | self._register_collection_result(
+            identity_context,
+            rows=normalized_rows,
+            result_set_type="doctor_set",
+            summary=f"list_my_doctors returned {len(normalized_rows)} rows.",
+            source_tool="list_my_doctors",
+            source_intent="lookup_query",
+            days=days,
+        )
 
     def _accessible_user(self, user_id: int, *, user_role: str) -> dict[str, Any]:
         user_name = self.repository.get_user_name_map([user_id]).get(user_id)
@@ -128,4 +146,32 @@ class UserLookupService:
             "is_accessible": False,
             "found": False,
             "reason": reason,
+        }
+
+    def _register_collection_result(
+        self,
+        identity_context: SessionIdentityContext,
+        *,
+        rows: list[dict[str, Any]],
+        result_set_type: str,
+        summary: str,
+        source_tool: str,
+        source_intent: str,
+        days: int | None,
+    ) -> dict[str, Any]:
+        if self.result_set_store is None:
+            return {}
+        artifact = self.result_set_store.register_result_set(
+            identity_context=identity_context,
+            rows=rows,
+            result_set_type=result_set_type,
+            summary=summary,
+            source_tool=source_tool,
+            source_intent=source_intent,
+            default_time_window_days=days,
+        )
+        return {
+            "result_set_id": artifact.result_set_id,
+            "result_set_type": artifact.result_set_type,
+            "active_result_set": artifact.model_dump(mode="json", exclude={"rows"}),
         }

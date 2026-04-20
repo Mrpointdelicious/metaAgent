@@ -88,7 +88,7 @@ class OptionalDaysInput(BaseModel):
 
 class ResultSetWindowInput(BaseModel):
     result_set_id: str = Field(description="Registered result set ID.")
-    days: int = Field(default=30, ge=1, le=3650, description="Relative time window in days.")
+    days: int | None = Field(default=None, ge=1, le=3650, description="Relative time window in days; explicit or from ThreadWorkingContext.")
 
 
 class ResultSetInput(BaseModel):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 
+from .roster_query import has_doctor_roster_query, has_patient_roster_query, has_patient_roster_subject
 from .schemas import (
     AnalyticsScope,
     DoctorIdSource,
@@ -49,8 +50,6 @@ PLAN_LABELS = ("计划", "plan")
 
 
 SELF_NAME_LOOKUP_KEYWORDS = ("我的名字", "我叫什么", "查询我的名字", "my name", "what is my name")
-MY_PATIENTS_LOOKUP_KEYWORDS = ("我的患者", "所有的患者", "相关患者", "list my patients", "my patients")
-MY_DOCTORS_LOOKUP_KEYWORDS = ("我的医生", "相关的医生", "有关的医生", "医生有哪些", "list my doctors", "my doctors")
 FOLLOW_UP_RESULT_SET_KEYWORDS = (
     "这些患者",
     "以上这些患者",
@@ -66,7 +65,6 @@ FOLLOW_UP_RESULT_SET_KEYWORDS = (
     "them",
     "previous patients",
 )
-MY_PATIENTS_RESULT_SET_KEYWORDS = ("我的患者", "我所有的患者", "my patients", "all my patients")
 TRAINING_ACTION_KEYWORDS = ("训练", "到训", "有训练", "training", "trained")
 ABSENCE_ACTION_KEYWORDS = ("没来", "未到训", "缺席", "没有训练", "没训练", "absent", "absence", "no training")
 COMPLETION_ACTION_KEYWORDS = ("完成", "完成计划", "训练计划", "completion", "completed")
@@ -189,7 +187,7 @@ class IntentRouter:
         has_identity_roster_reference = (
             request.identity_context is not None
             and request.identity_context.actor_role == "doctor"
-            and self._has_any(text, lowered, MY_PATIENTS_RESULT_SET_KEYWORDS)
+            and has_patient_roster_subject(text)
             and self._has_result_set_operation_signal(text, lowered)
         )
         if not has_followup_reference and not has_identity_roster_reference:
@@ -305,7 +303,7 @@ class IntentRouter:
         return None
 
     def _detect_roster_lookup_query(self, text: str, lowered: str) -> IntentDecision | None:
-        if self._has_any(text, lowered, MY_PATIENTS_LOOKUP_KEYWORDS) and self._has_roster_action(text, lowered):
+        if has_patient_roster_query(text):
             return IntentDecision(
                 intent="lookup_query",
                 confidence=0.92,
@@ -314,7 +312,7 @@ class IntentRouter:
                 lookup_entity_type="patient",
                 lookup_user_id=None,
             )
-        if self._has_any(text, lowered, MY_DOCTORS_LOOKUP_KEYWORDS) and self._has_roster_action(text, lowered):
+        if has_doctor_roster_query(text):
             return IntentDecision(
                 intent="lookup_query",
                 confidence=0.92,
@@ -324,9 +322,6 @@ class IntentRouter:
                 lookup_user_id=None,
             )
         return None
-
-    def _has_roster_action(self, text: str, lowered: str) -> bool:
-        return any(token in text or token in lowered for token in ("列出", "有哪些", "查询", "查看", "名单", "list", "show", "all"))
 
     def _build_open_analytics_decision(
         self,

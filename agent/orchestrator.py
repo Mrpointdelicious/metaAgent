@@ -37,6 +37,7 @@ from .intent_router import IntentRouter
 from .llm_planner import LLMPlanner
 from .llm_router import LLMRouter, merge_rule_and_llm
 from .plan_validator import PlanValidator
+from .roster_query import extract_limit, has_patient_roster_subject
 
 from .schemas import (
     ExecutionStrategy,
@@ -55,6 +56,10 @@ from .schemas import (
 )
 
 
+class FixedWorkflowEntryError(RuntimeError):
+    """Raised when fixed_workflow is reached without explicit eligibility."""
+
+
 WEEKLY_KEYWORDS = ("周报", "weekly", "summary", "摘要")
 SCREEN_KEYWORDS = ("高风险", "风险筛选", "优先复核", "risk", "screen")
 REVIEW_KEYWORDS = ("复核", "计划", "患者", "病人", "review", "plan", "patient")
@@ -63,6 +68,13 @@ DETAIL_KEYWORDS = ("详细", "原因", "detail", "detailed", "reason", "why")
 BRIEF_KEYWORDS = ("简短", "简洁", "brief", "short")
 FOLLOW_UP_KEYWORDS = ("换成", "改成", "调整", "继续", "this", "same", "switch", "change")
 UNRELIABLE_PHRASES = ("根据数据库推测", "大概", "猜测", "可能是数据库显示")
+FIXED_WORKFLOW_INTENTS = {"single_patient_review", "risk_screening", "weekly_report", "gait_review"}
+FIXED_WORKFLOW_TASKS = {
+    OrchestrationTaskType.REVIEW_PATIENT,
+    OrchestrationTaskType.SCREEN_RISK,
+    OrchestrationTaskType.WEEKLY_REPORT,
+    OrchestrationTaskType.GAIT_REVIEW,
+}
 
 
 class RehabAgentOrchestrator:
@@ -80,7 +92,7 @@ class RehabAgentOrchestrator:
         self.gait_service = GaitService(self.repository, self.settings)
         self.deviation_service = DeviationService(self.settings)
         self.reflection_service = ReflectionService()
-        self.user_lookup_service = UserLookupService(self.repository, self.settings)
+        self.user_lookup_service = UserLookupService(self.repository, self.settings, self.result_set_store)
         self.result_set_service = ResultSetService(self.repository, self.result_set_store)
         self.report_service = ReportService(
             self.repository,
@@ -390,79 +402,6 @@ class RehabAgentOrchestrator:
         execution_mode: str,
         mode_issues: list[str],
     ) -> OrchestratorResponse:
-        user_id = routed.lookup_user_id
-        entity_type = routed.lookup_entity_type or "unknown"
-        if user_id is None:
-            lookup_trace = StepExecutionResult(
-                step_id="lookup_user_name",
-                tool_name="dbuser_name_lookup",
-                success=False,
-                args={"entity_type": entity_type},
-                output_summary="missing lookup user_id",
-                raw_output=None,
-                error="lookup.missing_user_id",
-            )
-            return OrchestratorResponse(
-                success=False,
-                task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
-                execution_mode=execution_mode,
-                llm_provider=llm_config.provider,
-                llm_model=llm_config.model,
-                structured_output={"error": "lookup.missing_user_id", "lookup_subtype": routed.lookup_subtype},
-                final_text="缺少要查询的用户 ID，无法完成姓名查询。",
-                validation_issues=list(mode_issues) + ["lookup.missing_user_id"],
-                execution_trace=[identity_trace, route_trace, lookup_trace],
-            )
-
-        name_map = self.repository.get_user_name_map([user_id])
-        user_name = name_map.get(int(user_id))
-        label = self._lookup_entity_label(entity_type, user_id)
-        lookup_trace = StepExecutionResult(
-            step_id="lookup_user_name",
-            tool_name="dbuser_name_lookup",
-            success=True,
-            args={"entity_type": entity_type, "user_id": user_id},
-            output_summary=f"{label} -> {user_name or 'name_missing'}",
-            raw_output={"user_id": user_id, "user_name": user_name, "entity_type": entity_type},
-        )
-        final_text = f"{label} 的姓名是 {user_name}。" if user_name else f"未在 dbuser 中找到 {label} 的姓名。"
-        return OrchestratorResponse(
-            success=True,
-            task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
-            execution_mode=execution_mode,
-            llm_provider=llm_config.provider,
-            llm_model=llm_config.model,
-            structured_output={
-                "lookup_subtype": routed.lookup_subtype or "lookup_user_name",
-                "entity_type": entity_type,
-                "user_id": user_id,
-                "user_name": user_name,
-                "display_label": label,
-                "source_table": "dbuser",
-            },
-            final_text=final_text,
-            validation_issues=list(mode_issues),
-            execution_trace=[identity_trace, route_trace, lookup_trace],
-        )
-
-    def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
-        if entity_type == "doctor":
-            return f"医生{user_id}"
-        if entity_type == "patient":
-            return f"患者{user_id}"
-        return f"用户{user_id}"
-
-    def _run_lookup_query(
-        self,
-        *,
-        request: OrchestratorRequest,
-        routed: RoutedDecision,
-        identity_trace: StepExecutionResult,
-        route_trace: StepExecutionResult,
-        llm_config: ResolvedLLMConfig,
-        execution_mode: str,
-        mode_issues: list[str],
-    ) -> OrchestratorResponse:
         subtype = routed.lookup_subtype or "lookup_user_name"
         if subtype == "list_my_patients":
             return self._run_roster_lookup_query(
@@ -575,19 +514,13 @@ class RehabAgentOrchestrator:
             "source_tool": tool_name,
             **output,
         }
+        display_limit = self._roster_display_limit(request)
+        rows = output.get("rows") or []
+        structured_output["display_limit"] = display_limit
+        structured_output["displayed_count"] = min(len(rows), display_limit)
         traces = [identity_trace, route_trace, lookup_trace]
-        if success:
-            artifact, artifact_trace = self._register_result_set_from_rows(
-                request=request,
-                rows=output.get("rows") or [],
-                result_set_type="patient_set" if tool_name == "list_my_patients" else "doctor_set",
-                summary=f"{tool_name} returned {output.get('count', 0)} rows.",
-                source_tool=tool_name,
-                source_intent="lookup_query",
-            )
-            structured_output["active_result_set"] = artifact.model_dump(mode="json", exclude={"rows"})
-            structured_output["result_set_id"] = artifact.result_set_id
-            traces.append(artifact_trace)
+        if success and output.get("active_result_set"):
+            traces.append(self._result_set_registration_trace(output, source_tool=tool_name))
         return OrchestratorResponse(
             success=success,
             task_type=OrchestrationTaskType.LOOKUP_QUERY.value,
@@ -595,7 +528,7 @@ class RehabAgentOrchestrator:
             llm_provider=llm_config.provider,
             llm_model=llm_config.model,
             structured_output=structured_output,
-            final_text=self._render_roster_lookup(tool_name, output),
+            final_text=self._render_roster_lookup(tool_name, output, limit=display_limit),
             validation_issues=list(mode_issues) if success else list(mode_issues) + [lookup_trace.error or "lookup.identity_scope_denied"],
             execution_trace=traces,
         )
@@ -623,16 +556,23 @@ class RehabAgentOrchestrator:
         days = extracted.get("days")
         return int(days) if days is not None else None
 
-    def _render_roster_lookup(self, tool_name: str, output: dict[str, Any]) -> str:
+    def _roster_display_limit(self, request: OrchestratorRequest) -> int:
+        explicit_limit = extract_limit(request.raw_text or "")
+        if explicit_limit is not None:
+            return max(1, min(int(explicit_limit), 100))
+        return max(1, min(int(request.top_k or 10), 100))
+
+    def _render_roster_lookup(self, tool_name: str, output: dict[str, Any], *, limit: int) -> str:
         if not output.get("is_accessible"):
             return "当前身份无权执行该名单查询。"
         rows = output.get("rows") or []
+        visible_rows = rows[:limit]
         if tool_name == "list_my_patients":
             lines = [f"共找到 {len(rows)} 名相关患者。"]
-            lines.extend(f"- {self._patient_display(row)}" for row in rows[:20])
+            lines.extend(f"- {self._patient_display(row)}" for row in visible_rows)
             return "\n".join(lines)
         lines = [f"共找到 {len(rows)} 名相关医生。"]
-        lines.extend(f"- {self._doctor_display(row)}" for row in rows[:20])
+        lines.extend(f"- {self._doctor_display(row)}" for row in visible_rows)
         return "\n".join(lines)
 
     def _patient_display(self, row: dict[str, Any]) -> str:
@@ -645,35 +585,17 @@ class RehabAgentOrchestrator:
         doctor_name = row.get("doctor_name")
         return str(doctor_name) if doctor_name else f"医生{doctor_id}"
 
-    def _register_result_set_from_rows(
-        self,
-        *,
-        request: OrchestratorRequest,
-        rows: list[dict[str, Any]],
-        result_set_type: str,
-        summary: str,
-        source_tool: str,
-        source_intent: str,
-    ):
-        if request.identity_context is None:
-            raise ValueError("result_set.identity_context_required")
-        artifact = self.result_set_store.register_result_set(
-            identity_context=request.identity_context,
-            rows=[dict(row) for row in rows],
-            result_set_type=result_set_type,
-            summary=summary,
-            source_tool=source_tool,
-            source_intent=source_intent,
-        )
-        trace = StepExecutionResult(
+    def _result_set_registration_trace(self, output: dict[str, Any], *, source_tool: str) -> StepExecutionResult:
+        active = output.get("active_result_set") if isinstance(output, dict) else None
+        active = active if isinstance(active, dict) else {}
+        return StepExecutionResult(
             step_id="result_set_register",
             tool_name="result_set_store",
             success=True,
-            args={"source_tool": source_tool, "result_set_type": result_set_type},
-            output_summary=f"active_result_set={artifact.result_set_id}; count={artifact.count}",
-            raw_output=artifact.model_dump(mode="json", exclude={"rows"}),
+            args={"source_tool": source_tool, "result_set_type": active.get("result_set_type")},
+            output_summary=f"active_result_set={active.get('result_set_id')}; count={active.get('count')}",
+            raw_output=active,
         )
-        return artifact, trace
 
     def _lookup_entity_label(self, entity_type: str, user_id: int) -> str:
         if entity_type == "doctor":
@@ -778,10 +700,32 @@ class RehabAgentOrchestrator:
 
         days = self._result_set_days(request, routed)
         args: dict[str, Any] = {"result_set_id": active.result_set_id}
-        if tool_name != "enrich_result_set_with_completion_time":
+        if tool_name != "enrich_result_set_with_completion_time" and days is not None:
             args["days"] = days
         tool = self.analytics_tool_registry[tool_name]
-        output = tool.invoke(mode="direct", args=args)
+        try:
+            output = tool.invoke(mode="direct", args=args)
+        except Exception as exc:  # noqa: BLE001
+            failure_trace = StepExecutionResult(
+                step_id=tool_name,
+                tool_name=tool_name,
+                success=False,
+                args=args,
+                output_summary="result-set tool failed; active result set unchanged",
+                raw_output=None,
+                error=str(exc),
+            )
+            return OrchestratorResponse(
+                success=False,
+                task_type=OrchestrationTaskType.RESULT_SET_QUERY.value,
+                execution_mode=execution_mode,
+                llm_provider=llm_config.provider,
+                llm_model=llm_config.model,
+                structured_output={"error": "result_set.operation_failed", "reason": str(exc)},
+                final_text="Result-set operation failed; active result set is unchanged.",
+                validation_issues=list(mode_issues) + ["result_set.operation_failed"],
+                execution_trace=traces + [failure_trace],
+            )
         success = bool(output.get("is_accessible"))
         result_trace = StepExecutionResult(
             step_id=tool_name,
@@ -792,6 +736,9 @@ class RehabAgentOrchestrator:
             raw_output=output,
             error=None if success else output.get("reason") or "result_set.operation_failed",
         )
+        result_traces = traces + [result_trace]
+        if success and output.get("active_result_set"):
+            result_traces.append(self._result_set_registration_trace(output, source_tool=tool_name))
         return OrchestratorResponse(
             success=success,
             task_type=OrchestrationTaskType.RESULT_SET_QUERY.value,
@@ -801,18 +748,18 @@ class RehabAgentOrchestrator:
             structured_output=output,
             final_text=self._render_result_set_output(output),
             validation_issues=list(mode_issues) if success else list(mode_issues) + [result_trace.error or "result_set.operation_failed"],
-            execution_trace=traces + [result_trace],
+            execution_trace=result_traces,
         )
 
     def _should_seed_patient_result_set(self, request: OrchestratorRequest) -> bool:
         identity = request.identity_context
         if identity is None or identity.actor_role != "doctor":
             return False
-        text = (request.raw_text or "").lower()
-        return "我的患者" in text or "my patients" in text or "all my patients" in text
+        return has_patient_roster_subject(request.raw_text or "")
 
     def _seed_patient_result_set(self, request: OrchestratorRequest):
-        args: dict[str, Any] = {}
+        days = self._lookup_days(request)
+        args: dict[str, Any] = {"days": days} if days is not None else {}
         tool = self.analytics_tool_registry["list_my_patients"]
         output = tool.invoke(mode="direct", args=args)
         lookup_trace = StepExecutionResult(
@@ -824,15 +771,10 @@ class RehabAgentOrchestrator:
             raw_output=output,
             error=None if output.get("is_accessible") else output.get("reason") or "lookup.identity_scope_denied",
         )
-        artifact, artifact_trace = self._register_result_set_from_rows(
-            request=request,
-            rows=output.get("rows") or [],
-            result_set_type="patient_set",
-            summary=f"list_my_patients returned {output.get('count', 0)} rows.",
-            source_tool="list_my_patients",
-            source_intent="result_set_query",
-        )
-        return artifact, [lookup_trace, artifact_trace]
+        traces = [lookup_trace]
+        if output.get("is_accessible") and output.get("active_result_set"):
+            traces.append(self._result_set_registration_trace(output, source_tool="list_my_patients"))
+        return output.get("active_result_set"), traces
 
     def _result_set_tool_name(self, routed: RoutedDecision) -> str | None:
         if routed.result_set_operation == "enrich" and routed.result_set_target_field == "completion_time":
@@ -846,7 +788,7 @@ class RehabAgentOrchestrator:
                 return "filter_result_set_by_plan_completion"
         return None
 
-    def _result_set_days(self, request: OrchestratorRequest, routed: RoutedDecision) -> int:
+    def _result_set_days(self, request: OrchestratorRequest, routed: RoutedDecision) -> int | None:
         if routed.days is not None:
             return int(routed.days)
         if request.days is not None:
@@ -855,7 +797,7 @@ class RehabAgentOrchestrator:
         days = extracted.get("days")
         if days is not None:
             return int(days)
-        return int((request.context or {}).get("default_time_window_days") or self.settings.default_time_window_days)
+        return self.result_set_store.get_default_time_window_days(request.identity_context)
 
     def _render_result_set_output(self, output: dict[str, Any]) -> str:
         if not output.get("is_accessible"):
@@ -897,6 +839,8 @@ class RehabAgentOrchestrator:
             direct_request.task_type = OrchestrationTaskType.SCREEN_RISK.value
         elif routed.final_intent == "weekly_report":
             direct_request.task_type = OrchestrationTaskType.WEEKLY_REPORT.value
+        elif routed.final_intent == "gait_review":
+            direct_request.task_type = OrchestrationTaskType.GAIT_REVIEW.value
         state = OrchestrationState(
             user_query=direct_request.raw_text or "",
             mode=mode,
@@ -908,12 +852,11 @@ class RehabAgentOrchestrator:
 
         intent = self.route_intent(direct_request)
         state.intent = intent
-        if intent.task_type == OrchestrationTaskType.UNKNOWN:
-            state.final_text = self._render_unsupported(intent)
-            state.validation_issues.extend([f"router.missing_slot:{slot}" for slot in intent.missing_slots])
-            return self._build_response(state, llm_config, execution_mode, success=False)
+        self._validate_fixed_workflow_entry(intent=intent, routed=routed)
 
         state.plan = self.build_plan(intent, mode)
+        if not state.plan.steps:
+            raise FixedWorkflowEntryError("fixed_workflow.empty_plan")
         self.execute_plan(state)
         state.final_text = self.render_final_text(state)
         state.validation_issues.extend(self.validate_output(state))
@@ -923,6 +866,23 @@ class RehabAgentOrchestrator:
         )
         return self._build_response(state, llm_config, execution_mode, success=success)
 
+    def _validate_fixed_workflow_entry(self, *, intent: OrchestrationIntent, routed: RoutedDecision) -> None:
+        if routed.final_intent not in FIXED_WORKFLOW_INTENTS:
+            raise FixedWorkflowEntryError("fixed_workflow.unsupported_entry")
+        if intent.task_type not in FIXED_WORKFLOW_TASKS:
+            raise FixedWorkflowEntryError("fixed_workflow.unsupported_entry")
+        if not intent.missing_slots:
+            return
+        if intent.task_type == OrchestrationTaskType.REVIEW_PATIENT:
+            raise FixedWorkflowEntryError("fixed_workflow.review_patient_missing_slots")
+        if intent.task_type == OrchestrationTaskType.SCREEN_RISK:
+            raise FixedWorkflowEntryError("fixed_workflow.screen_risk_missing_slots")
+        if intent.task_type == OrchestrationTaskType.WEEKLY_REPORT:
+            raise FixedWorkflowEntryError("fixed_workflow.weekly_report_missing_slots")
+        if intent.task_type == OrchestrationTaskType.GAIT_REVIEW:
+            raise FixedWorkflowEntryError("fixed_workflow.gait_review_missing_slots")
+        raise FixedWorkflowEntryError("fixed_workflow.missing_slots")
+
     def choose_execution_strategy(
         self,
         request: OrchestratorRequest,
@@ -931,8 +891,13 @@ class RehabAgentOrchestrator:
         mode: ExecutionMode,
         llm_config: ResolvedLLMConfig,
     ) -> ExecutionStrategy:
-        if routed.final_intent != "open_analytics_query":
+        if routed.final_intent in FIXED_WORKFLOW_INTENTS:
+            if routed.confidence < 0.75:
+                raise FixedWorkflowEntryError("fixed_workflow.low_confidence")
             return ExecutionStrategy(kind="fixed_workflow", reason="Final intent is a fixed workflow.", confidence=routed.confidence)
+
+        if routed.final_intent != "open_analytics_query":
+            raise FixedWorkflowEntryError("fixed_workflow.unsupported_entry")
 
         if self._should_use_agent_planned_strategy(request, routed):
             if mode == "agents_sdk" and llm_config.can_use_agents_sdk:
@@ -1430,31 +1395,6 @@ class RehabAgentOrchestrator:
             return "direct", "direct_fallback", ["execution_mode.fallback_to_direct"]
         return "direct", "direct_fallback", ["execution_mode.fallback_to_direct"]
 
-    def _extract_slots(self, text: str) -> dict[str, Any]:
-        if not text:
-            return {}
-        lowered = text.lower()
-        if any(token in text for token in ("本周", "最近一周", "近一周")):
-            return 7
-        if any(token in text for token in ("本月", "最近一个月", "近一个月")):
-            return 30
-        for pattern in (
-            r"(?:最近|过去|近|当前)\s*(\d+)\s*天",
-            r"(\d+)\s*天",
-        ):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return {
-            "patient_id": self._extract_identifier(text, ("患者", "病人", "patient")),
-            "plan_id": self._extract_identifier(text, ("计划", "plan")),
-            "therapist_id": self._extract_identifier(text, ("医生", "治疗师", "康复师", "doctor", "therapist")),
-            "days": self._extract_days(text),
-            "top_k": self._extract_top_k(text),
-            "need_gait_evidence": any(keyword in text or keyword in lowered for keyword in GAIT_KEYWORDS),
-            "response_style": self._extract_response_style(text),
-        }
-
     def _infer_task_type(self, text: str, context: dict[str, Any]) -> OrchestrationTaskType:
         lowered = text.lower()
         if any(keyword in text or keyword in lowered for keyword in GAIT_KEYWORDS) and "周报" not in text and "risk" not in lowered:
@@ -1631,36 +1571,8 @@ class RehabAgentOrchestrator:
             execution_trace=state.step_results,
         )
 
-    def _extract_identifier(self, text: str, labels: tuple[str, ...]) -> int | None:
-        for label in labels:
-            pattern = rf"{re.escape(label)}\s*(?:id)?\s*[:：]?\s*(\d+)"
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
-
-    def _extract_days(self, text: str) -> int | None:
-        lowered = text.lower()
-        if "本周" in text or "最近一周" in text or "近一周" in text or "last week" in lowered:
-            return 7
-        if "本月" in text or "最近一个月" in text or "近一个月" in text or "last month" in lowered:
-            return 30
-        for pattern in (
-            r"(?:最近|过去|近)\s*(\d+)\s*天",
-            r"last\s*(\d+)\s*days?",
-            r"(\d+)\s*天",
-        ):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
-
     def _extract_top_k(self, text: str) -> int | None:
-        for pattern in (r"top\s*(\d+)", r"前\s*(\d+)", r"(\d+)\s*个"):
-            match = re.search(pattern, text, flags=re.IGNORECASE)
-            if match:
-                return int(match.group(1))
-        return None
+        return extract_limit(text)
 
     def _extract_response_style(self, text: str) -> str | None:
         lowered = text.lower()

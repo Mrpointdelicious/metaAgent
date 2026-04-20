@@ -19,12 +19,14 @@ class ResultSetService:
         identity_context: SessionIdentityContext | None,
         *,
         result_set_id: str,
-        days: int = 30,
+        days: int | None = None,
     ) -> dict[str, Any]:
         artifact, error = self._load_patient_set(identity_context, result_set_id)
         if error:
             return error
         assert artifact is not None
+        if days is None:
+            return self._error("result_set.days_required")
         start, end = self._window(identity_context, days)
         doctor_id = self._doctor_id(identity_context)
         rows: list[dict[str, Any]] = []
@@ -60,12 +62,14 @@ class ResultSetService:
         identity_context: SessionIdentityContext | None,
         *,
         result_set_id: str,
-        days: int = 30,
+        days: int | None = None,
     ) -> dict[str, Any]:
         artifact, error = self._load_patient_set(identity_context, result_set_id)
         if error:
             return error
         assert artifact is not None
+        if days is None:
+            return self._error("result_set.days_required")
         start, end = self._window(identity_context, days)
         doctor_id = self._doctor_id(identity_context)
         rows: list[dict[str, Any]] = []
@@ -101,12 +105,14 @@ class ResultSetService:
         identity_context: SessionIdentityContext | None,
         *,
         result_set_id: str,
-        days: int = 30,
+        days: int | None = None,
     ) -> dict[str, Any]:
         artifact, error = self._load_patient_set(identity_context, result_set_id)
         if error:
             return error
         assert artifact is not None
+        if days is None:
+            return self._error("result_set.days_required")
         start, end = self._window(identity_context, days)
         doctor_id = self._doctor_id(identity_context)
         rows: list[dict[str, Any]] = []
@@ -211,6 +217,7 @@ class ResultSetService:
             summary=summary,
             source_tool=source_tool,
             source_intent=source_intent,
+            default_time_window_days=days,
         )
         return {
             "is_accessible": True,

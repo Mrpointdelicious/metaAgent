@@ -23,11 +23,11 @@ def _normalize_service_id(value: Any) -> str | None:
 
 
 def ensure_session_ids(payload: dict[str, Any]) -> tuple[str, str]:
-    """Normalize service-level session identifiers in one place.
+    """
+    在一个统一的位置规范化服务级的 session 标识。
 
-    The request factory writes these IDs into SessionIdentityContext. The SDK
-    runtime later uses session_id as the raw-history key; conversation_id is a
-    business tracing ID and does not merge session histories.
+    request factory 会把这些 ID 写入 SessionIdentityContext。
+    后续运行时优先使用 conversation_id 作为线程键；缺失时才兼容回退到 session_id。
     """
 
     session_id = _normalize_service_id(payload.get("session_id")) or f"sess_{uuid.uuid4().hex}"
@@ -37,6 +37,7 @@ def ensure_session_ids(payload: dict[str, Any]) -> tuple[str, str]:
     return session_id, conversation_id
 
 
+# 组装信息
 def build_orchestrator_request(
     *,
     raw_text: str | None = None,
@@ -60,11 +61,12 @@ def build_orchestrator_request(
     session_id: str | None = None,
     conversation_id: str | None = None,
 ) -> OrchestratorRequest:
-    """Build the only formal request shape used by server and demo adapters.
+    """
+    构建 server 与 demo 适配层共同使用的、唯一正式请求结构。
 
-    Priority for identity-sensitive fields is:
-    identity_context -> explicit request fields -> text target hints -> loose context.
-    Demo defaults are intentionally not part of this factory.
+    对身份敏感字段的取值优先级为：
+    identity_context -> 显式请求字段 -> 文本中的目标提示 -> 松散上下文。
+    TODO: 后续考虑严格遵照identity_context，否则抛出异常
     """
 
     if identity_context is None:
@@ -117,6 +119,7 @@ def build_orchestrator_request(
         context=context or {},
     )
 
+# 规范输入
 
 def build_orchestrator_request_from_payload(payload: dict[str, Any]) -> OrchestratorRequest:
     payload = dict(payload)

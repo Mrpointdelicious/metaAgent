@@ -38,10 +38,12 @@ class OpenAnalyticsAgentRuntime:
 
     def _session_for_request(self, request: OrchestratorRequest) -> Any:
         identity = request.identity_context
+        conversation_id = str(identity.conversation_id).strip() if identity and identity.conversation_id else ""
         session_id = str(identity.session_id).strip() if identity and identity.session_id else ""
-        if not session_id:
-            raise RuntimeError("agents_sdk_runtime.session_missing: identity_context.session_id is required")
-        return self.session_manager.get_or_create_session(session_id)
+        sdk_session_key = conversation_id or session_id
+        if not sdk_session_key:
+            raise RuntimeError("agents_sdk_runtime.session_missing: identity_context.conversation_id or session_id is required")
+        return self.session_manager.get_or_create_session(sdk_session_key)
 
     def run(
         self,

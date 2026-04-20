@@ -261,3 +261,94 @@ Session 仍只是原始历史层；当前同时新增了 result-set artifact / a
 - working memory：窗口化摘要，压缩最近多轮重点，减少 prompt 压力。
 - thread state store：当前已有最小 `ThreadWorkingContext`，后续会扩展筛选条件、排序状态和业务选择对象。
 - result artifacts：当前已有 result-set artifact，后续可迁移到 Redis 或独立 artifact store，并增加大结果分页与引用管理。
+## Phase A Single Active Result Set
+
+Current thread state uses a single-active-result-set strategy. A conversation
+thread can have only one active result set at a time.
+
+`ThreadWorkingContext` keeps the minimum stable fields:
+
+- `thread_id`: store key for the thread, using `conversation_id` when present and `session_id` as a compatibility fallback.
+- `session_id`: frontend/session identifier retained for tracing.
+- `conversation_id`: conversation/thread identifier retained for tracing and isolation.
+- `active_result_set_id`: current reusable collection artifact ID.
+- `active_result_set_type`: current collection type, such as `patient_set` or `doctor_set`.
+- `active_result_count`: row count of the current active collection.
+- `last_result_summary`: short summary of the current active collection.
+- `default_time_window_days`: explicit `days` window selected by the user for follow-up result-set tools. It stays `None` until a request explicitly provides days.
+
+The only write path for active result set replacement is
+`ResultSetStore.register_result_set(...)`. On a successful reusable collection
+result, the store saves a new `ResultSetArtifact`, replaces the thread's active
+`ActiveResultSetRef`, and updates `ThreadWorkingContext`. Non-collection results
+do not call this method. Failed tools do not call this method, so the previous
+active result set remains unchanged.
+
+Tools that register a work set in this phase:
+
+- `list_my_patients(...)`
+- `list_my_doctors(...)`
+- `filter_result_set_by_training(...)`
+- `filter_result_set_by_absence(...)`
+- `filter_result_set_by_plan_completion(...)`
+- `enrich_result_set_with_completion_time(...)`
+
+Tools that do not register a work set:
+
+- `lookup_accessible_user_name(...)`
+- single-point detail tools
+- pure statistic tools
+
+`ResultSetStore` is still an in-process TTL store. Its current boundary is:
+save/read result artifacts, save/read thread working context, enforce owner
+scope on artifact reads, and attach thread working context to `request.context`.
+It does not implement Redis persistence, multiple active result sets,
+cross-process sharing, or result lineage/history graphs in this phase.
+
+## Cleanup Pass: Fixed Workflow Entry And Orchestrator Dedup
+
+This pass is cleanup-only. It does not add Redis persistence, multiple active
+result sets, new analytics families, or new tool-planning behavior.
+
+`agent/orchestrator.py` now keeps one implementation for each previously
+duplicated helper:
+
+- `_run_lookup_query(...)`
+- `_lookup_entity_label(...)`
+- `_extract_identifier(...)`
+- `_extract_days(...)`
+- `_extract_slots(...)`
+
+The retained lookup path is the permission-aware path that calls
+`UserLookupService` for `lookup_accessible_user_name`, `list_my_patients`, and
+`list_my_doctors`. The retained extraction path returns one structured slot
+dictionary and is the single source for patient/plan/doctor IDs, days, top-k,
+gait evidence, and response style.
+
+`fixed_workflow` is no longer a default fallback. It is only entered for
+explicit fixed intents:
+
+- `single_patient_review`
+- `risk_screening`
+- `weekly_report`
+- `gait_review`
+
+Unsupported entries, low-confidence fixed entries, empty plans, and fixed tasks
+with missing required slots raise `FixedWorkflowEntryError` with stable codes
+such as `fixed_workflow.unsupported_entry` and
+`fixed_workflow.review_patient_missing_slots`. This prevents missing-slot
+requests from producing a default-looking patient review.
+
+Roster query wording and display limits are centralized in
+`agent/roster_query.py`. Patient roster seed phrases such as "my patients",
+"all my patients", Chinese patient/roster synonyms, and explicit display limits
+are parsed there. Roster rendering uses `_roster_display_limit(...)`, which
+prefers an explicit text limit and otherwise falls back to `request.top_k`; it no
+longer silently slices to a hard-coded 20 rows.
+
+Deferred follow-up work:
+
+- Make roster queries consistently prefer the main agent-plan / lookup /
+  result-set paths.
+- Expand `result_set_query` operations after the cleanup path is stable.
+- Add detail, sort, and select actions on top of the active result set model.

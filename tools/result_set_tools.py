@@ -8,10 +8,12 @@ from .base import ResultSetInput, ResultSetWindowInput, ToolSpec
 
 
 def build_result_set_tools(result_set_service: ResultSetService) -> list[ToolSpec]:
+    # These tools return reusable collection semantics and therefore register
+    # a new single active result set through ResultSetStore on success.
     def _identity_context():
         return result_set_service.repository.identity_context
 
-    def _filter_result_set_by_training(result_set_id: str, days: int = 30) -> dict:
+    def _filter_result_set_by_training(result_set_id: str, days: int | None = None) -> dict:
         return result_set_service.filter_result_set_by_training(
             _identity_context(),
             result_set_id=result_set_id,
@@ -19,11 +21,11 @@ def build_result_set_tools(result_set_service: ResultSetService) -> list[ToolSpe
         )
 
     @function_tool
-    def filter_result_set_by_training(result_set_id: str, days: int = 30) -> dict:
+    def filter_result_set_by_training(result_set_id: str, days: int | None = None) -> dict:
         """Filter a registered patient result set to patients with training in a time window."""
         return _filter_result_set_by_training(result_set_id=result_set_id, days=days)
 
-    def _filter_result_set_by_absence(result_set_id: str, days: int = 30) -> dict:
+    def _filter_result_set_by_absence(result_set_id: str, days: int | None = None) -> dict:
         return result_set_service.filter_result_set_by_absence(
             _identity_context(),
             result_set_id=result_set_id,
@@ -31,11 +33,11 @@ def build_result_set_tools(result_set_service: ResultSetService) -> list[ToolSpe
         )
 
     @function_tool
-    def filter_result_set_by_absence(result_set_id: str, days: int = 30) -> dict:
+    def filter_result_set_by_absence(result_set_id: str, days: int | None = None) -> dict:
         """Filter a registered patient result set to patients without training logs in a time window."""
         return _filter_result_set_by_absence(result_set_id=result_set_id, days=days)
 
-    def _filter_result_set_by_plan_completion(result_set_id: str, days: int = 30) -> dict:
+    def _filter_result_set_by_plan_completion(result_set_id: str, days: int | None = None) -> dict:
         return result_set_service.filter_result_set_by_plan_completion(
             _identity_context(),
             result_set_id=result_set_id,
@@ -43,7 +45,7 @@ def build_result_set_tools(result_set_service: ResultSetService) -> list[ToolSpe
         )
 
     @function_tool
-    def filter_result_set_by_plan_completion(result_set_id: str, days: int = 30) -> dict:
+    def filter_result_set_by_plan_completion(result_set_id: str, days: int | None = None) -> dict:
         """Filter a registered patient result set to patients who completed plans in a time window."""
         return _filter_result_set_by_plan_completion(result_set_id=result_set_id, days=days)
 

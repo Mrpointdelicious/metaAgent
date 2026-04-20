@@ -113,13 +113,13 @@ class AgentSessionContinuityTests(unittest.TestCase):
 
         with patch("agents.Runner.run_sync", side_effect=fake_run_sync):
             runtime.run(
-                request=_request("s1", "c1", "查询我所有的患者"),
+                request=_request("s1", "c1", "list my patients"),
                 routed_decision=_routed_decision(),
                 tool_specs=[_tool_spec()],
                 llm_config=_llm_config(),
             )
             runtime.run(
-                request=_request("s1", "c1", "这些患者中哪些在这30天内有训练？"),
+                request=_request("s1", "c1", "which of these patients trained in the last 30 days?"),
                 routed_decision=_routed_decision(),
                 tool_specs=[_tool_spec()],
                 llm_config=_llm_config(),
@@ -128,9 +128,9 @@ class AgentSessionContinuityTests(unittest.TestCase):
         self.assertIs(sessions[0], sessions[1])
         self.assertEqual(histories[0], [])
         self.assertEqual(len(histories[1]), 1)
-        self.assertIn("查询我所有的患者", histories[1][0]["content"])
+        self.assertIn("list my patients", histories[1][0]["content"])
 
-    def test_different_session_ids_do_not_share_raw_history(self) -> None:
+    def test_different_session_ids_do_not_share_raw_history_when_used_directly(self) -> None:
         manager = AgentSessionManager(_memory_settings())
         s1 = manager.get_or_create_session("s1")
         s2 = manager.get_or_create_session("s2")
@@ -140,16 +140,31 @@ class AgentSessionContinuityTests(unittest.TestCase):
         self.assertIsNot(s1, s2)
         self.assertEqual(asyncio.run(s2.get_items()), [])
 
-    def test_same_conversation_different_session_ids_do_not_share_history(self) -> None:
+    def test_same_conversation_different_session_ids_share_thread_history(self) -> None:
         manager = AgentSessionManager(_memory_settings())
-        request_1 = _request("s1", "same-conversation", "第一轮")
-        request_2 = _request("s2", "same-conversation", "第二轮")
-        session_1 = manager.get_or_create_session(request_1.identity_context.session_id)
-        session_2 = manager.get_or_create_session(request_2.identity_context.session_id)
+        runtime = OpenAnalyticsAgentRuntime(settings=_memory_settings(), session_manager=manager)
+        request_1 = _request("s1", "same-conversation", "first turn")
+        request_2 = _request("s2", "same-conversation", "second turn")
+        session_1 = runtime._session_for_request(request_1)
+        session_2 = runtime._session_for_request(request_2)
 
         asyncio.run(session_1.add_items([{"role": "user", "content": "session one only"}]))
 
         self.assertEqual(request_1.identity_context.conversation_id, request_2.identity_context.conversation_id)
+        self.assertIs(session_1, session_2)
+        self.assertEqual(asyncio.run(session_2.get_items()), [{"role": "user", "content": "session one only"}])
+
+    def test_same_session_different_conversation_ids_do_not_share_thread_history(self) -> None:
+        manager = AgentSessionManager(_memory_settings())
+        runtime = OpenAnalyticsAgentRuntime(settings=_memory_settings(), session_manager=manager)
+        request_1 = _request("same-session", "c1", "first turn")
+        request_2 = _request("same-session", "c2", "second turn")
+        session_1 = runtime._session_for_request(request_1)
+        session_2 = runtime._session_for_request(request_2)
+
+        asyncio.run(session_1.add_items([{"role": "user", "content": "conversation one only"}]))
+
+        self.assertEqual(request_1.identity_context.session_id, request_2.identity_context.session_id)
         self.assertIsNot(session_1, session_2)
         self.assertEqual(asyncio.run(session_2.get_items()), [])
 
@@ -159,8 +174,8 @@ class AgentSessionContinuityTests(unittest.TestCase):
             session_id="s1",
             conversation_id="c1",
         )
-        turn_1 = doctor_demo.build_turn_payload(base_payload, "查询我所有的患者")
-        turn_2 = doctor_demo.build_turn_payload(base_payload, "这些患者中哪些在这30天内有训练？")
+        turn_1 = doctor_demo.build_turn_payload(base_payload, "list my patients")
+        turn_2 = doctor_demo.build_turn_payload(base_payload, "which of these patients trained?")
 
         self.assertEqual(turn_1["session_id"], "s1")
         self.assertEqual(turn_2["session_id"], "s1")
@@ -175,8 +190,8 @@ class AgentSessionContinuityTests(unittest.TestCase):
             session_id="patient-s1",
             conversation_id="patient-c1",
         )
-        turn_1 = patient_demo.build_turn_payload(base_payload, "我的训练计划")
-        turn_2 = patient_demo.build_turn_payload(base_payload, "上一轮里哪些还没完成？")
+        turn_1 = patient_demo.build_turn_payload(base_payload, "my plans")
+        turn_2 = patient_demo.build_turn_payload(base_payload, "which previous items are unfinished?")
 
         self.assertEqual(turn_1["session_id"], "patient-s1")
         self.assertEqual(turn_2["session_id"], "patient-s1")
