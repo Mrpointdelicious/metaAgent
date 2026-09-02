@@ -1,0 +1,47 @@
+services:
+  meta_agent:
+    container_name: meta_agent
+    image: meta_agent:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    ports:
+      - "5080:8080"
+    env_file:
+      - path: .env
+        required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: meta_agent
+      POSTGRES_USER: meta_agent
+      POSTGRES_PASSWORD: ${META_AGENT_POSTGRES_PASSWORD:?set META_AGENT_POSTGRES_PASSWORD}
+    volumes:
+      - meta_agent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meta_agent -d meta_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  meta_agent_postgres_data:
