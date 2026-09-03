@@ -1,6 +1,6 @@
 # MetaAgent
 
-面向 IREGO、IREMO 等康复数据源的独立智能体编排服务。项目采用标准 Python `src` 布局，核心使用 LangGraph，外层提供 Dify Chatflow/Workflow 兼容接口。
+基于元宇宙，面向 IREGO、IREMO 等康复数据源的独立智能体编排服务。项目采用标准 Python `src` 布局，核心使用 LangGraph，外层提供 Dify Chatflow/Workflow 兼容接口。
 
 ## 当前能力
 
