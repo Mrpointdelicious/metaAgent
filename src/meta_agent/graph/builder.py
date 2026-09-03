@@ -11,7 +11,10 @@ from langgraph.graph import END, START, StateGraph
 from meta_agent.context.compiler import ContextCompiler
 from meta_agent.evidence.store import EvidenceRepository
 from meta_agent.graph.state import AgentState
-from meta_agent.orchestration.planner import DeterministicTaskPlanner, TaskName
+from meta_agent.orchestration.planner import (
+    TaskName,
+    TaskPlanner,
+)
 from meta_agent.orchestration.validator import PlanValidator
 from meta_agent.validation.claims import ClaimValidator
 from meta_agent.workflows.irego import IReGoWorkflow
@@ -19,7 +22,7 @@ from meta_agent.workflows.irego import IReGoWorkflow
 
 def build_agent_graph(
     checkpointer: BaseCheckpointSaver[Any],
-    planner: DeterministicTaskPlanner,
+    planner: TaskPlanner,
     plan_validator: PlanValidator,
     workflow: IReGoWorkflow,
     evidence_repository: EvidenceRepository,
