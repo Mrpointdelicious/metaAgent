@@ -29,8 +29,12 @@ def build_agent_graph(
     """构建并编译最小可运行图。"""
 
     async def plan_tasks(state: AgentState) -> dict[str, Any]:
-        plan = planner.plan(state["query"])
+        plan = await planner.plan(
+        state["query"]
+        )
+
         tasks = plan_validator.validate(plan)
+
         return {
             "tasks": list(tasks),
             "requested_output": plan.requested_output,
