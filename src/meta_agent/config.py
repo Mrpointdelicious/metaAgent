@@ -6,7 +6,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +38,43 @@ class Settings(BaseSettings):
     evidence_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     default_tenant_id: str = "default"
 
+        # LLM / Planner
+    planner_mode: Literal[
+        "deterministic",
+        "llm",
+    ] = "deterministic"
+
+    planner_model: str = "deepseek:deepseek-chat"
+
+    planner_temperature: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=2.0,
+    )
+
+    planner_max_tokens: int = Field(
+        default=1024,
+        ge=128,
+        le=8192,
+    )
+
+    planner_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+    )
+
+    planner_max_retries: int = Field(
+        default=2,
+        ge=0,
+        le=10,
+    )
+
+    # DeepSeek
+    deepseek_api_key: SecretStr = SecretStr("")
+
+    deepseek_base_url: str = "https://api.deepseek.com"
+
     max_query_length: int = Field(default=4000, ge=128, le=32000)
     max_concurrent_requests: int = Field(default=100, ge=1, le=5000)
 
@@ -56,6 +93,12 @@ class Settings(BaseSettings):
             issues.append("生产环境必须使用 PostgreSQL 持久化")
         if self.persistence_backend == "postgres" and not self.postgres_dsn:
             issues.append("PostgreSQL 持久化需要 META_AGENT__POSTGRES_DSN")
+        if self.planner_mode == "llm":
+            if not self.deepseek_api_key.get_secret_value():
+                issues.append(
+                    "启用 LLM Planner 时必须配置 "
+                    "META_AGENT__DEEPSEEK_API_KEY"
+                )
         return issues
 
 
