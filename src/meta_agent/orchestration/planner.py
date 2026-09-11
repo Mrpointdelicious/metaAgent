@@ -20,7 +20,7 @@ TaskName = Literal[
 
 @dataclass(frozen=True, slots=True)
 class TaskPlan:
-    """经过校验前、可进入规划验证阶段的领域任务计划。"""
+    """Planner 生成的候选领域任务计划。"""
 
     tasks: tuple[TaskName, ...]
     requested_output: Literal[

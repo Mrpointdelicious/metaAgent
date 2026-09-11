@@ -5,6 +5,7 @@
 
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from typing import Any
 
 
@@ -28,15 +29,19 @@ class TrustedScope:
 
     tenant_id: str
     end_user_id: str
-    patient_id: str
+    patient_id: str | None = None
+    role: str = "patient"
+    space_id: str | None = None
+    scene_version: int | None = None
 
     @property
     def scope_hash(self) -> str:
-        material = f"{self.tenant_id}|{self.end_user_id}|{self.patient_id}"
+        material = json.dumps([self.tenant_id, self.end_user_id, self.role, self.patient_id],
+                              ensure_ascii=False, separators=(",", ":"))
         return sha256(material.encode("utf-8")).hexdigest()
 
     def thread_id(self, conversation_id: str) -> str:
-        material = f"{self.scope_hash}|{conversation_id}"
+        material = json.dumps([self.scope_hash, conversation_id], separators=(",", ":"))
         return sha256(material.encode("utf-8")).hexdigest()
 
 
@@ -45,17 +50,32 @@ def trusted_scope_from_inputs(
     end_user_id: str,
     default_tenant_id: str,
 ) -> TrustedScope:
-    """从已认证 Dify 服务输入中提取患者范围，拒绝无效患者ID。"""
+    """仅供已认证可信网关调用；患者对普通问答、医生和场景任务可选。"""
     raw_patient = _first_value(inputs, ("patientId", "patient_id", "robotDbUserId"))
-    patient_id = "" if raw_patient is None else str(raw_patient).strip()
-    if not patient_id.isdigit() or int(patient_id) <= 0:
+    patient_id = None if raw_patient is None else str(raw_patient).strip()
+    if patient_id is not None and (not patient_id.isascii() or
+                                  not patient_id.isdigit() or int(patient_id) <= 0):
         raise ValueError("patient_id 必须是可信患者端注入的正整数用户ID")
+    if patient_id is not None:
+        patient_id = str(int(patient_id))
     raw_tenant = _first_value(inputs, ("tenantId", "tenant_id"))
     tenant_id = str(raw_tenant or default_tenant_id).strip()
     if not tenant_id:
         raise ValueError("tenant_id 不能为空")
+    role = str(inputs.get("role") or "patient")
+    if role not in {"patient", "clinician", "operator"}:
+        raise ValueError("role无效")
+    space = _first_value(inputs, ("space_id", "spaceId"))
+    version = _first_value(inputs, ("scene_version", "sceneVersion"))
+    if version is not None and (isinstance(version, bool) or not str(version).isdigit()):
+        raise ValueError("scene_version必须是非负整数")
+    if not end_user_id.strip():
+        raise ValueError("可信用户标识不能为空")
     return TrustedScope(
         tenant_id=tenant_id,
         end_user_id=end_user_id.strip(),
         patient_id=patient_id,
+        role=role,
+        space_id=str(space).strip() if space is not None else None,
+        scene_version=int(version) if version is not None else None,
     )

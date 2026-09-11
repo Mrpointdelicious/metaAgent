@@ -4,7 +4,7 @@
 """
 
 from typing import Any, cast
-
+import logging
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -20,6 +20,8 @@ from meta_agent.validation.claims import ClaimValidator
 from meta_agent.workflows.irego import IReGoWorkflow
 
 
+logger = logging.getLogger(__name__)
+
 def build_agent_graph(
     checkpointer: BaseCheckpointSaver[Any],
     planner: TaskPlanner,
@@ -31,42 +33,113 @@ def build_agent_graph(
 ) -> Any:
     """构建并编译最小可运行图。"""
 
-    async def plan_tasks(state: AgentState) -> dict[str, Any]:
+    async def plan_tasks(
+    state: AgentState,
+    ) -> dict[str, Any]:
         plan = await planner.plan(
         state["query"]
+    )
+
+        tasks = plan_validator.validate(
+            plan
         )
 
-        tasks = plan_validator.validate(plan)
+        logger.info(
+            "Validated task plan: raw_tasks=%s validated_tasks=%s requested_output=%s",
+            plan.tasks,
+            tasks,
+            plan.requested_output,
+        )
 
         return {
             "tasks": list(tasks),
-            "requested_output": plan.requested_output,
+            "requested_output":
+                plan.requested_output,
         }
 
-    async def execute_domain_workflow(state: AgentState) -> dict[str, Any]:
-        tasks = cast(tuple[TaskName, ...], tuple(state.get("tasks") or []))
-        outcome = await workflow.execute(state["patient_id"], tasks)
+    async def execute_domain_workflow(
+        state: AgentState,
+    ) -> dict[str, Any]:
+        tasks = cast(
+            tuple[TaskName, ...],
+            tuple(
+                state.get("tasks") or []
+            ),
+        )
+
+        outcome = await workflow.execute(
+            state["patient_id"],
+            tasks,
+        )
+
         evidence = await evidence_repository.save(
             scope_hash=state["scope_hash"],
             source="irego_rehab_workflow",
             payload=outcome.raw_payload,
         )
+
+        logger.info(
+            "IReGo workflow produced facts: tasks=%s fact_keys=%s",
+            tasks,
+            sorted(outcome.facts.keys()),
+        )
+
         return {
-            "result_ref": evidence.result_ref,
-            "facts": outcome.facts,
-            "patient_message": outcome.patient_message,
-            "image_urls": outcome.image_urls,
-            "mode_commands": outcome.mode_commands,
+            "result_ref":
+                evidence.result_ref,
+            "facts":
+                outcome.facts,
+            "patient_message":
+                outcome.patient_message,
+            "image_urls":
+                outcome.image_urls,
+            "mode_commands":
+                outcome.mode_commands,
         }
 
-    async def compose_response(state: AgentState) -> dict[str, Any]:
-        facts = state.get("facts") or {}
-        compact_context = context_compiler.compile(state["query"], facts)
-        response_text = claim_validator.validate(state.get("patient_message") or "")
+    async def compose_response(
+        state: AgentState,
+    ) -> dict[str, Any]:
+        facts = (
+            state.get("facts")
+            or {}
+        )
+
+        compact_context = (
+            context_compiler.compile(
+                state["query"],
+                facts,
+            )
+        )
+
+        response_text = (
+            claim_validator.validate(
+                state.get(
+                    "patient_message"
+                )
+                or ""
+            )
+        )
+
+        logger.info(
+            "Context compiled: fact_keys=%s",
+            sorted(
+                (
+                    compact_context.get(
+                        "facts"
+                    )
+                    or {}
+                ).keys()
+            ),
+        )
+
         return {
-            "compact_context": compact_context,
-            "response_text": response_text,
+            "compact_context":
+                compact_context,
+            "response_text":
+                response_text,
         }
+
 
     builder = StateGraph(AgentState)
     builder.add_node("plan_tasks", plan_tasks)
