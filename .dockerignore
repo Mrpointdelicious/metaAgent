@@ -8,3 +8,8 @@ __pycache__
 .env.*
 !.env.example
 *.pyc
+/doc/
+doc
+docs
+dist
+build

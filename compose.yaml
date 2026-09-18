@@ -1,4 +1,14 @@
 services:
+  migrate:
+    image: meta_agent:local
+    profiles: [maintenance]
+    env_file:
+      - path: .env
+        required: true
+    command: ["python", "-m", "meta_agent.infrastructure.migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
   meta_agent:
     container_name: meta_agent
     image: meta_agent:local

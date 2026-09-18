@@ -10,16 +10,19 @@ from fastapi.testclient import TestClient
 
 from meta_agent.app import create_app
 from meta_agent.config import Settings
+from tests.helpers.settings import AppTestSettings
 
 
 @pytest.fixture
 def settings() -> Settings:
-    """构造不会访问真实患者数据的测试配置。"""
-    return Settings(
+    """构造不会访问真实患者数据和本地 LLM 配置的测试配置。"""
+
+    return AppTestSettings(
         app_env="test",
         service_bearer_token="test-service-token",
         dry_run=True,
         persistence_backend="memory",
+        planner_mode="deterministic",
     )
 
 

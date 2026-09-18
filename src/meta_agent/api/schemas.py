@@ -7,6 +7,34 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from meta_agent.contracts import StrictModel
+
+
+class RunAccessRequest(StrictModel):
+    user: str = Field(min_length=1, max_length=160)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("user")
+    @classmethod
+    def nonempty_user(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("可信用户标识不能为空")
+        return value.strip()
+
+
+class NativeChatRequest(RunAccessRequest):
+    request_id: str = Field(min_length=1, max_length=160)
+    query: str = Field(min_length=1, max_length=32000)
+    conversation_id: str = Field(default="", max_length=160)
+    response_mode: Literal["streaming", "blocking"] = "streaming"
+
+    @field_validator("query", "request_id")
+    @classmethod
+    def nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("字段不能为空")
+        return value.strip()
+
 
 class DifyChatRequest(BaseModel):
     """兼容 Dify Chatflow 的最小请求结构。"""

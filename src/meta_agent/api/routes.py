@@ -1,144 +1,145 @@
 """
 创建日期：2026-08-29
-文件功能：提供健康检查、Dify Chatflow 与 Workflow 兼容的阻塞和 SSE 路由。
+文件功能：原生阻塞/SSE、作用域限定状态与取消接口；Dify仅保留未启用入口。
 """
 
-import logging
-from collections.abc import AsyncIterator
+import asyncio
 from typing import Any
-from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from meta_agent.adapters.dify import DifyEventFactory, encode_ping, encode_sse
-from meta_agent.adapters.legacy_protocol import LegacyProtocol
-from meta_agent.api.schemas import DifyChatRequest, DifyWorkflowRequest, HealthResponse
+from meta_agent.api.schemas import HealthResponse, NativeChatRequest, RunAccessRequest
 from meta_agent.api.security import require_service_identity
-from meta_agent.graph.state import AgentState
-from meta_agent.orchestration.identity import TrustedScope, trusted_scope_from_inputs
+from meta_agent.application.service import ApplicationRequest, ApplicationRun
+from meta_agent.contracts import DomainError, RunRecord, fingerprint
+from meta_agent.events.stream import NativeEventAdapter
+from meta_agent.orchestration.identity import trusted_scope_from_inputs
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _new_identifier(prefix: str) -> str:
-    return f"{prefix}_{uuid4().hex}"
-
-
-def _validate_query_length(query: str, maximum: int) -> None:
-    if len(query) > maximum:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"query 长度不能超过 {maximum} 个字符",
-        )
-
-
-def _scope_or_422(
-    inputs: dict[str, Any],
-    user: str,
-    default_tenant_id: str,
-) -> TrustedScope:
+def scope_for(payload: RunAccessRequest, request: Request):
     try:
-        return trusted_scope_from_inputs(inputs, user, default_tenant_id)
+        return trusted_scope_from_inputs(
+            payload.inputs, payload.user, request.app.state.container.settings.default_tenant_id
+        )
     except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+def snapshot(record: RunRecord, reused: bool = True) -> dict[str, Any]:
+    # Snapshots expose previous progress as data, never as replayable action events.
+    events = [e.model_dump(mode="json") for e in record.events if e.type != "action_ready"]
+    return {
+        "run_id": record.run_id,
+        "request_id": record.request_id,
+        "conversation_id": record.conversation_id,
+        "status": record.status,
+        "reused": reused,
+        "goal_statuses": record.goal_statuses,
+        "task_statuses": {tid: r.status for tid, r in record.results.items()},
+        "events": events,
+        "action_delivery": record.action_delivery,
+        "metrics": record.metrics,
+    }
+
+
+@router.post("/v1/chat", dependencies=[Depends(require_service_identity)])
+async def chat(payload: NativeChatRequest, request: Request):
+    container = request.app.state.container
+    if len(payload.query) > container.settings.max_query_length:
+        raise HTTPException(422, "query 超过本轮长度限制")
+    scope = scope_for(payload, request)
+    conversation = (
+        payload.conversation_id
+        or "conversation_" + fingerprint([scope.scope_hash, payload.request_id])[:24]
+    )
+    try:
+        run = await container.application.start(
+            ApplicationRequest(payload.query, scope, conversation, payload.request_id)
+        )
+    except DomainError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=str(exc),
+            409 if exc.code == "idempotency_conflict" else 422,
+            {"code": exc.code, "message": exc.message},
         ) from exc
+    if run.reused:
+        return JSONResponse(
+            snapshot(run.record), status_code=202 if run.record.status == "running" else 200
+        )
+    if payload.response_mode == "streaming":
+        return StreamingResponse(
+            stream(run, request),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Run-ID": run.record.run_id,
+            },
+        )
+    try:
+        await asyncio.shield(run.task)
+    except asyncio.CancelledError:
+        await container.application.cancel(scope.scope_hash, run.record.run_id)
+        raise
+    body = snapshot(run.record, False)
+    body["events"] = [e.model_dump(mode="json") for e in run.record.events]
+    # Blocking delivery has no transport acknowledgement; keep delivery_unknown.
+    return JSONResponse(body)
 
 
-def _initial_state(
-    query: str,
-    scope: TrustedScope,
-    conversation_id: str,
-    run_id: str,
-) -> AgentState:
-    return AgentState(
-        query=query,
-        tenant_id=scope.tenant_id,
-        end_user_id=scope.end_user_id,
-        patient_id=scope.patient_id,
-        scope_hash=scope.scope_hash,
-        conversation_id=conversation_id,
-        run_id=run_id,
+async def stream(run: ApplicationRun, request: Request):
+    adapter = NativeEventAdapter()
+    exhausted = False
+    try:
+        while True:
+            event = await run.emitter.queue.get()
+            if event is None:
+                exhausted = True
+                break
+            yield adapter.encode(event)
+            await run.emitter.mark_dispatched(event)
+    finally:
+        if not exhausted:
+            # A generator disconnect cancels the same application run, including child tools.
+            async def terminate():
+                await request.app.state.container.application.cancel(
+                    run.record.scope_key, run.record.run_id
+                )
+                await run.emitter.disconnect()
+
+            await asyncio.shield(terminate())
+
+
+@router.post("/v1/runs/{run_id}/status", dependencies=[Depends(require_service_identity)])
+async def run_status(run_id: str, payload: RunAccessRequest, request: Request):
+    scope = scope_for(payload, request)
+    record = await request.app.state.container.repository.run(scope.scope_hash, run_id)
+    if record is None:
+        raise HTTPException(404, "运行不存在或不属于当前作用域")
+    return snapshot(record)
+
+
+@router.post("/v1/runs/{run_id}/cancel", dependencies=[Depends(require_service_identity)])
+async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
+    scope = scope_for(payload, request)
+    record = await request.app.state.container.application.cancel(scope.scope_hash, run_id)
+    if record is None:
+        raise HTTPException(404, "运行不存在或不属于当前作用域")
+    return snapshot(record)
+
+
+@router.post("/compat/dify/v1/chat-messages", dependencies=[Depends(require_service_identity)])
+@router.post("/compat/dify/v1/workflows/run", dependencies=[Depends(require_service_identity)])
+async def dify_placeholder():
+    raise HTTPException(
+        501, {"code": "adapter_not_enabled", "message": "Dify适配尚未启用，请使用原生/v1/chat。"}
     )
 
 
-def _graph_config(scope: TrustedScope, conversation_id: str) -> dict[str, Any]:
-    return {"configurable": {"thread_id": scope.thread_id(conversation_id)}}
-
-
-def _legacy_messages(state: dict[str, Any]) -> list[str]:
-    messages = [LegacyProtocol.mode(command) for command in state.get("mode_commands") or []]
-    messages.append(LegacyProtocol.answer(str(state.get("response_text") or "")))
-    messages.extend(LegacyProtocol.image(url) for url in state.get("image_urls") or [])
-    return messages
-
-
-async def _invoke_graph(
-    request: Request,
-    state: AgentState,
-    config: dict[str, Any],
-) -> dict[str, Any]:
-    container = request.app.state.container
-    thread_id = str(config["configurable"]["thread_id"])
-    async with container.request_limiter, container.thread_locks.hold(thread_id):
-        return await container.graph.ainvoke(state, config=config)
-
-
-async def _stream_graph(
-    request: Request,
-    initial_state: AgentState,
-    config: dict[str, Any],
-    event_factory: DifyEventFactory,
-) -> AsyncIterator[str]:
-    container = request.app.state.container
-    thread_id = str(config["configurable"]["thread_id"])
-    aggregate: dict[str, Any] = dict(initial_state)
-    yield encode_ping()
-    yield encode_sse(event_factory.workflow_started())
-    try:
-        async with container.request_limiter, container.thread_locks.hold(thread_id):
-            async for update in container.graph.astream(
-                initial_state,
-                config=config,
-                stream_mode="updates",
-            ):
-                if not isinstance(update, dict):
-                    continue
-                for node_name, node_update in update.items():
-                    if isinstance(node_update, dict):
-                        aggregate.update(node_update)
-                    yield encode_sse(event_factory.node_finished(str(node_name)))
-                    if node_name == "compose_response":
-                        for message in _legacy_messages(aggregate):
-                            yield encode_sse(event_factory.message(message))
-        metadata = {"result_ref": aggregate.get("result_ref", "")}
-        yield encode_sse(event_factory.message_end(metadata))
-        yield encode_sse(
-            event_factory.workflow_finished(
-                "succeeded",
-                {
-                    "result": aggregate.get("response_text", ""),
-                    "result_ref": aggregate.get("result_ref", ""),
-                    "image_urls": aggregate.get("image_urls", []),
-                },
-            )
-        )
-    except Exception:
-        logger.exception(
-            "agent stream failed",
-            extra={"run_id": initial_state["run_id"], "event_type": "stream_error"},
-        )
-        safe_message = "当前请求处理失败，请稍后重试。"
-        yield encode_sse(event_factory.error(safe_message))
-        yield encode_sse(event_factory.workflow_finished("failed", {}, safe_message))
-
-
 @router.get("/health/live", response_model=HealthResponse)
-async def live(request: Request) -> HealthResponse:
-    """仅检查进程和 ASGI 事件循环。"""
+async def live(request: Request):
     settings = request.app.state.container.settings
     return HealthResponse(
         status="ok",
@@ -149,9 +150,12 @@ async def live(request: Request) -> HealthResponse:
 
 
 @router.get("/health/ready", response_model=HealthResponse)
-async def ready(request: Request) -> HealthResponse:
-    """检查核心依赖是否已经装配完成。"""
+async def ready(request: Request):
     container = request.app.state.container
+    try:
+        await container.ready()
+    except Exception as exc:
+        raise HTTPException(503, "持久化或实例租约暂不可用") from exc
     return HealthResponse(
         status="ok",
         service=container.settings.service_name,
@@ -165,8 +169,7 @@ async def ready(request: Request) -> HealthResponse:
 
 
 @router.get("/health/dependencies", response_model=HealthResponse)
-async def dependencies(request: Request) -> HealthResponse:
-    """检查外部 AI_WebApi，不把短暂外部故障转换为容器重启。"""
+async def dependencies(request: Request):
     container = request.app.state.container
     reachable, description = await container.ai_webapi_client.ping()
     return HealthResponse(
@@ -174,90 +177,4 @@ async def dependencies(request: Request) -> HealthResponse:
         service=container.settings.service_name,
         version=container.settings.service_version,
         checks={"ai_webapi": description},
-    )
-
-
-@router.post(
-    "/compat/dify/v1/chat-messages",
-    dependencies=[Depends(require_service_identity)],
-)
-async def send_chat_message(payload: DifyChatRequest, request: Request) -> Any:
-    """运行有会话状态的 Chatflow 兼容请求。"""
-    settings = request.app.state.container.settings
-    _validate_query_length(payload.query, settings.max_query_length)
-    scope = _scope_or_422(payload.inputs, payload.user, settings.default_tenant_id)
-    conversation_id = payload.conversation_id.strip() or _new_identifier("conversation")
-    task_id = _new_identifier("task")
-    workflow_run_id = _new_identifier("run")
-    state = _initial_state(payload.query, scope, conversation_id, workflow_run_id)
-    config = _graph_config(scope, conversation_id)
-    events = DifyEventFactory(task_id, workflow_run_id, conversation_id)
-
-    if payload.response_mode == "streaming":
-        return StreamingResponse(
-            _stream_graph(request, state, config, events),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    result = await _invoke_graph(request, state, config)
-    answer = "\n".join(_legacy_messages(result))
-    return JSONResponse(
-        {
-            "event": "message",
-            "task_id": task_id,
-            "message_id": task_id,
-            "conversation_id": conversation_id,
-            "mode": "advanced-chat",
-            "answer": answer,
-            "metadata": {"result_ref": result.get("result_ref", "")},
-        }
-    )
-
-
-@router.post(
-    "/compat/dify/v1/workflows/run",
-    dependencies=[Depends(require_service_identity)],
-)
-async def run_workflow(payload: DifyWorkflowRequest, request: Request) -> Any:
-    """运行无跨调用会话状态的 Workflow 兼容请求。"""
-    settings = request.app.state.container.settings
-    query = str(payload.inputs.get("query") or payload.inputs.get("sys.query") or "").strip()
-    if not query:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Workflow inputs.query 不能为空",
-        )
-    _validate_query_length(query, settings.max_query_length)
-    scope = _scope_or_422(payload.inputs, payload.user, settings.default_tenant_id)
-    conversation_id = _new_identifier("workflow")
-    task_id = _new_identifier("task")
-    workflow_run_id = _new_identifier("run")
-    state = _initial_state(query, scope, conversation_id, workflow_run_id)
-    config = _graph_config(scope, conversation_id)
-    events = DifyEventFactory(task_id, workflow_run_id, conversation_id)
-
-    if payload.response_mode == "streaming":
-        return StreamingResponse(
-            _stream_graph(request, state, config, events),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    result = await _invoke_graph(request, state, config)
-    return JSONResponse(
-        {
-            "workflow_run_id": workflow_run_id,
-            "task_id": task_id,
-            "data": {
-                "id": workflow_run_id,
-                "workflow_id": "meta_agent",
-                "status": "succeeded",
-                "outputs": {
-                    "result": result.get("response_text", ""),
-                    "result_ref": result.get("result_ref", ""),
-                    "image_urls": result.get("image_urls", []),
-                },
-            },
-        }
     )
