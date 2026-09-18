@@ -1,6 +1,5 @@
 # MetaAgent
 
-基于 LangGraph 的康复交互编排服务。原生入口为 `POST /v1/chat`，提供有界意图解析、能力 DAG、可追溯事实、渐进事件及 PostgreSQL 持久化。当前接入 IREGO 1.6.0 患者工具和场景/医生工具；IREMO、IRETOUR 与医院接口返回未支持。
 
 Dify 按当前约定暂缓，两个 `/compat/dify/...` 入口返回 HTTP 501，`events/dify.py` 保留适配器接口。旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
 
