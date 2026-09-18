@@ -4,6 +4,21 @@
 
 Dify 按当前约定暂缓，两个 `/compat/dify/...` 入口返回 HTTP 501，`events/dify.py` 保留适配器接口。旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
 
+## IReGo 固定工作流（Domain Workflow + Fact-first）
+
+Planner 只决定业务目标（`IReGoRequest`：operation/selector/topics/need_artifact/force_refresh），
+不规划 IReGo 内部工具步骤：LLM 无权生成 `after_goal_ids`/`condition` 依赖边，Compiler 不再把模型声明的依赖提升为执行约束。
+Scheduler 只看到一个 `irego.execute` 任务，内部固定链由 `domains/irego.py` 决定：
+
+- `overview`：患者概览 → Evidence → Fact/FactView（带缓存）
+- `history`：训练历史 → Evidence → Fact/FactView
+- `session`：定位 session_ref（复用新鲜锚点/最新可用/历史发现）→ 会话分析 → Evidence → Fact/FactView → 更新记录锚点 → `need_artifact=true` 时以同一 session_ref 生成报告
+- `trend`：连续窗口趋势 → Evidence → Fact/FactView → `need_artifact=true` 时生成趋势报告
+
+只要进入 IReGo 就必然执行对应 operation 的基础数据查询并建立事实层（"LLM 不需要读"不等于"不获取"）；
+报告只是可选制品，失败不会抹掉已建立的事实（目标降级为 partial）。
+回答由 Context Selector 从事实层选取，模型只选择事实编号。报告只由 `need_artifact` 控制，绝不因用户只索取解释而生成。
+
 ## 本地运行
 
 ```powershell

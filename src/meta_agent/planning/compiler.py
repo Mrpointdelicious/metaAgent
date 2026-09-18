@@ -17,6 +17,7 @@ from meta_agent.contracts import (
     Goal,
     Guard,
     IntentDecision,
+    IReGoRequest,
     OutcomeStatus,
     TaskSpec,
     ValidatedPlan,
@@ -157,10 +158,7 @@ class PlanCompiler:
             if g.selector.candidate_ref not in (None, "current"):
                 result.dispositions[gid] = ("clarification", "记录引用必须来自当前授权会话。")
                 continue
-            if set(g.after_goal_ids) - set(ids) or gid in g.after_goal_ids:
-                raise DomainError(
-                    "invalid_goal_dependency", "目标依赖无法解析。", outcome="clarification"
-                )
+            # after_goal_ids / condition 不再参与执行依赖：LLM 无权生成依赖边。
             if g.missing_slots or g.clarification:
                 result.dispositions[gid] = (
                     "clarification",
@@ -170,7 +168,7 @@ class PlanCompiler:
             if g.domain in {"iremo", "iretour", "hospital"} or g.kind == "unsupported":
                 result.dispositions[gid] = ("unsupported", "该领域接口暂未接入。")
                 continue
-            is_rehab = g.kind.startswith("rehab_") or g.kind == "report"
+            is_rehab = g.kind.startswith("rehab_") or g.kind in {"report", "irego"}
             if is_rehab and (g.domain != "irego" or not scope.patient_id):
                 result.dispositions[gid] = ("clarification", "请先通过患者端绑定有效患者身份。")
                 continue
@@ -179,13 +177,6 @@ class PlanCompiler:
                 continue
             if g.kind == "scene_action" and g.domain != "scene":
                 result.dispositions[gid] = ("clarification", "场景动作的领域不一致。")
-                continue
-            wants_report = g.output in {"artifact", "answer_and_artifact"}
-            if wants_report and ("artifact" in g.excluded_outputs or REPORT_NEGATION.search(query)):
-                result.dispositions[gid] = (
-                    "clarification",
-                    "已保留不生成报告的要求，该计划不能生成制品。",
-                )
                 continue
             if g.kind == "scene_action":
                 start = query.find(g.query_span, scene_cursor)
@@ -240,39 +231,21 @@ class PlanCompiler:
                     result.dispositions[gid] = ("unavailable", "尚无已批准的对应知识语料。")
                 else:
                     add([gid], "knowledge.search", {"query": g.query_span, "domain": g.domain})
-            elif g.kind == "rehab_overview":
-                add(
-                    [gid],
-                    "rehab.overview",
-                    {"force_refresh": bool(re.search(r"刷新|重新", g.query_span))},
-                )
-            elif g.kind == "rehab_history":
-                page = g.selector.count if g.selector.mode == "ordinal" else 1
-                add([gid], "rehab.history", {"page_number": page or 1})
-            elif g.kind == "rehab_trend" or g.selector.mode in {"latest_count", "date_range"}:
-                if g.selector.mode not in {"none", "latest_count", "date_range"}:
-                    result.dispositions[gid] = (
-                        "clarification",
-                        "当前趋势接口仅支持连续窗口，请明确范围。",
-                    )
+            elif g.kind in {
+                "irego",
+                "rehab_overview",
+                "rehab_history",
+                "rehab_session",
+                "rehab_trend",
+                "report",
+            }:
+                request = self._irego_request(g, query)
+                if request is None:
+                    result.dispositions[gid] = ("clarification", "缺少 IREGO 业务操作请求。")
                     continue
-                args = {"report_count": g.selector.count or 4}
-                if g.selector.mode == "date_range":
-                    if not g.selector.start or not g.selector.end:
-                        result.dispositions[gid] = ("clarification", "请补充完整开始和结束日期。")
-                        continue
-                    args.update(
-                        selection_mode="date_range",
-                        start_date=g.selector.start,
-                        end_date=g.selector.end,
-                    )
-                if g.output != "artifact":
-                    add([gid], "rehab.trend", args)
-                if wants_report:
-                    add([gid], "rehab.trend_report", args)
-            elif g.kind in {"rehab_session", "report"}:
                 if (
-                    g.selector.mode in {"current_ref", "previous_record"}
+                    request.operation == "session"
+                    and request.selector.mode in {"current_ref", "previous_record"}
                     and not memory.current_record
                 ):
                     result.dispositions[gid] = (
@@ -280,20 +253,12 @@ class PlanCompiler:
                         "还没有明确的当前训练记录，请先说明是哪次训练。",
                     )
                     continue
-                binding, deps = record_binding(g)
-                analysis = None
-                if g.output != "artifact":
-                    analysis = add([gid], "rehab.session", bindings=[binding], deps=list(deps))
-                if wants_report:
-                    ordered = bool(
-                        re.search(r"先.*(?:解释|解读|分析).*再.*(?:报告|图)", g.query_span)
-                    )
-                    add(
-                        [gid],
-                        "rehab.single_report",
-                        bindings=[binding],
-                        deps=list(deps) + ([analysis.task_id] if ordered and analysis else []),
-                    )
+                task = add([gid], "irego.execute", request.model_dump(exclude_none=True))
+                # 固定 Workflow 自带步骤级重试与报表时限；调度器不再重试整个宏任务。
+                task.retry_limit = 0
+                if request.need_artifact:
+                    task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
+                    task.priority_class = "artifact"
             else:
                 result.dispositions[gid] = ("unsupported", "该目标尚无可执行能力。")
 
@@ -322,77 +287,65 @@ class PlanCompiler:
                     deps=deps,
                 )
 
+        # 只有场景动作保留代码级条件接线（Guard 机制）；iReGo 等域不再读取 LLM 依赖声明。
         for g in decision.goals:
             own = by_goal[g.goal_id]
-            if not own:
+            if not own or not g.condition:
                 continue
-            predecessors = [
-                tid for before in g.after_goal_ids for tid in by_goal[before] if tid not in own
-            ]
-            if any(
-                before in result.dispositions and result.dispositions[before][0] != "succeeded"
-                for before in g.after_goal_ids
+            if g.kind != "scene_action":
+                result.dispositions[g.goal_id] = (
+                    "clarification",
+                    "该条件无法可靠判断，请明确条件。",
+                )
+                continue
+            predicate = self._predicate(g.condition.text)
+            source_ids = g.condition.source_goal_ids
+            if (
+                predicate is None
+                or not source_ids
+                or set(source_ids) - set(ids)
+                or g.goal_id in source_ids
             ):
                 result.dispositions[g.goal_id] = (
-                    "blocked_dependency",
-                    "前置目标未完成，该目标暂不执行。",
+                    "clarification",
+                    "该条件无法可靠判断，请明确条件。",
                 )
+                continue
+            providers = {
+                "has_results": {"doctors.search", "rehab.history"},
+                "no_results": {"doctors.search"},
+                "record_completed": {"rehab.session", "rehab.resolve_session"},
+                "report_available": {"rehab.session"},
+                "scene_context_confirmed": {"scene.resolve"},
+            }
+            sources = []
+            for before in source_ids:
+                matches = [
+                    tid
+                    for tid in by_goal[before]
+                    if tid not in own
+                    and next(t for t in plan.tasks if t.task_id == tid).capability
+                    in providers[predicate]
+                ]
+                if matches:
+                    sources.append(matches[-1])
+            if len(sources) != len(source_ids):
+                sources = []
+            if not sources:
+                result.dispositions[g.goal_id] = ("clarification", "缺少判断条件的前置查询。")
+                continue
             for tid in own:
                 task = next(t for t in plan.tasks if t.task_id == tid)
-                # Shared resolution precedes actions; user order belongs to dispatch.
-                if task.capability != "scene.resolve":
-                    task.depends_on = list(dict.fromkeys(task.depends_on + predecessors))
-            if g.condition:
-                predicate = self._predicate(g.condition.text)
-                source_ids = g.condition.source_goal_ids
-                if (
-                    predicate is None
-                    or not source_ids
-                    or set(source_ids) - set(ids)
-                    or g.goal_id in source_ids
-                ):
-                    result.dispositions[g.goal_id] = (
-                        "clarification",
-                        "该条件无法可靠判断，请明确条件。",
-                    )
-                    continue
-                providers = {
-                    "has_results": {"doctors.search", "rehab.history"},
-                    "no_results": {"doctors.search"},
-                    "record_completed": {"rehab.session", "rehab.resolve_session"},
-                    "report_available": {"rehab.session"},
-                    "scene_context_confirmed": {"scene.resolve"},
-                }
-                sources = []
-                for before in source_ids:
-                    matches = [
-                        tid
-                        for tid in by_goal[before]
-                        if tid not in own
-                        and next(t for t in plan.tasks if t.task_id == tid).capability
-                        in providers[predicate]
-                    ]
-                    if matches:
-                        sources.append(matches[-1])
-                if len(sources) != len(source_ids):
-                    sources = []
-                if not sources:
-                    result.dispositions[g.goal_id] = ("clarification", "缺少判断条件的前置查询。")
-                    continue
-                for tid in own:
-                    task = next(t for t in plan.tasks if t.task_id == tid)
-                    task.depends_on = list(dict.fromkeys(task.depends_on + sources))
-                    task.guards += [
-                        Guard(source_task_id=source, predicate=predicate) for source in sources
-                    ]
-        # Propagate removed goals before pruning shared tasks, so independent branches survive.
+                task.depends_on = list(dict.fromkeys(task.depends_on + sources))
+                task.guards += [
+                    Guard(source_task_id=source, predicate=predicate) for source in sources
+                ]
+        # Propagate removed scene-condition sources before pruning shared tasks.
         changed = True
         while changed:
             changed = False
             for g in decision.goals:
-                dependencies = g.after_goal_ids + (
-                    g.condition.source_goal_ids if g.condition else []
-                )
+                dependencies = g.condition.source_goal_ids if g.condition else []
                 if g.goal_id not in result.dispositions and any(
                     dep in result.dispositions and result.dispositions[dep][0] != "succeeded"
                     for dep in dependencies
@@ -417,6 +370,35 @@ class PlanCompiler:
             }
         self.validate(plan, scope, memory)
         return result
+
+    @staticmethod
+    def _irego_request(g: Goal, query: str) -> "IReGoRequest | None":
+        """把 Planner 目标收敛成唯一高层业务请求；旧 Goal 形态做兼容推导。"""
+        if g.irego is not None:
+            request = g.irego.model_copy(deep=True)
+        else:
+            operation = {
+                "rehab_overview": "overview",
+                "rehab_history": "history",
+                "rehab_session": "session",
+                "rehab_trend": "trend",
+                "report": "session",
+            }.get(g.kind)
+            if operation is None:
+                return None
+            request = IReGoRequest(
+                operation=operation,
+                selector=g.selector.model_copy(deep=True),
+                topics=list(g.topics),
+                need_artifact=g.output in {"artifact", "answer_and_artifact"},
+            )
+        request.force_refresh = bool(re.search(r"刷新|重新", g.query_span))
+        # 用户明确不生成报告时强制降级；报告只由 need_artifact 控制。
+        if request.need_artifact and (
+            "artifact" in g.excluded_outputs or REPORT_NEGATION.search(query)
+        ):
+            request.need_artifact = False
+        return request
 
     @staticmethod
     def _predicate(text: str) -> str | None:

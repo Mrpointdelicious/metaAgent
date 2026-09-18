@@ -46,6 +46,7 @@ Domain = Literal[
 ]
 GoalKind = Literal[
     "chat",
+    "irego",
     "rehab_overview",
     "rehab_history",
     "rehab_session",
@@ -86,6 +87,7 @@ ActionDeliveryStatus = Literal[
 ]
 Effect = Literal["read", "prepare_artifact", "emit_frontend_action"]
 Capability = Literal[
+    "irego.execute",
     "rehab.overview",
     "rehab.history",
     "rehab.resolve_session",
@@ -123,6 +125,16 @@ class Condition(StrictModel):
     source_goal_ids: list[str] = Field(min_length=1, max_length=6)
 
 
+class IReGoRequest(StrictModel):
+    """Planner 对 IReGo 的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+    operation: Literal["overview", "history", "session", "trend"]
+    selector: Selector = Field(default_factory=Selector)
+    topics: list[str] = Field(default_factory=list, max_length=10)
+    need_artifact: bool = False
+    force_refresh: bool = False
+
+
 class Goal(StrictModel):
     goal_id: str = Field(min_length=1, max_length=160)
     kind: GoalKind
@@ -138,6 +150,7 @@ class Goal(StrictModel):
     missing_slots: list[str] = Field(default_factory=list, max_length=8)
     clarification: str | None = None
     condition: Condition | None = None
+    irego: IReGoRequest | None = None
 
 
 class IntentDecision(StrictModel):

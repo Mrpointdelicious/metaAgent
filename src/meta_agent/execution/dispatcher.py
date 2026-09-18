@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec
 from meta_agent.domains.doctors import DoctorAdapter
+from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.rehab import RehabAdapter
 from meta_agent.domains.scene import SceneAdapter
@@ -19,6 +20,7 @@ class DomainDispatcher:
 
     def __init__(self) -> None:
         self._rehab = RehabAdapter()
+        self._irego = IReGoWorkflow(self._rehab)
         self._scene = SceneAdapter()
         self._doctors = DoctorAdapter()
         self._knowledge = KnowledgeAdapter()
@@ -56,6 +58,9 @@ class DomainDispatcher:
                 raise DomainError(
                     "anchor_expired", "当前记录来源已过期，请重新定位。", outcome="clarification"
                 )
+
+        if capability == "irego.execute":
+            return await self._irego.execute(task, arguments, ctx)
 
         if capability.startswith("rehab."):
             return await self._rehab.execute(
