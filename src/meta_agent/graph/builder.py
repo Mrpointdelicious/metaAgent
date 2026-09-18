@@ -3,8 +3,9 @@
 文件功能：装配计划、领域执行、上下文编译和文案验证节点形成主 LangGraph。
 """
 
-from typing import Any, cast
 import logging
+from typing import Any, cast
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -19,8 +20,8 @@ from meta_agent.orchestration.validator import PlanValidator
 from meta_agent.validation.claims import ClaimValidator
 from meta_agent.workflows.irego import IReGoWorkflow
 
-
 logger = logging.getLogger(__name__)
+
 
 def build_agent_graph(
     checkpointer: BaseCheckpointSaver[Any],
@@ -34,15 +35,11 @@ def build_agent_graph(
     """构建并编译最小可运行图。"""
 
     async def plan_tasks(
-    state: AgentState,
+        state: AgentState,
     ) -> dict[str, Any]:
-        plan = await planner.plan(
-        state["query"]
-    )
+        plan = await planner.plan(state["query"])
 
-        tasks = plan_validator.validate(
-            plan
-        )
+        tasks = plan_validator.validate(plan)
 
         logger.info(
             "Validated task plan: raw_tasks=%s validated_tasks=%s requested_output=%s",
@@ -53,8 +50,7 @@ def build_agent_graph(
 
         return {
             "tasks": list(tasks),
-            "requested_output":
-                plan.requested_output,
+            "requested_output": plan.requested_output,
         }
 
     async def execute_domain_workflow(
@@ -62,9 +58,7 @@ def build_agent_graph(
     ) -> dict[str, Any]:
         tasks = cast(
             tuple[TaskName, ...],
-            tuple(
-                state.get("tasks") or []
-            ),
+            tuple(state.get("tasks") or []),
         )
 
         outcome = await workflow.execute(
@@ -85,61 +79,34 @@ def build_agent_graph(
         )
 
         return {
-            "result_ref":
-                evidence.result_ref,
-            "facts":
-                outcome.facts,
-            "patient_message":
-                outcome.patient_message,
-            "image_urls":
-                outcome.image_urls,
-            "mode_commands":
-                outcome.mode_commands,
+            "result_ref": evidence.result_ref,
+            "facts": outcome.facts,
+            "patient_message": outcome.patient_message,
+            "image_urls": outcome.image_urls,
+            "mode_commands": outcome.mode_commands,
         }
 
     async def compose_response(
         state: AgentState,
     ) -> dict[str, Any]:
-        facts = (
-            state.get("facts")
-            or {}
+        facts = state.get("facts") or {}
+
+        compact_context = context_compiler.compile(
+            state["query"],
+            facts,
         )
 
-        compact_context = (
-            context_compiler.compile(
-                state["query"],
-                facts,
-            )
-        )
-
-        response_text = (
-            claim_validator.validate(
-                state.get(
-                    "patient_message"
-                )
-                or ""
-            )
-        )
+        response_text = claim_validator.validate(state.get("patient_message") or "")
 
         logger.info(
             "Context compiled: fact_keys=%s",
-            sorted(
-                (
-                    compact_context.get(
-                        "facts"
-                    )
-                    or {}
-                ).keys()
-            ),
+            sorted((compact_context.get("facts") or {}).keys()),
         )
 
         return {
-            "compact_context":
-                compact_context,
-            "response_text":
-                response_text,
+            "compact_context": compact_context,
+            "response_text": response_text,
         }
-
 
     builder = StateGraph(AgentState)
     builder.add_node("plan_tasks", plan_tasks)

@@ -3,9 +3,9 @@
 文件功能：规范化可信身份，生成多租户、多患者和多会话隔离键。
 """
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
-import json
 from typing import Any
 
 
@@ -36,8 +36,11 @@ class TrustedScope:
 
     @property
     def scope_hash(self) -> str:
-        material = json.dumps([self.tenant_id, self.end_user_id, self.role, self.patient_id],
-                              ensure_ascii=False, separators=(",", ":"))
+        material = json.dumps(
+            [self.tenant_id, self.end_user_id, self.role, self.patient_id],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
         return sha256(material.encode("utf-8")).hexdigest()
 
     def thread_id(self, conversation_id: str) -> str:
@@ -53,8 +56,9 @@ def trusted_scope_from_inputs(
     """仅供已认证可信网关调用；患者对普通问答、医生和场景任务可选。"""
     raw_patient = _first_value(inputs, ("patientId", "patient_id", "robotDbUserId"))
     patient_id = None if raw_patient is None else str(raw_patient).strip()
-    if patient_id is not None and (not patient_id.isascii() or
-                                  not patient_id.isdigit() or int(patient_id) <= 0):
+    if patient_id is not None and (
+        not patient_id.isascii() or not patient_id.isdigit() or int(patient_id) <= 0
+    ):
         raise ValueError("patient_id 必须是可信患者端注入的正整数用户ID")
     if patient_id is not None:
         patient_id = str(int(patient_id))

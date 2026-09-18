@@ -12,9 +12,16 @@ import httpx
 from meta_agent.config import Settings
 from meta_agent.contracts import DomainError
 
-PATIENT_ENDPOINTS = frozenset({"get_multisource_patient_context", "get_irego_session_analysis",
-    "get_irego_patient_history", "get_irego_longitudinal_analysis",
-    "generate_irego_single_session_report", "generate_irego_longitudinal_report"})
+PATIENT_ENDPOINTS = frozenset(
+    {
+        "get_multisource_patient_context",
+        "get_irego_session_analysis",
+        "get_irego_patient_history",
+        "get_irego_longitudinal_analysis",
+        "generate_irego_single_session_report",
+        "generate_irego_longitudinal_report",
+    }
+)
 REHAB_ENDPOINTS = frozenset({"navigate_scene", "search_doctors"})
 
 
@@ -23,18 +30,28 @@ class BackendCallError(DomainError):
 
 
 class AIWebApiClient:
-    def __init__(self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self, settings: Settings, transport: httpx.AsyncBaseTransport | None = None
+    ) -> None:
         self.settings = settings
         self.patient_base = settings.ai_webapi_base_url.rstrip("/")
         origin = urlsplit(self.patient_base)
         self.rehab_base = settings.ai_webapi_rehab_base_url.rstrip("/") or urlunsplit(
-            (origin.scheme, origin.netloc, "/api/ai/rehab/tools", "", ""))
+            (origin.scheme, origin.netloc, "/api/ai/rehab/tools", "", "")
+        )
+        # swagger 仅在后端开发环境启用；工具契约文档在所有环境可用。
         self.health_url = settings.ai_webapi_health_url or urlunsplit(
-            (origin.scheme, origin.netloc, "/swagger/v1/swagger.json", "", ""))
-        self.client = httpx.AsyncClient(timeout=settings.ai_webapi_timeout_seconds,
-            transport=transport, follow_redirects=False,
-            limits=httpx.Limits(max_connections=settings.max_concurrent_tools,
-                               max_keepalive_connections=settings.max_concurrent_tools))
+            (origin.scheme, origin.netloc, "/api/ai/patients/tools/openapi.json", "", "")
+        )
+        self.client = httpx.AsyncClient(
+            timeout=settings.ai_webapi_timeout_seconds,
+            transport=transport,
+            follow_redirects=False,
+            limits=httpx.Limits(
+                max_connections=settings.max_concurrent_tools,
+                max_keepalive_connections=settings.max_concurrent_tools,
+            ),
+        )
 
     async def close(self) -> None:
         await self.client.aclose()
@@ -50,23 +67,32 @@ class AIWebApiClient:
             raise BackendCallError("unknown_tool", "未注册的工具端点。")
         if self.settings.dry_run:
             from meta_agent.tools.demo import demo_response
+
             return demo_response(endpoint, payload)
         base = self.patient_base if endpoint in PATIENT_ENDPOINTS else self.rehab_base
         try:
-            async with self.client.stream("POST", f"{base}/{endpoint}", json=payload,
-                                          headers=self.headers()) as response:
+            async with self.client.stream(
+                "POST", f"{base}/{endpoint}", json=payload, headers=self.headers()
+            ) as response:
                 if not response.is_success:
                     code = response.status_code
-                    raise BackendCallError(f"http_{code}", f"工具服务返回错误（HTTP {code}）。",
-                                           retryable=code in {408, 429, 502, 503, 504})
+                    raise BackendCallError(
+                        f"http_{code}",
+                        f"工具服务返回错误（HTTP {code}）。",
+                        retryable=code in {408, 429, 502, 503, 504},
+                    )
                 content = bytearray()
                 async for chunk in response.aiter_bytes():
                     content.extend(chunk)
                     if len(content) > self.settings.max_tool_response_bytes:
-                        raise BackendCallError("response_too_large", "工具结果过大，请缩小查询范围。")
+                        raise BackendCallError(
+                            "response_too_large", "工具结果过大，请缩小查询范围。"
+                        )
             body = json.loads(content)
         except httpx.RequestError as exc:
-            raise BackendCallError("transport_error", "工具服务暂时无法访问。", retryable=True) from exc
+            raise BackendCallError(
+                "transport_error", "工具服务暂时无法访问。", retryable=True
+            ) from exc
         except (ValueError, UnicodeDecodeError) as exc:
             raise BackendCallError("invalid_json", "工具服务返回了无效数据。") from exc
         if not isinstance(body, dict):
@@ -76,14 +102,23 @@ class AIWebApiClient:
     async def artifact_available(self, url: str) -> bool:
         parts = urlsplit(url)
         allowed = {urlsplit(self.patient_base).hostname, *self.settings.artifact_allowed_hosts}
-        if parts.scheme not in {"http", "https"} or parts.hostname not in allowed or parts.username or parts.password:
+        if (
+            parts.scheme not in {"http", "https"}
+            or parts.hostname not in allowed
+            or parts.username
+            or parts.password
+        ):
             return False
         try:
             async with self.client.stream("HEAD", url) as response:
                 if response.status_code != 405:
-                    return response.is_success and response.headers.get("content-type", "").startswith("image/")
+                    return response.is_success and response.headers.get(
+                        "content-type", ""
+                    ).startswith("image/")
             async with self.client.stream("GET", url, headers={"Range": "bytes=0-0"}) as response:
-                return response.is_success and response.headers.get("content-type", "").startswith("image/")
+                return response.is_success and response.headers.get("content-type", "").startswith(
+                    "image/"
+                )
         except httpx.HTTPError:
             return False
 

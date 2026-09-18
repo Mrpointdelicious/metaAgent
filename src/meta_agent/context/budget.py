@@ -35,8 +35,10 @@ class LLMBudget:
 
 class ContextSelector:
     """先保留完整必需事实，再按目标轮流填充相关事实。"""
-    def select(self, query: str, groups: dict[str, list[FactView]], budget: int,
-               overhead: Any = None) -> dict[str, list[FactView]]:
+
+    def select(
+        self, query: str, groups: dict[str, list[FactView]], budget: int, overhead: Any = None
+    ) -> dict[str, list[FactView]]:
         selected: dict[str, list[FactView]] = {key: [] for key in groups}
         remaining = budget - estimate_tokens({"query": query, "instructions": overhead})
         candidates: dict[str, list[FactView]] = {}
@@ -50,13 +52,21 @@ class ContextSelector:
                     remaining -= estimate_tokens(view.model_dump(mode="json"))
                 else:
                     pool.append(view)
-            candidates[key] = sorted(pool, key=lambda view: -sum(
-                term in f"{view.label} {view.topic} {view.fact.semantic_key}".lower()
-                for term in terms
-            ))
-        if remaining < 0:
-            raise DomainError("context_required_overflow", "必要事实超出本轮预算，请缩小查询范围。",
-                              outcome="clarification")
+            candidates[key] = sorted(
+                pool,
+                key=lambda view: (
+                    -sum(
+                        term in f"{view.label} {view.topic} {view.fact.semantic_key}".lower()
+                        for term in terms
+                    )
+                ),
+            )
+        if remaining < 0 or any(len(group) > 100 for group in selected.values()):
+            raise DomainError(
+                "context_required_overflow",
+                "必要事实超出本轮预算，请缩小查询范围。",
+                outcome="clarification",
+            )
         while any(candidates.values()):
             for key, pool in candidates.items():
                 if not pool:

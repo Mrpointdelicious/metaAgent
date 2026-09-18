@@ -31,9 +31,8 @@ class FakePlannerModel:
         async def return_result(_: Any) -> Any:
             return self._result
 
-        return RunnableLambda(
-            return_result
-        )
+        return RunnableLambda(return_result)
+
 
 def test_llm_planner_converts_decision_to_task_plan() -> None:
     decision = PlannerDecision(
@@ -43,9 +42,7 @@ def test_llm_planner_converts_decision_to_task_plan() -> None:
         requested_output="answer",
     )
 
-    fake_model = FakePlannerModel(
-        result=decision
-    )
+    fake_model = FakePlannerModel(result=decision)
 
     planner = LLMTaskPlanner(
         model=cast(
@@ -54,20 +51,12 @@ def test_llm_planner_converts_decision_to_task_plan() -> None:
         )
     )
 
-    plan = asyncio.run(
-        planner.plan(
-            "分析最近一次训练"
-        )
-    )
+    plan = asyncio.run(planner.plan("分析最近一次训练"))
 
-    assert plan.tasks == (
-        "session_analysis",
-    )
+    assert plan.tasks == ("session_analysis",)
 
-    assert (
-        plan.requested_output
-        == "answer"
-    )
+    assert plan.requested_output == "answer"
+
 
 def test_llm_planner_converts_report_decision() -> None:
     decision = PlannerDecision(
@@ -78,9 +67,7 @@ def test_llm_planner_converts_report_decision() -> None:
         requested_output="answer_and_report",
     )
 
-    fake_model = FakePlannerModel(
-        result=decision
-    )
+    fake_model = FakePlannerModel(result=decision)
 
     planner = LLMTaskPlanner(
         model=cast(
@@ -89,28 +76,20 @@ def test_llm_planner_converts_report_decision() -> None:
         )
     )
 
-    plan = asyncio.run(
-        planner.plan(
-            "分析训练并生成报告"
-        )
-    )
+    plan = asyncio.run(planner.plan("分析训练并生成报告"))
 
     assert plan.tasks == (
         "session_analysis",
         "single_report",
     )
 
-    assert (
-        plan.requested_output
-        == "answer_and_report"
-    )
+    assert plan.requested_output == "answer_and_report"
+
 
 def test_llm_planner_rejects_unexpected_result_type() -> None:
     fake_model = FakePlannerModel(
         result={
-            "tasks": [
-                "session_analysis"
-            ],
+            "tasks": ["session_analysis"],
             "requested_output": "answer",
         }
     )
@@ -126,8 +105,4 @@ def test_llm_planner_rejects_unexpected_result_type() -> None:
         TypeError,
         match="非预期的结构化结果",
     ):
-        asyncio.run(
-            planner.plan(
-                "分析训练"
-            )
-        )   
+        asyncio.run(planner.plan("分析训练"))

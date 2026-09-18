@@ -7,12 +7,13 @@ import asyncio
 import json
 from typing import Any, Protocol
 
-from meta_agent.contracts import EventType, OutboundEvent, RunRecord
+from meta_agent.contracts import EventType, OutboundEvent, RunRecord, utcnow
 from meta_agent.infrastructure.repository import Repository
 
 
 class EventAdapter(Protocol):
     """第三方适配层只消费事件，不参与任务或命令生成。"""
+
     def encode(self, event: OutboundEvent) -> str: ...
 
 
@@ -29,20 +30,37 @@ class EventEmitter:
         self.lock = asyncio.Lock()
         self.closed = False
 
-    async def emit(self, kind: EventType, payload: dict[str, Any], *, task_id: str | None = None,
-                   goal_id: str | None = None) -> OutboundEvent:
+    async def emit(
+        self,
+        kind: EventType,
+        payload: dict[str, Any],
+        *,
+        task_id: str | None = None,
+        goal_id: str | None = None,
+    ) -> OutboundEvent:
         async with self.lock:
             if self.closed:
                 raise asyncio.CancelledError
             seq = len(self.record.events) + 1
             if kind == "completed":
                 payload = {**payload, "event_range": {"first_seq": 1, "last_seq": seq}}
-            event = OutboundEvent(request_id=self.record.request_id, run_id=self.record.run_id,
-                conversation_id=self.record.conversation_id, seq=seq, type=kind, payload=payload,
-                task_id=task_id, goal_id=goal_id)
+            event = OutboundEvent(
+                request_id=self.record.request_id,
+                run_id=self.record.run_id,
+                conversation_id=self.record.conversation_id,
+                seq=seq,
+                type=kind,
+                payload=payload,
+                task_id=task_id,
+                goal_id=goal_id,
+            )
             if kind == "action_ready":
                 self.record.action_delivery[payload["action_id"]] = "delivery_unknown"
             self.record.events.append(event)
+            timing = self.record.metrics.setdefault("event_ready_ms", {})
+            timing.setdefault(
+                kind, (event.created_at - self.record.created_at).total_seconds() * 1000
+            )
             await self.repository.save_run(self.record)
             await self.queue.put(event)
             return event
@@ -53,6 +71,9 @@ class EventEmitter:
         async with self.lock:
             # Dispatched only means handed to the response transport, not Unity execution.
             self.record.action_delivery[event.payload["action_id"]] = "dispatched"
+            self.record.metrics.setdefault("action_transport_ms", {})[
+                event.payload["action_id"]
+            ] = (utcnow() - event.created_at).total_seconds() * 1000
             await self.repository.save_run(self.record)
 
     async def finish(self) -> None:

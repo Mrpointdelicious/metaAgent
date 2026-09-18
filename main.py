@@ -15,4 +15,10 @@ if str(SRC_ROOT) not in sys.path:
 
 
 if __name__ == "__main__":
-    uvicorn.run("meta_agent.app:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run(
+        "meta_agent.app:app",
+        host="127.0.0.1",
+        port=8080,
+        workers=1,
+        loop="meta_agent.infrastructure.event_loop:loop_factory",
+    )

@@ -10,7 +10,6 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, Field
 
-
 TaskName = Literal[
     "patient_context",
     "session_analysis",
@@ -50,8 +49,7 @@ class TaskPlanner(Protocol):
     async def plan(
         self,
         query: str,
-    ) -> TaskPlan:
-        ...
+    ) -> TaskPlan: ...
 
 
 class DeterministicTaskPlanner:
@@ -79,40 +77,23 @@ class DeterministicTaskPlanner:
         self,
         query: str,
     ) -> TaskPlan:
-        wants_report = any(
-            keyword in query
-            for keyword in self._report_keywords
-        )
+        wants_report = any(keyword in query for keyword in self._report_keywords)
 
-        wants_analysis = (
-            wants_report
-            or any(
-                keyword in query
-                for keyword in self._analysis_keywords
-            )
+        wants_analysis = wants_report or any(
+            keyword in query for keyword in self._analysis_keywords
         )
 
         tasks: list[TaskName] = []
 
         if wants_analysis:
-            tasks.append(
-                "session_analysis"
-            )
+            tasks.append("session_analysis")
         else:
-            tasks.append(
-                "patient_context"
-            )
+            tasks.append("patient_context")
 
         if wants_report:
-            tasks.append(
-                "single_report"
-            )
+            tasks.append("single_report")
 
         return TaskPlan(
             tasks=tuple(tasks),
-            requested_output=(
-                "answer_and_report"
-                if wants_report
-                else "answer"
-            ),
+            requested_output=("answer_and_report" if wants_report else "answer"),
         )

@@ -8,7 +8,7 @@ from pydantic_settings import SettingsConfigDict
 from meta_agent.config import Settings
 
 
-class TestSettings(Settings):
+class AppTestSettings(Settings):
     """测试专用 Settings，不读取项目根目录 .env。"""
 
     model_config = SettingsConfigDict(

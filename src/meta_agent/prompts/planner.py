@@ -5,7 +5,6 @@
 
 from langchain_core.prompts import ChatPromptTemplate
 
-
 PLANNER_PROMPT_VERSION = "v1"
 
 

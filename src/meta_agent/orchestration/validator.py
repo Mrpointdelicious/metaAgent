@@ -24,9 +24,7 @@ class PlanValidator:
         TaskName,
         tuple[TaskName, ...],
     ] = {
-        "single_report": (
-            "session_analysis",
-        ),
+        "single_report": ("session_analysis",),
     }
 
     def validate(
@@ -35,24 +33,14 @@ class PlanValidator:
     ) -> tuple[TaskName, ...]:
         """返回满足当前确定性约束的任务序列。"""
 
-        tasks = self._deduplicate(
-            plan.tasks
-        )
+        tasks = self._deduplicate(plan.tasks)
 
-        unknown = (
-            set(tasks)
-            - self._allowed_tasks
-        )
+        unknown = set(tasks) - self._allowed_tasks
 
         if unknown:
-            raise ValueError(
-                "任务计划包含未授权任务："
-                f"{sorted(unknown)}"
-            )
+            raise ValueError(f"任务计划包含未授权任务：{sorted(unknown)}")
 
-        return self._ensure_dependencies(
-            tasks
-        )
+        return self._ensure_dependencies(tasks)
 
     @staticmethod
     def _deduplicate(
@@ -60,9 +48,7 @@ class PlanValidator:
     ) -> list[TaskName]:
         """去除重复任务，并保留 Planner 原始相对顺序。"""
 
-        return list(
-            dict.fromkeys(tasks)
-        )
+        return list(dict.fromkeys(tasks))
 
     def _ensure_dependencies(
         self,
@@ -80,13 +66,9 @@ class PlanValidator:
 
             for dependency in dependencies:
                 if dependency not in resolved:
-                    resolved.append(
-                        dependency
-                    )
+                    resolved.append(dependency)
 
             if task not in resolved:
-                resolved.append(
-                    task
-                )
+                resolved.append(task)
 
         return tuple(resolved)

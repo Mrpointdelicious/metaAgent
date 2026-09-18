@@ -3,8 +3,8 @@
 文件功能：定义环境变量配置、生产运行门和外部依赖参数。
 """
 
-from functools import lru_cache
 import os
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -132,12 +132,12 @@ class Settings(BaseSettings):
             issues.append("PostgreSQL 持久化需要 META_AGENT__POSTGRES_DSN")
         if self.auto_setup_persistence:
             issues.append("生产环境须先运行迁移，AUTO_SETUP_PERSISTENCE必须关闭")
-        if self.planner_mode == "llm":
-            if not self.deepseek_api_key.get_secret_value():
-                issues.append(
-                    "启用 LLM Planner 时必须配置 "
-                    "META_AGENT__DEEPSEEK_API_KEY"
-                )
+        if (
+            self.planner_mode == "llm" or self.answer_mode == "llm_select"
+        ) and not self.deepseek_api_key.get_secret_value():
+            issues.append("启用模型时必须配置 META_AGENT__DEEPSEEK_API_KEY")
+        if self.planner_max_retries != 0:
+            issues.append("供应商自动重试须关闭，重试由统一预算管理")
         return issues
 
 
