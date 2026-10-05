@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     ai_webapi_bearer_token: str = ""
     ai_webapi_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     dry_run: bool = True
+    orchestration_mode: Literal["agent", "legacy"] = "agent"
+    agent_model: str = ""
+    agent_max_model_calls: int = Field(default=8, ge=2, le=20)
+    agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    agent_tool_output_tokens: int = Field(default=3000, ge=512, le=8000)
+    agent_history_tokens: int = Field(default=8000, ge=1024, le=20000)
 
     persistence_backend: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str = ""
@@ -84,11 +90,11 @@ class Settings(BaseSettings):
     max_tasks: int = Field(default=8, ge=1, le=8)
     max_tool_calls: int = Field(default=16, ge=1, le=64)
     max_llm_calls: int = Field(default=4, ge=1, le=4)
-    request_timeout_seconds: float = Field(default=60, gt=0, le=60)
+    request_timeout_seconds: float = Field(default=60, gt=0, le=180)
     tool_timeout_seconds: float = Field(default=15, gt=0, le=40)
     report_timeout_seconds: float = Field(default=40, gt=0, le=40)
     answer_timeout_seconds: float = Field(default=8, gt=0, le=30)
-    planner_input_tokens: int = Field(default=4000, ge=512, le=16000)
+    planner_input_tokens: int = Field(default=6000, ge=512, le=16000)
     answer_input_tokens: int = Field(default=12000, ge=512, le=32000)
     model_context_tokens: int = Field(default=32768, ge=4096)
     answer_mode: Literal["template", "llm_select"] = "template"
@@ -108,6 +114,11 @@ class Settings(BaseSettings):
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
+    # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
+    # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
+    patient_brief_include_name: bool = False
+    multisource_patient_context_enabled: bool = False
+    ai_webapi_hospital_base_url: str = ""
 
     def runtime_issues(self) -> list[str]:
         issues = []
@@ -133,7 +144,9 @@ class Settings(BaseSettings):
         if self.auto_setup_persistence:
             issues.append("生产环境须先运行迁移，AUTO_SETUP_PERSISTENCE必须关闭")
         if (
-            self.planner_mode == "llm" or self.answer_mode == "llm_select"
+            self.orchestration_mode == "agent"
+            or self.planner_mode == "llm"
+            or self.answer_mode == "llm_select"
         ) and not self.deepseek_api_key.get_secret_value():
             issues.append("启用模型时必须配置 META_AGENT__DEEPSEEK_API_KEY")
         if self.planner_max_retries != 0:

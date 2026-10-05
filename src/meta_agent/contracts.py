@@ -46,6 +46,8 @@ Domain = Literal[
 ]
 GoalKind = Literal[
     "chat",
+    "iretour",
+    "hospital_query",
     "irego",
     "rehab_overview",
     "rehab_history",
@@ -87,6 +89,8 @@ ActionDeliveryStatus = Literal[
 ]
 Effect = Literal["read", "prepare_artifact", "emit_frontend_action"]
 Capability = Literal[
+    "iretour.execute",
+    "hospital.query",
     "irego.execute",
     "rehab.overview",
     "rehab.history",
@@ -113,11 +117,14 @@ class Selector(StrictModel):
         "ordinal",
         "date_range",
         "latest_count",
+        "recent_ordinal_range",
     ] = "none"
     count: int | None = Field(default=None, ge=1, le=100)
     start: str | None = None
     end: str | None = None
     candidate_ref: str | None = None
+    start_ordinal: int | None = Field(default=None, ge=1, le=10000)
+    end_ordinal: int | None = Field(default=None, ge=1, le=10000)
 
 
 class Condition(StrictModel):
@@ -133,6 +140,38 @@ class IReGoRequest(StrictModel):
     topics: list[str] = Field(default_factory=list, max_length=10)
     need_artifact: bool = False
     force_refresh: bool = False
+
+
+ActivityScope = Literal[
+    "straight_primary",
+    "straight_secondary",
+    "reaction_primary",
+    "reaction_secondary",
+    "balance_bridge",
+    "vibration",
+    "transverse",
+    "stride",
+    "sideway",
+    "gait_assessment",
+]
+
+
+class IReTourRequest(IReGoRequest):
+    activity_scope: ActivityScope = "straight_primary"
+
+
+class HospitalRequest(StrictModel):
+    scope: Literal["institution", "comparison", "platform"] = "institution"
+    hospital_id: int | None = Field(default=None, gt=0)
+    hospital_name: str | None = Field(default=None, max_length=200)
+    hospital_ids: list[int] = Field(default_factory=list, max_length=2)
+    section: Literal[
+        "all", "overview", "consultation", "rooms", "assessment_training", "records", "analysis"
+    ] = "all"
+    start_date: str | None = None
+    end_date: str | None = None
+    output_mode: Literal["analysis", "report", "analysis_and_report"] = "analysis"
+    analysis_depth: Literal["summary", "standard"] = "standard"
 
 
 class Goal(StrictModel):
@@ -151,6 +190,8 @@ class Goal(StrictModel):
     clarification: str | None = None
     condition: Condition | None = None
     irego: IReGoRequest | None = None
+    iretour: IReTourRequest | None = None
+    hospital: HospitalRequest | None = None
 
 
 class IntentDecision(StrictModel):
@@ -350,6 +391,7 @@ class TaskResult(StrictModel):
 
 
 class RecordAnchor(StrictModel):
+    domain: Literal["irego", "iretour"] = "irego"
     session_ref: str
     evidence_id: str
     observed_at: datetime = Field(default_factory=utcnow)
@@ -359,9 +401,11 @@ class RecordAnchor(StrictModel):
 
 class ConversationState(StrictModel):
     turns: list[dict[str, str]] = Field(default_factory=list)
+    agent_messages: list[dict[str, Any]] = Field(default_factory=list)
     current_record: RecordAnchor | None = None
     history_page: int = 1
     history_seen: bool = False
+    history_domain: Literal["irego", "iretour"] = "irego"
     pending_goals: list[Goal] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utcnow)
 

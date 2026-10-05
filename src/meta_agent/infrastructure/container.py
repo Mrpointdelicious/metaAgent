@@ -12,6 +12,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
+from meta_agent.agent.runtime import SingleAgentRuntime
 from meta_agent.application.composer import ResponseComposer
 from meta_agent.application.service import ApplicationService
 from meta_agent.config import Settings
@@ -107,8 +108,20 @@ async def create_container(settings: Settings) -> ServiceContainer:
         repository = Repository(store, settings, checkpointer)
         await repository.ready()
         await checkpointer.aget_tuple({"configurable": {"thread_id": "metaagent-startup-probe"}})
+        agent_runtime = None
         model = None
-        if settings.answer_mode == "llm_select":
+        if settings.orchestration_mode == "agent":
+            agent_model = create_planner_model(
+                settings.model_copy(
+                    update={
+                        "planner_model": settings.agent_model or settings.planner_model,
+                        "planner_timeout_seconds": settings.agent_model_timeout_seconds,
+                        "planner_max_retries": 0,
+                    }
+                )
+            )
+            agent_runtime = SingleAgentRuntime(agent_model, checkpointer=checkpointer, store=store)
+        elif settings.answer_mode == "llm_select":
             model = create_planner_model(
                 settings.model_copy(
                     update={
@@ -120,16 +133,22 @@ async def create_container(settings: Settings) -> ServiceContainer:
             )
         application = ApplicationService(
             settings=settings,
-            planner=create_task_planner(settings),
+            planner=ConservativePlanner() if agent_runtime else create_task_planner(settings),
             compiler=PlanCompiler(settings),
             scheduler=TaskScheduler(DomainDispatcher()),
             repository=repository,
             backend=client,
             tool_limiter=PriorityLimiter(settings.max_concurrent_tools),
             composer=ResponseComposer(model),
+            agent_runtime=agent_runtime,
         )
-        graph = build_runtime_graph(application, checkpointer, store)
-        application.graph = graph
+        graph = (
+            agent_runtime.graph
+            if agent_runtime
+            else build_runtime_graph(application, checkpointer, store)
+        )
+        if not agent_runtime:
+            application.graph = graph
         container = ServiceContainer(
             settings,
             graph,

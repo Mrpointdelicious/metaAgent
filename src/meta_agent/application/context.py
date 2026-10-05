@@ -11,6 +11,7 @@ from typing import Any
 from meta_agent.config import Settings
 from meta_agent.context.budget import LLMBudget
 from meta_agent.contracts import ConversationState, DomainError, Goal, RunRecord
+from meta_agent.domains.patient_identity import PatientBrief
 from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
@@ -32,6 +33,7 @@ class RunContext:
     started: float = field(default_factory=time.monotonic)
     tool_calls: int = 0
     scene_invalidated: bool = False
+    patient_brief: PatientBrief | None = None
     compilation: Any = None
     goals: dict[str, Goal] = field(default_factory=dict)
     answer_fingerprints: dict[str, str] = field(default_factory=dict)
@@ -40,12 +42,20 @@ class RunContext:
     interrupted: bool = False
     on_result: Any = None
     runtime_guard: Any = None
+    agent_robot_id: str | None = None
 
     @property
     def remaining(self) -> float:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if (
+            endpoint == "get_multisource_patient_context"
+            and not self.settings.multisource_patient_context_enabled
+        ):
+            raise DomainError(
+                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
+            )
         if self.runtime_guard:
             await self.runtime_guard()
         if self.tool_calls >= self.settings.max_tool_calls:

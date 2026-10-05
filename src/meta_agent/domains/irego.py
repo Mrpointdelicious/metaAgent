@@ -11,13 +11,16 @@ from pydantic import ValidationError
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import (
     DomainError,
+    Fact,
+    FactView,
     IReGoRequest,
     TaskResult,
     TaskSpec,
-    fingerprint,
+    identifier,
     utcnow,
 )
-from meta_agent.domains.facts import aware_date
+from meta_agent.domains.facts import aware_date, pointer_part
+from meta_agent.domains.patient_identity import FACT_LABELS
 from meta_agent.domains.rehab import RehabAdapter
 
 ANALYSIS_ARGS = {"detail_level": "standard", "quality_detail": "summary"}
@@ -61,30 +64,55 @@ class IReGoWorkflow:
             return await self.adapter.resolve(task, selector, ctx)
 
     async def _overview(self, task: TaskSpec, request: IReGoRequest, ctx: RunContext) -> TaskResult:
-        endpoint = "get_multisource_patient_context"
-        payload = {"projection_level": "compact", "force_refresh": request.force_refresh}
-        cache_key = fingerprint([endpoint, {**payload, "force_refresh": False}])
-        if not request.force_refresh:
-            cached = await ctx.repository.get("cache", ctx.scope.scope_hash, cache_key)
-            if cached:
-                evidence = await ctx.repository.evidence(
-                    ctx.scope.scope_hash, cached["evidence_id"]
-                )
-                if evidence:
-                    result = self.adapter.project(task, evidence)
-                    result.outputs["cache_hit"] = True
-                    return result
-        evidence = await self._read(ctx, endpoint, payload)
-        result = self.adapter.project(task, evidence)
-        if result.status == "succeeded":
-            await ctx.repository.put(
-                "cache",
-                ctx.scope.scope_hash,
-                cache_key,
-                {"evidence_id": evidence.evidence_id},
-                ctx.settings.cache_ttl_seconds,
+        """患者概况由链首身份识别装填的基本档案直接回答。
+
+        旧多源上下文工具（get_multisource_patient_context）自本工作流取消挂载，
+        接口与客户端白名单保留；档案事实以链首装填证据投影，不重复调用后端。
+        """
+        if not ctx.settings.multisource_patient_context_enabled:
+            raise DomainError(
+                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
             )
-        return result
+        brief = ctx.patient_brief
+        if (
+            brief is None
+            or not brief.is_patient
+            or not brief.evidence_id
+            or not brief.source_version
+            or not brief.facts
+        ):
+            raise DomainError(
+                "patient_profile_unavailable",
+                "暂时无法获取患者基本档案，请稍后再试。",
+                outcome="unavailable",
+            )
+        views: list[FactView] = []
+        for key, value in brief.facts.items():
+            views.append(
+                FactView(
+                    fact=Fact(
+                        fact_id=identifier("fact"),
+                        evidence_id=brief.evidence_id,
+                        path=f"/data/profile_brief/facts/{pointer_part(key)}",
+                        semantic_key=key,
+                        value=(
+                            value
+                            if isinstance(value, (str, int, float, bool)) or value is None
+                            else str(value)
+                        ),
+                        source_version=brief.source_version,
+                    ),
+                    label=FACT_LABELS.get(key, key),
+                    topic="profile",
+                )
+            )
+        return TaskResult(
+            task_id=task.task_id,
+            status="succeeded",
+            message="已获取患者基本档案。",
+            evidence_ids=[brief.evidence_id],
+            facts=views,
+        )
 
     async def _history(self, task: TaskSpec, request: IReGoRequest, ctx: RunContext) -> TaskResult:
         page = request.selector.count if request.selector.mode == "ordinal" else 1

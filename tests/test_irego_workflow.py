@@ -8,7 +8,14 @@ import asyncio
 import pytest
 
 from meta_agent.contracts import Condition, Goal, IntentDecision, IReGoRequest
-from tests.helpers.runtime import SeedPlanner, answers, report_response, request, runtime
+from tests.helpers.runtime import (
+    SeedPlanner,
+    answers,
+    report_response,
+    request,
+    runtime,
+    tool_calls,
+)
 
 DEPENDENCY_TEXT = ("任务依赖存在循环或缺失", "目标依赖无法解析", "invalid_dependency")
 
@@ -28,7 +35,10 @@ def test_irego_request_cases(query, operation, selector_mode, selector_count, ne
     """Case A-F：Planner 只产生单个 irego.execute 业务请求，无任何依赖边。"""
 
     async def check():
-        async with runtime() as (c, backend):
+        async with runtime(multisource_patient_context_enabled=operation == "overview") as (
+            c,
+            backend,
+        ):
             run = await c.application.execute(request(query))
             assert len(run.record.plan.tasks) == 1
             task = run.record.plan.tasks[0]
@@ -158,7 +168,7 @@ def test_non_scene_condition_is_conservatively_clarified():
             )
             run = await c.application.execute(request("解读最近训练"))
             assert run.record.status == "clarification"
-            assert backend.calls == []
+            assert tool_calls(backend) == []
 
     asyncio.run(check())
 

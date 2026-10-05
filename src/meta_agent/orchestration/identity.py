@@ -33,11 +33,18 @@ class TrustedScope:
     role: str = "patient"
     space_id: str | None = None
     scene_version: int | None = None
+    iretour_patient_id: str | None = None
+    project_patient_id: str | None = None
 
     @property
     def scope_hash(self) -> str:
+        parts = [self.tenant_id, self.end_user_id, self.role, self.patient_id]
+        if self.iretour_patient_id is not None:
+            parts.append(self.iretour_patient_id)
+        if self.project_patient_id is not None:
+            parts.append(["project", self.project_patient_id])
         material = json.dumps(
-            [self.tenant_id, self.end_user_id, self.role, self.patient_id],
+            parts,
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -62,7 +69,22 @@ def trusted_scope_from_inputs(
         raise ValueError("patient_id 必须是可信患者端注入的正整数用户ID")
     if patient_id is not None:
         patient_id = str(int(patient_id))
+    tour_id = _first_value(inputs, ("iretourPatientId", "iretour_patient_id"))
+    if tour_id is not None:
+        tour_id = str(tour_id)
+        if not tour_id.isascii() or not tour_id.isdigit() or int(tour_id) <= 0:
+            raise ValueError("iretourPatientId 必须是 project.dbuser 的正整数ID")
+        tour_id = str(int(tour_id))
     raw_tenant = _first_value(inputs, ("tenantId", "tenant_id"))
+    project_id = _first_value(inputs, ("projectPatientId", "project_patient_id"))
+    if project_id is not None:
+        project_id = str(project_id)
+        if not project_id.isascii() or not project_id.isdigit() or int(project_id) <= 0:
+            raise ValueError("projectPatientId 必须是 project.dbuser 的正整数ID")
+        project_id = str(int(project_id))
+        if tour_id is not None and tour_id != project_id:
+            raise ValueError("projectPatientId 与 iretourPatientId 不一致")
+        tour_id = project_id
     tenant_id = str(raw_tenant or default_tenant_id).strip()
     if not tenant_id:
         raise ValueError("tenant_id 不能为空")
@@ -82,4 +104,6 @@ def trusted_scope_from_inputs(
         role=role,
         space_id=str(space).strip() if space is not None else None,
         scene_version=int(version) if version is not None else None,
+        iretour_patient_id=tour_id,
+        project_patient_id=project_id,
     )

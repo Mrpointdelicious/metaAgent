@@ -17,6 +17,7 @@ from tests.helpers.runtime import (
     request,
     runtime,
     scene_response,
+    tool_calls,
 )
 
 
@@ -25,7 +26,7 @@ def test_no_speculative_tool_calls(query):
     async def check():
         async with runtime() as (c, backend):
             run = await c.application.execute(request(query))
-            assert backend.calls == []
+            assert tool_calls(backend) == []
             assert run.record.status in {"succeeded", "clarification", "unsupported"}
 
     asyncio.run(check())
@@ -57,7 +58,7 @@ def test_latest_incomplete_is_not_replaced_with_older_usable():
             body["data"]["items"] = [latest, older]
             backend.overrides["get_irego_patient_history"] = body
             run = await c.application.execute(request("解读最近训练"))
-            assert [n for n, _ in backend.calls] == ["get_irego_patient_history"]
+            assert [n for n, _ in tool_calls(backend)] == ["get_irego_patient_history"]
             assert "最新记录未完成" in answers(run.record)
             assert "2026-09-01" not in answers(run.record)
             assert run.record.status == "partial"
@@ -72,8 +73,8 @@ def test_current_report_reuses_reference_without_analysis():
             backend.calls.clear()
             backend.overrides["generate_irego_single_session_report"] = report_response
             run = await c.application.execute(request("把刚才那次生成图", "r2"))
-            assert [n for n, _ in backend.calls] == ["generate_irego_single_session_report"]
-            assert backend.calls[0][1]["session_ref"] == "synthetic-session"
+            assert [n for n, _ in tool_calls(backend)] == ["generate_irego_single_session_report"]
+            assert tool_calls(backend)[0][1]["session_ref"] == "synthetic-session"
             assert any(e.type == "artifact_ready" for e in run.record.events)
             assert run.record.status == "succeeded"
 
@@ -126,9 +127,9 @@ def test_report_failure_keeps_other_goals_and_facts():
         async with runtime() as (c, backend):
             run = await c.application.execute(request("查询患者信息，解读最近训练并生成报告图片"))
             assert run.record.status == "partial"
-            assert run.record.goal_statuses == {"g1": "succeeded", "g2": "partial"}
+            assert run.record.goal_statuses == {"g1": "unsupported", "g2": "partial"}
             text = answers(run.record)
-            assert "合成演示资料" in text and "0.5 m/s" in text
+            assert "暂未启用" in text and "0.5 m/s" in text
             assert not any(e.type == "artifact_ready" for e in run.record.events)
 
     asyncio.run(check())
@@ -147,10 +148,10 @@ def test_action_occurrences_are_not_deduplicated_or_capped_at_five(count):
             assert len(actions) == count
             assert [e.payload["command_order"] for e in actions] == list(range(1, count + 1))
             assert len({e.payload["action_id"] for e in actions}) == count
-            assert len(backend.calls) == 1
+            assert len(tool_calls(backend)) == 1
             assert run.record.status == "succeeded"
             again = await c.application.execute(request(query))
-            assert again.reused and len(backend.calls) == 1
+            assert again.reused and len(tool_calls(backend)) == 1
             assert again.emitter.queue.empty()
 
     asyncio.run(check())
@@ -237,7 +238,7 @@ def test_guard_uses_doctor_query_result(count):
             assert len([e for e in run.record.events if e.type == "action_ready"]) == count
             assert "DoctorRecommend" not in answers(run.record)
             if not count:
-                assert [n for n, _ in backend.calls] == ["search_doctors"]
+                assert [n for n, _ in tool_calls(backend)] == ["search_doctors"]
 
     asyncio.run(check())
 
@@ -246,10 +247,10 @@ def test_guard_uses_doctor_query_result(count):
 def test_http_success_business_failure_is_not_no_training(status):
     async def check():
         async with runtime() as (c, backend):
-            body = demo_response("get_multisource_patient_context", {})
+            body = demo_response("get_irego_session_analysis", {})
             body.update(status=status, data={}, patient_message="合成业务暂不可用。")
-            backend.overrides["get_multisource_patient_context"] = body
-            run = await c.application.execute(request("查询患者信息"))
+            backend.overrides["get_irego_session_analysis"] = body
+            run = await c.application.execute(request("解读最近训练"))
             assert next(iter(run.record.results.values())).code == "tool_" + status
             assert "合成业务暂不可用" in answers(run.record)
             assert "没有训练" not in answers(run.record)
@@ -293,12 +294,13 @@ def test_zero_missing_unknown_unit_remain_distinct():
 def test_read_retry_once_artifact_never_retried():
     async def check():
         async with runtime() as (c, backend):
-            backend.overrides["get_multisource_patient_context"] = DomainError(
+            backend.overrides["get_irego_patient_history"] = DomainError(
                 "http_503", "合成暂时故障", retryable=True
             )
-            await c.application.execute(request("查询患者信息"))
-            assert len(backend.calls) == 2
+            await c.application.execute(request("查看训练历史"))
+            assert len(tool_calls(backend)) == 2
             backend.calls.clear()
+            backend.overrides.pop("get_irego_patient_history")
             backend.overrides["generate_irego_single_session_report"] = DomainError(
                 "http_503", "合成暂时故障", retryable=True
             )
@@ -311,10 +313,10 @@ def test_read_retry_once_artifact_never_retried():
 def test_cancel_stops_inflight_tools_and_completes_status():
     async def check():
         async with runtime() as (c, backend):
-            endpoint = "get_multisource_patient_context"
+            endpoint = "get_irego_patient_history"
             backend.gates[endpoint] = asyncio.Event()
             backend.entered[endpoint] = asyncio.Event()
-            req = request("查询患者信息")
+            req = request("查看训练历史")
             run = await c.application.start(req)
             await asyncio.wait_for(backend.entered[endpoint].wait(), 1)
             await c.application.cancel(req.scope.scope_hash, run.record.run_id)

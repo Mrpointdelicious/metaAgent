@@ -19,8 +19,23 @@ class SeedPlanner:
     def __init__(self, goals):
         self.goals = goals
 
-    async def parse(self, query, memory, budget):
+    async def parse(self, query, memory, budget, patient_brief=None):
         return IntentDecision(decision="execute", goals=deepcopy(self.goals))
+
+
+ENRICHMENT_ENDPOINT = "get_multisource_patient_context"
+
+
+def tool_calls(backend):
+    """领域工具调用列表，过滤链首身份识别装填调用。
+
+    装填调用与领域工作流同端点，以请求体 purpose=enrichment 标记区分。
+    """
+    return [
+        c
+        for c in backend.calls
+        if not (c[0] == ENRICHMENT_ENDPOINT and c[1].get("purpose") == "enrichment")
+    ]
 
 
 class Backend:
@@ -29,6 +44,8 @@ class Backend:
         self.overrides = {}
         self.delays = {}
         self.gates = {}
+        self.gate_after = {}
+        self.started = {}
         self.entered = {}
         self.cancelled = []
         self.artifact_ok = True
@@ -39,6 +56,11 @@ class Backend:
         try:
             if endpoint in self.gates:
                 await self.gates[endpoint].wait()
+            index = self.started.get(endpoint, 0) + 1
+            after = self.gate_after.get(endpoint)
+            if after and index > after[0]:
+                await after[1].wait()
+            self.started[endpoint] = index
             if endpoint in self.delays:
                 await asyncio.sleep(self.delays[endpoint])
             if endpoint in self.overrides:

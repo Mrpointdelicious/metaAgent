@@ -12,22 +12,29 @@ import pytest
 from meta_agent.api.routes import stream
 from meta_agent.contracts import DomainError, Goal
 from meta_agent.tools.ai_webapi import AIWebApiClient
-from meta_agent.tools.demo import demo_response
-from tests.helpers.runtime import SeedPlanner, answers, request, runtime, scene_response
+from tests.helpers.runtime import (
+    SeedPlanner,
+    answers,
+    request,
+    runtime,
+    scene_response,
+    tool_calls,
+)
 from tests.helpers.settings import AppTestSettings
 
 
 def test_concurrent_duplicate_requests_start_once():
     async def check():
         async with runtime() as (c, backend):
-            backend.gates["get_multisource_patient_context"] = asyncio.Event()
+            backend.gates["get_irego_patient_history"] = asyncio.Event()
             runs = await asyncio.gather(
-                *[c.application.start(request("查询患者信息")) for _ in range(20)]
+                *[c.application.start(request("查看训练历史")) for _ in range(20)]
             )
             assert len({run.record.run_id for run in runs}) == 1
             assert sum(not run.reused for run in runs) == 1
-            backend.gates["get_multisource_patient_context"].set()
+            backend.gates["get_irego_patient_history"].set()
             await next(run.task for run in runs if run.task)
+            # 并发去重后只执行一次历史查询，不再隐式装填多源上下文。
             assert len(backend.calls) == 1
 
     asyncio.run(check())
@@ -65,8 +72,8 @@ def test_stream_disconnect_cancels_tools_and_marks_delivery_unknown():
     async def check():
         async with runtime(scene_actions_enabled=True) as (c, backend):
             backend.overrides["navigate_scene"] = scene_response
-            backend.gates["get_multisource_patient_context"] = asyncio.Event()
-            run = await c.application.start(request("打开面板，查询患者信息"))
+            backend.gates["get_irego_session_analysis"] = asyncio.Event()
+            run = await c.application.start(request("打开面板，解读最近训练"))
             iterator = stream(
                 run, SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=c)))
             )
@@ -76,24 +83,20 @@ def test_stream_disconnect_cancels_tools_and_marks_delivery_unknown():
             await iterator.aclose()
             assert run.record.status == "cancelled"
             assert set(run.record.action_delivery.values()) == {"delivery_unknown"}
-            assert "get_multisource_patient_context" in backend.cancelled
+            assert "get_irego_session_analysis" in backend.cancelled
 
     asyncio.run(check())
 
 
-def test_refresh_replaces_normal_profile_cache():
+def test_overview_disabled_without_multisource_call():
     async def check():
         async with runtime() as (c, backend):
-            await c.application.execute(request("查询患者信息"))
-            body = demo_response("get_multisource_patient_context", {})
-            body["data"]["profile_brief"]["facts"]["说明"] = "合成更新资料"
-            body["meta"]["watermark"] = "updated"
-            backend.overrides["get_multisource_patient_context"] = body
-            refreshed = await c.application.execute(request("刷新患者信息", "r2"))
-            assert "合成更新资料" in answers(refreshed.record)
-            cached = await c.application.execute(request("查询患者信息", "r3"))
-            assert "合成更新资料" in answers(cached.record)
-            assert len(backend.calls) == 2
+            run = await c.application.execute(request("查询患者信息"))
+            # 默认禁用同时覆盖链首装填和显式概况请求。
+            assert tool_calls(backend) == []
+            assert run.record.status == "unsupported"
+            assert "暂未启用" in answers(run.record)
+            assert backend.calls == []
 
     asyncio.run(check())
 
@@ -142,7 +145,7 @@ def test_trend_ineligible_preserves_window_and_rejects_claim():
             text = answers(run.record)
             assert "请求记录数：4" in text and "窗口记录数：2" in text
             assert "不可比较" in text and "不应输出的改善断言" not in text
-            assert backend.calls[0][1]["selector"] == "latest_contiguous"
+            assert tool_calls(backend)[0][1]["selector"] == "latest_contiguous"
 
     asyncio.run(check())
 
@@ -162,7 +165,7 @@ def test_model_cannot_authorize_quoted_action():
                 ]
             )
             run = await c.application.execute(request("他说“打开面板”，这是什么意思"))
-            assert not backend.calls and run.record.status == "clarification"
+            assert not tool_calls(backend) and run.record.status == "clarification"
 
     asyncio.run(check())
 
@@ -178,9 +181,9 @@ def test_expired_anchor_is_revalidated_as_same_record():
             )
             backend.calls.clear()
             await c.application.execute(request("把刚才那次生成图", "r2"))
-            assert backend.calls[0][0] == "get_irego_session_analysis"
-            assert backend.calls[0][1]["selector"] == "session_ref"
-            assert backend.calls[0][1]["session_ref"] == "synthetic-session"
+            assert tool_calls(backend)[0][0] == "get_irego_session_analysis"
+            assert tool_calls(backend)[0][1]["selector"] == "session_ref"
+            assert tool_calls(backend)[0][1]["session_ref"] == "synthetic-session"
             assert not any(n == "get_irego_patient_history" for n, _ in backend.calls)
 
     asyncio.run(check())
