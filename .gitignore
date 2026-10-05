@@ -12,3 +12,16 @@ htmlcov/
 dist/
 build/
 .idea/
+
+# Local evaluation evidence: patient data, Excel workbooks and report artifacts.
+/outputs/
+
+# Private local integration runners and archived working notes.
+/manual/collect_test_results.py
+/manual/evaluate_single_agent.py
+/manual/evaluate_webapi.py
+/manual/project_test_patients.py
+/manual/start_ai_webapi_test.ps1
+/docs/dify-integration-v1/
+/docs/freeze-v1.0/
+/docs/implementation-v1/

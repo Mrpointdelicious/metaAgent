@@ -16,7 +16,8 @@
 
 缺少 IReGo 身份映射或某一设备查询失败时，其他层仍可读取。工具失败作为结果返回模型，
 模型可调整查询或回答已有信息；真实失败仍保留在运行记录中。
-`AGENT_MAX_MODEL_CALLS=8`、`MAX_TOOL_CALLS=16` 限制每轮调用，最后一次模型调用只要求形成回答。
+`AGENT_MAX_MODEL_CALLS=8` 限制模型调用，`MAX_TOOL_CALLS=16` 限制后端调用，
+最后一次模型调用只要求形成回答。本地 Knowledge 查询另受模型调用预算和总执行时限约束。
 `ORCHESTRATION_MODE=legacy` 可回退到原有 Planner/Compiler/Scheduler 和领域工作流。
 
 已接入 IReTour 的概览、分页历史、单次分析、连续趋势、单次报表和趋势报表，
@@ -39,13 +40,12 @@ IReTour 读接口兼容独立 `iretour-1.0.0` 版本，以及外层 `1.6.0` 且
 “这次/上一次/下一页”保留设备来源；报表失败保留已经获取的事实。
 IReTour 单位未知时原样标为未知，数值变化不转换为临床疗效结论。
 
-真实测试脚本为 `manual/evaluate_webapi.py`，读取现有模型配置，使用独立的
-本地 AI_WebApi 测试实例；`manual/project_test_patients.py` 以只读事务选择数据库对照。
-测试结果保存在 `outputs/20261002-ai-webapi/`，原图在 `images/`，未做视觉复核。
-病史/建议及多轮对话只保存原始文本，不评价建议的医学质量。
-单 Agent 的真实原生 API 测试脚本为 `manual/evaluate_single_agent.py`，
-结果保存在 `outputs/20261005-single-agent/`，包括三层查询、病史与训练问答、
-建议追问、两类设备报表。Excel 保存完整回答和调用结果，原始图片保存在 `images/`。
+已有真实测试在独立的本地 AI_WebApi 实例上执行，数据库对照通过只读查询取得。
+单 Agent 记录包括10个单轮冒烟用例、12轮连续对话和12次三层接口直连查询。
+病史与建议问答只保存原始文本，未评价临床诊断或康复建议的医学正确性。
+本地联调脚本、含真实患者信息的 Excel、数据记录和报表原图不进入 Git；
+`outputs/` 已由 `.gitignore` 排除。历史测试数量与本轮回归结果见
+[Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
 
 配套 AI_WebApi 修复包括 IReTour 三个解析依赖注册、project 汇总字段别名和
 IReGo 实体的 `robotdb_main` 连接标识。双库配置需启用 `MutiDBEnabled`，
@@ -134,7 +134,28 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 
 ## 知识语料
 
-`KNOWLEDGE_CORPUS_PATH` 指向 JSON 文件，结构见 `docs/implementation-v1/corpus.example.json`。只有 `approved=true` 且填写 `approved_by` 的对应领域分节资料参与检索。使用中文二元片段和英文词的 BM25，一次确定同义替换补检索，返回原文和 `doc_id@version#section_id`，不生成无证据医学结论。文献文件夹中的研究论文不会自动变成已批准的患者知识库。
+当前 `search_knowledge` 使用 `KnowledgeAdapter → 本地 approved JSON corpus → BM25`，
+仍是简化实现。Dify RAG、独立 RAG Service、Hybrid Retrieval 和 Reranker 均未接入。
+两个 Dify 兼容入口当前返回 HTTP 501，不是主运行路径。
+
+`KNOWLEDGE_CORPUS_PATH` 指向本地 JSON。格式由
+[domains/knowledge.py](src/meta_agent/domains/knowledge.py) 中的
+`Corpus`、`Document`、`Section` 定义：顶层 `schema_version="1.0"` 和 `documents`，
+文档包含领域、版本、来源、审批信息及分节文本。
+只有 `approved=true` 且填写 `approved_by` 的对应领域资料参与检索。
+使用中文二元片段和英文词的 BM25，并在无结果时执行一次确定性同义替换补检索，
+返回原文和 `doc_id@version#section_id`。语料不可用或没有匹配时返回 unavailable。
+文献文件夹中的研究论文不会自动成为已批准的患者知识库。
+
+## 已知限制
+
+- 当前只支持单 worker、单副本；跨实例租约与事件回放不在 v1 范围内。
+- Knowledge backend 仍为本地 approved JSON corpus + BM25，尚不是生产级知识服务。
+- 自动测试不验收临床诊断或康复建议的医学正确性。
+- 受历史上下文预算及证据时效影响，部分结构化训练结果可能在后续轮重新查询。
+- Dify 兼容入口不是主路径，正式 Dify RAG 留给独立 `feature/knowledge-dify`。
+
+详见 [Runtime Cutover Known Issues](docs/runtime-cutover-known-issues.md)。
 
 ## 验证
 
@@ -146,4 +167,6 @@ docker build --target test -t metaagent-test .
 docker run --rm metaagent-test
 ```
 
-PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接受名为 `metaagent_test` 的独立测试库；未提供时该项跳过。实施修订与实际验收结果见 `docs/implementation-v1/实施记录.md`。原冻结文件位于 `docs/freeze-v1.0`，实现修订另行记录。
+PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接受名为 `metaagent_test` 的独立测试库。
+未提供时属于 environment-dependent skip，不视为 failure。收口验证见
+[Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
