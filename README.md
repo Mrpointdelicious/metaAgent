@@ -48,16 +48,28 @@ IReTour 单位未知时原样标为未知，数值变化不转换为临床疗效
 单 Agent 记录包括10个单轮冒烟用例、12轮连续对话和12次三层接口直连查询。
 病史与建议问答只保存原始文本，未评价临床诊断或康复建议的医学正确性。
 本地联调脚本、含真实患者信息的 Excel、数据记录和报表原图不进入 Git；
-`outputs/` 已由 `.gitignore` 排除。历史测试数量与本轮回归结果见
-[Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
+`outputs/` 已由 `.gitignore` 排除。Runtime Cutover 的历史验收记录见
+[Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)，最新 Docker 部署验证见本文“验证”。
 
 配套 AI_WebApi 修复包括 IReTour 三个解析依赖注册、project 汇总字段别名和
 IReGo 实体的 `robotdb_main` 连接标识。双库配置需启用 `MutiDBEnabled`，
 主库连接 project，额外配置 robotdb_main 和 project_identity_temp。
-本地测试启动脚本使用单独端口与制品目录，不替换现有 5043 服务。
+当前本机新版 AI_WebApi 使用独立 Docker 容器和 15043 端口，保留原有 5043 服务。
 
+## Dify 展示入口
 
-Dify 按当前约定暂缓，两个 `/compat/dify/...` 入口返回 HTTP 501，`events/dify.py` 保留适配器接口。旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
+当前本机 Dify 已接入统一的“康复与就诊助手”，通过原生 `POST /v1/chat` 调用 MetaAgent，
+使用 `response_mode=blocking`。Chatflow 为：开始 → 准备可信请求 → HTTP 调用 → 整理回答 → 展示。
+患者绑定、租户、角色和空间信息由服务端配置注入；服务 Bearer Token 保存在 Dify secret 环境变量中。
+工具选择、模型调用和连续对话由 MetaAgent 的单 Agent 运行时完成。
+
+Dify 的 `METAAGENT_URL` 配置为 `http://meta_agent:8080`，通过共享 Docker 网络访问服务。
+页面先展示最终回答，中间步骤统一附在回答末尾，不展示原始工具 JSON；
+`show_workflow_steps=false`、`prompt_public=false`。迁移保留了原应用、展示链接和患者绑定。
+Dify RAG 尚未接入。两个 `/compat/dify/...` 入口仍返回 HTTP 501，`events/dify.py` 保留适配器接口。
+
+旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，
+不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
 
 ## legacy 模式的 IReGo 工作流
 
@@ -74,12 +86,14 @@ Scheduler 只看到一个 `irego.execute` 任务，内部固定链由 `domains/i
 报告只是可选制品，失败不会抹掉已建立的事实（目标降级为 partial）。
 回答由 Context Selector 从事实层选取，模型只选择事实编号。报告只由 `need_artifact` 控制，绝不因用户只索取解释而生成。
 
-## 本地运行
+## 宿主机开发运行（可选）
+
+当前本机演示服务使用 Docker，宿主机旧服务已停用。以下命令供单独开发调试使用：
 
 ```powershell
 uv sync --locked --extra dev --extra postgres --extra llm-deepseek
 # 仅首次创建配置；已有 .env 时保留原文件。
-Copy-Item .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 uv run python main.py
 ```
 
@@ -118,16 +132,85 @@ SSE 的 `data` 为 `OutboundEvent`：`accepted → progress → action_ready / a
 
 ## 持久化与部署
 
-生产必须配置服务/后端令牌，关闭 `DRY_RUN`，使用 PostgreSQL。v1 只支持单 worker 和单副本，同一数据库的第二实例会因 advisory lock 拒绝启动。实例锁连接失效后停止新操作。运行时不做生产 DDL：
+生产必须配置服务/后端令牌，关闭 `DRY_RUN`，使用 PostgreSQL。v1 只支持单 worker 和单副本，同一数据库的第二实例会因 advisory lock 拒绝启动。实例锁连接失效后停止新操作。部署时显式执行迁移，运行时不做生产 DDL。
+
+### 当前本机 Docker 部署（2026-10-08）
+
+Compose 项目名为 `metaagent-runtime`，Docker Desktop 在该项目下统一显示以下独立容器：
+
+| Compose 服务 | 容器名 | 职责 | 宿主机端口 |
+| --- | --- | --- | --- |
+| `meta_agent` | `meta_agent` | 单 Agent、工具编排、对话和上下文 | `5080 → 8080` |
+| `ai_webapi_runtime` | `meta_agent_webapi` | 新版 AI_WebApi、患者和训练查询、报表生成 | `15043 → 8080` |
+| `postgres` | `metaagent-runtime-postgres-1` | 运行记录、Evidence、会话及 Checkpoint 持久化 | 不发布；Docker 内部 `5432` |
+
+`metaagent-runtime` 是 Compose 项目分组；“单 Agent”描述模型编排方式，配套业务接口和数据库各自运行。
+PostgreSQL 的容器名按“项目名、服务名、实例序号”生成。三个服务可统一管理，也可分别查看日志、更新和重启；
+启动时等待依赖健康，容器通过服务名通信。
+
+MetaAgent 通过 `http://ai_webapi_runtime:8080` 访问新版后端，通过 `postgres:5432` 访问独立数据库。
+该 PostgreSQL 与 Dify 的数据库分开管理，不占用 Dify 数据库。
+数据库使用命名卷 `metaagent-runtime_meta_agent_postgres_data`；患者报表和医院报表也分别使用命名卷，
+重建应用容器时保留数据。删除数据卷会删除其中的数据，日常停启保留这些卷。
+
+当前部署在仓库 `compose.yaml` 上叠加本机私有配置：
+
+- `outputs/20261008-docker-cutover/compose.override.yaml`：新版 AI_WebApi、报表卷及外部网络。
+- 同目录的 `compose.env`、`metaagent.env`、`backend.env`：Compose、MetaAgent 和后端的本机配置。
+- `start-docker.ps1`：启动依赖、显式运行数据库迁移，再启动 MetaAgent。
+
+这些配置和测试资产位于已忽略的 `outputs/` 下，不进入 Git；新检出仓库需另行准备配置。
+在当前本机、仓库根目录执行：
 
 ```powershell
-docker compose build meta_agent
-docker compose up -d postgres
-docker compose run --rm migrate
-docker compose up -d meta_agent
+& ./outputs/20261008-docker-cutover/start-docker.ps1
+
+# 后续管理必须使用相同项目名和配置文件。
+$runtimeComposeArgs = @(
+    'compose', '--project-name', 'metaagent-runtime',
+    '--env-file', 'outputs/20261008-docker-cutover/compose.env',
+    '-f', 'compose.yaml',
+    '-f', 'outputs/20261008-docker-cutover/compose.override.yaml'
+)
+docker @runtimeComposeArgs ps
+docker @runtimeComposeArgs logs --tail 100 meta_agent
+docker @runtimeComposeArgs logs --tail 100 postgres
 ```
 
-迁移也可直接运行 `uv run python -m meta_agent.infrastructure.migrate`。部署前将 `APP_ENV=production`、`PERSISTENCE_BACKEND=postgres`、`DRY_RUN=false`，并配置可访问的制品主机白名单（后端同主机默认允许）。不要开启多个进程。这里提供部署步骤，本次实现没有替换现有服务。
+`GET http://localhost:5080/health/ready` 检查持久化和实例锁，
+`GET http://localhost:5080/health/dependencies` 检查 AI_WebApi。
+当前 MetaAgent、AI_WebApi 和 PostgreSQL 均配置为 `restart: unless-stopped`；
+旧演示启动脚本已改为调用 Docker 启动脚本，宿主机不再启动对应 Python/.NET 服务。
+
+MetaAgent 与 Dify API 使用共享网络 `docker_default`，新版 AI_WebApi 与既有 MySQL 使用 `mysql_default`。
+这两个外部网络需已存在；移植部署时应按目标环境调整。
+报表 `PublicBaseUrl` 需同时能被 MetaAgent 容器和展示浏览器访问，并加入 `ARTIFACT_ALLOWED_HOSTS`。
+宿主机地址变更时需同步本机后端配置及白名单。
+
+### 新环境的基础 Compose 部署
+
+仓库内的 `compose.yaml` 提供 MetaAgent、PostgreSQL 和一次性 `migrate` 服务；新版 AI_WebApi 及 Dify 网络由部署覆盖文件补充。
+`.env.example` 的默认值用于开发，不会自动启用生产 PostgreSQL 持久化。先准备 `.env`，至少设置：
+
+- `META_AGENT__APP_ENV=production`、`META_AGENT__DRY_RUN=false`。
+- `META_AGENT__PERSISTENCE_BACKEND=postgres`、`META_AGENT__AUTO_SETUP_PERSISTENCE=false`。
+- `META_AGENT_POSTGRES_PASSWORD`，以及使用相同密码、主机名 `postgres`、数据库名 `meta_agent` 的 `META_AGENT__POSTGRES_DSN`。
+- 服务与 AI_WebApi Bearer Token、模型 API Key、后端地址和制品主机白名单。
+- `META_AGENT__WORKER_COUNT=1`、`META_AGENT__PLANNER_MAX_RETRIES=0`。
+
+完成配置后，在新环境显式选择项目名并执行：
+
+```powershell
+docker compose --project-name metaagent-runtime build meta_agent
+docker compose --project-name metaagent-runtime up -d --wait postgres
+docker compose --project-name metaagent-runtime --profile maintenance run --rm migrate
+docker compose --project-name metaagent-runtime up -d --wait meta_agent
+```
+
+基础 Compose 命令不包含当前本机的覆盖配置；管理当前已运行的服务使用上一节的命令。
+迁移也可直接运行 `uv run python -m meta_agent.infrastructure.migrate`，需使用与目标实例一致且可访问数据库的配置。
+
+### 持久化行为
 
 Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；完整工具 JSON 存在按作用域隔离的证据库。
 会话按患者和可信身份隔离，保留最近六轮，另受 `AGENT_HISTORY_TOKENS=8000` 限制，闲置24小时失效。
@@ -140,7 +223,6 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 
 当前 `search_knowledge` 使用 `KnowledgeAdapter → 本地 approved JSON corpus → BM25`，
 仍是简化实现。Dify RAG、独立 RAG Service、Hybrid Retrieval 和 Reranker 均未接入。
-两个 Dify 兼容入口当前返回 HTTP 501，不是主运行路径。
 
 `KNOWLEDGE_CORPUS_PATH` 指向本地 JSON。格式由
 [domains/knowledge.py](src/meta_agent/domains/knowledge.py) 中的
@@ -157,7 +239,7 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 - Knowledge backend 仍为本地 approved JSON corpus + BM25，尚不是生产级知识服务。
 - 自动测试不验收临床诊断或康复建议的医学正确性。
 - 受历史上下文预算及证据时效影响，部分结构化训练结果可能在后续轮重新查询。
-- Dify 兼容入口不是主路径，正式 Dify RAG 留给独立 `feature/knowledge-dify`。
+- Dify 展示已通过原生 API 接入，兼容入口未启用；正式 Dify RAG 留给独立 `feature/knowledge-dify`。
 
 详见 [Runtime Cutover Known Issues](docs/runtime-cutover-known-issues.md)。
 
@@ -172,5 +254,17 @@ docker run --rm metaagent-test
 ```
 
 PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接受名为 `metaagent_test` 的独立测试库。
-未提供时属于 environment-dependent skip，不视为 failure。收口验证见
+未提供时属于 environment-dependent skip，不视为 failure。Docker 内运行该测试时还需连接测试数据库所在网络。
+
+2026-10-08 本机 Docker 迁移验证结果：
+
+- 完整 Python 回归：152 passed / 0 failed / 0 skipped，包含独立 `metaagent_test` 数据库的 PostgreSQL 集成测试。
+- `ruff check src tests` 和 `ruff format --check src tests` 均通过。
+- 容器内三层患者直连查询及 IReTour 历史查询均成功；多源接口和两项 IReTour 报表调用保持禁用。
+- 已发布 Dify WebApp 完成 1 次单轮冒烟和 2 次连续追问：2 succeeded / 1 partial / 0 hard failures。
+  `partial` 来自该演示患者没有 IReTour 可用结果，IReGo 分析和原始报表仍成功生成。
+- 重启 MetaAgent 后，同一运行的记录保持一致，后续连续追问成功。
+- 结果保存在本机 Excel，原始 PNG 按字节保留并嵌入工作簿；仅检查文本、HTTP 和文件字节，未做视觉复核或医学正确性评价。
+
+测试资产位于已忽略的 `outputs/20261008-docker-cutover/`。Runtime Cutover 的历史收口验证见
 [Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
