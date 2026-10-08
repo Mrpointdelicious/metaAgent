@@ -20,7 +20,7 @@ from meta_agent.contracts import (
 from meta_agent.domains.facts import FactBuilder
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.planning.parser import StructuredIntentPlanner
-from tests.helpers.runtime import answers, request, runtime
+from tests.helpers.runtime import answers, request, runtime, tool_calls
 from tests.helpers.settings import AppTestSettings
 
 
@@ -56,7 +56,7 @@ def test_knowledge_approval_and_document_injection(tmp_path, approved):
     async def check():
         async with runtime(knowledge_corpus_path=str(path)) as (c, backend):
             run = await c.application.execute(request("面板使用方法"))
-            assert backend.calls == []
+            assert tool_calls(backend) == []
             assert not any(e.type == "action_ready" for e in run.record.events)
             if approved:
                 assert run.record.status == "succeeded"
@@ -79,7 +79,7 @@ def test_no_knowledge_source_returns_gap(tmp_path):
         async with runtime(knowledge_corpus_path=str(path)) as (c, backend):
             run = await c.application.execute(request("眩晕科普"))
             assert run.record.status == "unavailable"
-            assert backend.calls == []
+            assert tool_calls(backend) == []
 
     asyncio.run(check())
 
@@ -183,7 +183,8 @@ def test_planner_repairs_only_once_with_schema_budget():
         result = await planner.parse("你好", ConversationState(), budget)
         assert result.decision == "respond" and budget.calls == 2
         assert all(
-            estimate_tokens(m) + estimate_tokens(IntentDecision.model_json_schema()) <= 4000
+            estimate_tokens(m) + estimate_tokens(IntentDecision.model_json_schema())
+            <= planner.settings.planner_input_tokens
             for m in model.calls
         )
 

@@ -13,3 +13,5 @@ doc
 docs
 dist
 build
+outputs/
+manual/

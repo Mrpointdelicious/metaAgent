@@ -104,4 +104,5 @@ def test_optional_patient_and_mixed_identity(client, auth_headers):
             "查一下患者信息", "req-2", inputs={"patientId": {"type": "mixed", "value": "461"}}
         ),
     )
-    assert response.json()["status"] == "succeeded"
+    assert response.json()["status"] == "unsupported"
+    assert response.json()["metrics"]["tool_calls"] == 0

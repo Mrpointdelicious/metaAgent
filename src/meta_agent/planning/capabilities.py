@@ -10,7 +10,15 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from meta_agent.config import Settings
-from meta_agent.contracts import Capability, Effect, IReGoRequest, Selector, StrictModel
+from meta_agent.contracts import (
+    Capability,
+    Effect,
+    HospitalRequest,
+    IReGoRequest,
+    IReTourRequest,
+    Selector,
+    StrictModel,
+)
 
 
 class EmptyArgs(StrictModel):
@@ -95,12 +103,24 @@ class CapabilitySpec:
 def capability_specs(settings: Settings) -> dict[str, CapabilitySpec]:
     specs = [
         CapabilitySpec(
+            "iretour.execute",
+            IReTourRequest,
+            requires_patient=True,
+            provides=("session_ref", "evidence_id", "artifact_ref", "window"),
+        ),
+        CapabilitySpec("hospital.query", HospitalRequest),
+        CapabilitySpec(
             "irego.execute",
             IReGoRequest,
             requires_patient=True,
             provides=("session_ref", "evidence_id", "artifact_ref", "window"),
         ),
-        CapabilitySpec("rehab.overview", OverviewArgs, requires_patient=True),
+        CapabilitySpec(
+            "rehab.overview",
+            OverviewArgs,
+            requires_patient=True,
+            enabled=settings.multisource_patient_context_enabled,
+        ),
         CapabilitySpec("rehab.history", HistoryArgs, requires_patient=True),
         CapabilitySpec(
             "rehab.resolve_session",

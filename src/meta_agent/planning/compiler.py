@@ -165,8 +165,39 @@ class PlanCompiler:
                     g.clarification or "请补充该目标所需的信息。",
                 )
                 continue
-            if g.domain in {"iremo", "iretour", "hospital"} or g.kind == "unsupported":
+            if g.domain == "iremo" or g.kind == "unsupported":
                 result.dispositions[gid] = ("unsupported", "该领域接口暂未接入。")
+                continue
+            if g.kind == "hospital_query" and g.domain == "hospital":
+                if scope.role != "operator":
+                    result.dispositions[gid] = ("unsupported", "医院运营查询需要运营人员身份。")
+                    continue
+                if g.hospital is None:
+                    result.dispositions[gid] = ("clarification", "请明确机构与查询范围。")
+                    continue
+                hospital = g.hospital.model_copy(deep=True)
+                if "artifact" in g.excluded_outputs or REPORT_NEGATION.search(query):
+                    hospital.output_mode = "analysis"
+                task = add([gid], "hospital.query", hospital.model_dump(exclude_none=True))
+                task.retry_limit = 0
+                if hospital.output_mode != "analysis":
+                    task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
+                continue
+            if g.kind == "iretour" and g.domain == "iretour":
+                if not scope.iretour_patient_id:
+                    result.dispositions[gid] = ("clarification", "请先绑定患者身份。")
+                    continue
+                if g.iretour is None:
+                    result.dispositions[gid] = ("clarification", "请明确 IReTour 查询内容。")
+                    continue
+                request = g.iretour.model_copy(deep=True)
+                if "artifact" in g.excluded_outputs or REPORT_NEGATION.search(query):
+                    request.need_artifact = False
+                task = add([gid], "iretour.execute", request.model_dump(exclude_none=True))
+                task.retry_limit = 0
+                if request.need_artifact:
+                    task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
+                    task.priority_class = "artifact"
                 continue
             is_rehab = g.kind.startswith("rehab_") or g.kind in {"report", "irego"}
             if is_rehab and (g.domain != "irego" or not scope.patient_id):
@@ -242,6 +273,12 @@ class PlanCompiler:
                 request = self._irego_request(g, query)
                 if request is None:
                     result.dispositions[gid] = ("clarification", "缺少 IREGO 业务操作请求。")
+                    continue
+                if (
+                    request.operation == "overview"
+                    and not self.settings.multisource_patient_context_enabled
+                ):
+                    result.dispositions[gid] = ("unsupported", "多源患者上下文暂未启用。")
                     continue
                 if (
                     request.operation == "session"
@@ -437,7 +474,11 @@ class PlanCompiler:
                 )
             if (
                 spec.requires_patient
-                and not scope.patient_id
+                and not (
+                    scope.iretour_patient_id
+                    if task.capability == "iretour.execute"
+                    else scope.patient_id
+                )
                 or spec.requires_space
                 and not scope.space_id
             ):

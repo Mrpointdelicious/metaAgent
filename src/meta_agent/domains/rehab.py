@@ -50,14 +50,15 @@ class RehabAdapter:
     }
 
     async def fetch(self, ctx: RunContext, endpoint: str, args: dict[str, Any]) -> EvidenceEnvelope:
-        if not ctx.scope.patient_id:
+        patient_id = ctx.scope.iretour_patient_id if "iretour" in endpoint else ctx.scope.patient_id
+        if not patient_id:
             raise DomainError("patient_required", "请先绑定患者身份。", outcome="clarification")
         body = await ctx.call(
             endpoint,
             {
                 **args,
                 "system_context": {
-                    "user": ctx.scope.patient_id,
+                    "user": patient_id,
                     "conversation_id": ctx.record.conversation_id,
                 },
             },
@@ -66,7 +67,14 @@ class RehabAdapter:
             envelope = PatientEnvelope.model_validate(body)
         except ValidationError as exc:
             raise DomainError("invalid_contract", "工具返回不符合患者接口契约。") from exc
-        if envelope.contract_version != "1.6.0":
+        expected_version = "iretour-1.0.0" if "iretour" in endpoint else "1.6.0"
+        # 第一版 IReTour 读接口沿用 1.6.0 外层封套，但声明独立 registry contract。
+        legacy_tour = (
+            "iretour" in endpoint
+            and envelope.contract_version == "1.6.0"
+            and (envelope.meta.get("registry_versions") or {}).get("contract") == expected_version
+        )
+        if envelope.contract_version != expected_version and not legacy_tour:
             raise DomainError("unsupported_contract", "患者工具契约版本尚未支持。")
         if envelope.tool_name != endpoint:
             raise DomainError("wrong_tool_result", "工具返回与请求能力不一致。")
@@ -357,6 +365,14 @@ class RehabAdapter:
 
     async def resolve(self, task: TaskSpec, selector: Selector, ctx: RunContext) -> TaskResult:
         anchor = ctx.memory.current_record
+        if (
+            anchor
+            and selector.mode in {"current_ref", "previous_record"}
+            and anchor.domain != "irego"
+        ):
+            raise DomainError(
+                "record_domain_mismatch", "请先定位 IReGo 训练记录。", outcome="clarification"
+            )
         if selector.mode in {"current_ref", "latest_usable"}:
             if selector.mode == "current_ref" and not anchor:
                 raise DomainError("anchor_missing", "请明确当前训练记录。", outcome="clarification")

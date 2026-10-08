@@ -6,7 +6,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from meta_agent.application.composer import ResponseComposer, safe_text
@@ -23,6 +23,7 @@ from meta_agent.contracts import (
     fingerprint,
     identifier,
 )
+from meta_agent.domains.patient_identity import brief_from_context_response
 from meta_agent.events.stream import EventEmitter
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.infrastructure.locks import ThreadLockRegistry
@@ -84,11 +85,13 @@ class ApplicationService:
         backend: Any,
         tool_limiter: asyncio.Semaphore,
         composer: ResponseComposer | None = None,
+        agent_runtime: Any = None,
     ) -> None:
         self.settings, self.planner, self.compiler = settings, planner, compiler
         self.scheduler, self.repository, self.backend = scheduler, repository, backend
         self.tool_limiter = tool_limiter
         self.composer = composer or ResponseComposer()
+        self.agent_runtime = agent_runtime
         self.request_limiter = asyncio.Semaphore(settings.max_concurrent_requests)
         self.locks = ThreadLockRegistry()
         self.active: dict[str, ApplicationRun] = {}
@@ -157,7 +160,11 @@ class ApplicationService:
                 repository=self.repository,
                 emitter=emitter,
                 backend=self.backend,
-                llm_budget=LLMBudget(self.settings.max_llm_calls),
+                llm_budget=LLMBudget(
+                    self.settings.agent_max_model_calls
+                    if self.agent_runtime
+                    else self.settings.max_llm_calls
+                ),
                 tool_limiter=self.tool_limiter,
                 started=started,
                 on_result=self._on_result,
@@ -180,13 +187,17 @@ class ApplicationService:
             async with asyncio.timeout(ctx.remaining):
                 async with self.request_limiter, self.locks.hold("conversation:" + thread):
                     ctx.memory = await self.repository.conversation(thread)
-                    if self.graph:
+                    if self.agent_runtime:
+                        await self.agent_runtime.execute(ctx)
+                    elif self.graph:
+                        await self._enrich_patient_brief(ctx)
                         await self.graph.ainvoke(
                             {"run_id": ctx.record.run_id, "stage": "accepted"},
                             config={"configurable": {"thread_id": ctx.record.run_id}},
                             context=ctx,
                         )
                     else:
+                        await self._enrich_patient_brief(ctx)
                         await self.plan(ctx)
                         await self.execute_plan(ctx)
                     await self._save_memory(ctx, thread)
@@ -230,9 +241,68 @@ class ApplicationService:
                 await ctx.emitter.finish()
                 self.active.pop(ctx.record.run_id, None)
 
+    async def _enrich_patient_brief(self, ctx: RunContext) -> None:
+        """链首身份识别：患者场景装填基本档案到上下文，失败仅降级不阻断。
+
+        只有可信注入的 patient_id 存在时才发起；后端接口不可用或预算耗尽
+        时保持 patient_brief=None，会话继续走无档案路径。装填响应落证据库，
+        供概况类任务以事实投影引用。
+        """
+        if not ctx.scope.patient_id or not ctx.settings.multisource_patient_context_enabled:
+            return
+        try:
+            body = await ctx.call(
+                "get_multisource_patient_context",
+                {
+                    "system_context": {"user": ctx.scope.patient_id},
+                    # purpose 标记链首装填调用，与领域工作流同端点调用区分
+                    # （计量与测试隔离用）；后端忽略未知请求字段。
+                    "purpose": "enrichment",
+                    "projection_level": "compact",
+                    "force_refresh": False,
+                },
+            )
+        except DomainError as exc:
+            logger.warning(
+                "patient brief enrichment failed code=%s run_id=%s",
+                exc.code,
+                ctx.record.run_id,
+            )
+            return
+        brief = brief_from_context_response(
+            body, include_name=ctx.settings.patient_brief_include_name
+        )
+        if brief.is_patient:
+            try:
+                evidence = await ctx.repository.save_evidence(
+                    ctx.scope.scope_hash,
+                    "get_multisource_patient_context",
+                    ctx.record.request_id,
+                    body,
+                    "1.6.0",
+                )
+                brief = replace(
+                    brief,
+                    evidence_id=evidence.evidence_id,
+                    source_version=evidence.source_version,
+                )
+            except Exception:
+                logger.warning(
+                    "patient brief evidence save failed run_id=%s",
+                    ctx.record.run_id,
+                    exc_info=True,
+                )
+        ctx.patient_brief = brief
+
     async def plan(self, ctx: RunContext) -> None:
         await ctx.emitter.emit("progress", {"stage": "planning", "text": "正在确认本轮目标。"})
-        decision = await self.planner.parse(ctx.query, ctx.memory, ctx.llm_budget)
+        brief = ctx.patient_brief
+        decision = await self.planner.parse(
+            ctx.query,
+            ctx.memory,
+            ctx.llm_budget,
+            patient_brief=brief.display_text if brief and brief.is_patient else None,
+        )
         ctx.record.decision = decision
         ctx.goals = {goal.goal_id: goal for goal in decision.goals}
         if decision.decision != "execute":
@@ -360,10 +430,12 @@ class ApplicationService:
                     evidence_id=result.evidence_ids[0],
                     session_time=result.outputs.get("session_time"),
                     source_version=result.outputs.get("source_version", "unknown"),
+                    domain=result.outputs.get("record_domain", "irego"),
                 )
             if "history_page" in result.outputs:
                 ctx.memory.history_page = result.outputs["history_page"]
                 ctx.memory.history_seen = True
+                ctx.memory.history_domain = result.outputs.get("record_domain", "irego")
         if anchors:
             ctx.memory.current_record = next(iter(anchors.values())) if len(anchors) == 1 else None
         ctx.memory.pending_goals = [
@@ -412,7 +484,11 @@ class ApplicationService:
                 "elapsed_ms": ctx.record.metrics["elapsed_ms"],
                 "capabilities": [t.capability for t in ctx.record.plan.tasks]
                 if ctx.record.plan
-                else [],
+                else [
+                    r.outputs["tool_name"]
+                    for r in ctx.record.results.values()
+                    if "tool_name" in r.outputs
+                ],
             },
             self.settings.audit_ttl_seconds,
         )

@@ -9,6 +9,28 @@ from meta_agent.contracts import utcnow
 
 
 def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if "iretour" in endpoint:
+        from meta_agent.tools.demo_iretour import iretour_demo_response
+
+        return iretour_demo_response(endpoint, payload)
+    if endpoint == "query_hospital_operations":
+        return {
+            "tool_name": endpoint,
+            "contract_version": "1.2.0",
+            "request_id": "demo",
+            "status": "success",
+            "data": {
+                "period": {"start_date": "2026-09-01", "end_date": "2026-09-30"},
+                "hospitals": [
+                    {
+                        "hospital": {"hospital_name": "合成演示机构"},
+                        "overview": {"patient_count": 10, "doctor_count": 2},
+                    }
+                ],
+                "analysis": [{"text": "以上为合成演示数据。"}],
+                "report": None,
+            },
+        }
     if endpoint == "search_doctors":
         return {
             "status": 200,
@@ -53,7 +75,7 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
     }
     if endpoint == "get_multisource_patient_context":
         body["data"] = {
-            "profile_brief": {"available": True, "facts": {"说明": "合成演示资料"}},
+            "profile_brief": {"available": True, "facts": {"age": 65, "sex": "女"}},
             "data_domains": {
                 "irego": {
                     "availability": "available",
@@ -112,6 +134,51 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 "trend_eligibility": "ineligible",
                 "explanation_boundary": "合成演示记录，不代表真实患者训练表现。",
             },
+        }
+    elif endpoint == "get_patient_profile":
+        body["contract_version"] = "patient-layers-1.0.0"
+        body["data"] = {
+            "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
+            "profile": {
+                "gender": "女",
+                "age": 65,
+                "self_reported_medical_history": "合成示例：左膝疼痛",
+            },
+            "source": "synthetic_demo",
+            "limitations": ["合成演示资料，不代表真实患者。"],
+        }
+    elif endpoint == "get_patient_consultation":
+        body["contract_version"] = "patient-layers-1.0.0"
+        body["data"] = {
+            "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
+            "medical_record_count": 1,
+            "consultation_count": 0,
+            "page": {"page_number": 1, "page_size": 5, "total_items": 1, "has_next": False},
+            "medical_records": [
+                {
+                    "record_id": 1,
+                    "recorded_at": "2025-01-01T10:00:00+08:00",
+                    "content": {
+                        "diagnosis": "合成示例：膝关节疼痛",
+                        "doctor_orders": "合成示例：按既定康复计划训练，记录训练后的感受。",
+                    },
+                }
+            ],
+            "consultations": [],
+            "limitations": ["合成演示資料，不代表真实患者。"],
+        }
+    elif endpoint == "get_patient_rehab":
+        body["contract_version"] = "patient-layers-1.0.0"
+        body["data"] = {
+            "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
+            "plan_count": 0,
+            "plans": [],
+            "iretour": {
+                "availability": "success",
+                "history": demo_response("get_iretour_patient_history", payload)["data"],
+            },
+            "irego": {"availability": "unavailable", "patient_message": "合成示例没有IReGo映射。"},
+            "limitations": ["合成演示资料，不代表真实患者。"],
         }
     else:
         body.update(

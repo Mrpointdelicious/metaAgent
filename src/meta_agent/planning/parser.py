@@ -16,8 +16,10 @@ from meta_agent.contracts import (
     ConversationState,
     DomainError,
     Goal,
+    HospitalRequest,
     IntentDecision,
     IReGoRequest,
+    IReTourRequest,
     Selector,
 )
 
@@ -29,7 +31,11 @@ REPORT_NEGATION = re.compile(r"(?:不要|不用|无需|别|禁止)[^，。；;]{
 
 class IntentPlanner(Protocol):
     async def parse(
-        self, query: str, memory: ConversationState, budget: LLMBudget
+        self,
+        query: str,
+        memory: ConversationState,
+        budget: LLMBudget,
+        patient_brief: str | None = None,
     ) -> IntentDecision: ...
 
 
@@ -41,14 +47,19 @@ class ConservativePlanner:
     """明确模式供离线演示/失效兜底；不以单个关键词自动执行自由口语。"""
 
     async def parse(
-        self, query: str, memory: ConversationState, budget: LLMBudget
+        self,
+        query: str,
+        memory: ConversationState,
+        budget: LLMBudget,
+        patient_brief: str | None = None,
     ) -> IntentDecision:
+        memory = memory or ConversationState()
         q = query.strip()
         if re.fullmatch(r"(?:你好|您好|嗨|谢谢|感谢|再见|hello|hi)[！!。\.\s]*", q, re.I):
             return IntentDecision(
                 decision="respond", decision_summary="你好，我可以协助查询训练、医生和场景信息。"
             )
-        for device in ("iremo", "iretour"):
+        for device in ("iremo",):
             if device in q.lower():
                 return IntentDecision(
                     decision="unsupported",
@@ -71,7 +82,7 @@ class ConservativePlanner:
         if len(clauses) > 1 and all(c.strip() for c in clauses):
             goals = []
             for clause in clauses:
-                decision = await self.parse(clause, memory, budget)
+                decision = await self.parse(clause, memory, budget, patient_brief=patient_brief)
                 if decision.decision != "execute":
                     return clarification("请分别明确各个查询或动作。")
                 for goal in decision.goals:
@@ -80,6 +91,67 @@ class ConservativePlanner:
             if len(goals) > 6:
                 return clarification("本轮目标较多，请分批处理。")
             return IntentDecision(decision="execute", goals=goals)
+        if "运营" in q and ("医院" in q or "机构" in q):
+            match = re.search(r"(?:医院|机构)(?:编号|ID|id)?\s*(\d+)", q)
+            if not match:
+                return clarification("请提供要查询的医院编号或名称。")
+            report = not REPORT_NEGATION.search(q) and bool(re.search(r"报告|报表|图片|出图", q))
+            return IntentDecision(
+                decision="execute",
+                goals=[
+                    Goal(
+                        goal_id="g1",
+                        kind="hospital_query",
+                        domain="hospital",
+                        query_span=q,
+                        hospital=HospitalRequest(
+                            hospital_id=int(match[1]),
+                            output_mode="analysis_and_report" if report else "analysis",
+                        ),
+                    )
+                ],
+            )
+        explicit_tour = bool(re.search(r"iretour", q, re.I))
+        explicit_go = bool(re.search(r"irego", q, re.I))
+        followup = bool(re.search(r"刚才|这次|本次|那次|上一次|前一次", q))
+        tour_followup = (
+            followup and memory.current_record and memory.current_record.domain == "iretour"
+        )
+        tour_page = (
+            memory.history_seen
+            and memory.history_domain == "iretour"
+            and bool(re.fullmatch(r"(?:请)?(?:继续|下一页|再一页|上一页)[。\s]*", q))
+        )
+        if not explicit_go and (explicit_tour or tour_followup or tour_page):
+            base_query = re.sub(r"iretour", "", q, flags=re.I).strip()
+            if re.search(r"概览|概况|上下文", base_query):
+                base_query = "查看患者概况"
+            base_memory = memory.model_copy(deep=True)
+            base_memory.history_domain = "irego"
+            if base_memory.current_record:
+                base_memory.current_record.domain = "irego"
+            decision = await self.parse(base_query, base_memory, budget, patient_brief)
+            for goal in decision.goals:
+                if goal.kind != "irego" or goal.irego is None:
+                    continue
+                goal.kind, goal.domain, goal.query_span = "iretour", "iretour", q
+                goal.iretour = IReTourRequest(**goal.irego.model_dump())
+                for name, code in {
+                    "直线初级": "straight_primary",
+                    "直线高级": "straight_secondary",
+                    "反应初级": "reaction_primary",
+                    "反应高级": "reaction_secondary",
+                    "平衡桥": "balance_bridge",
+                    "振动": "vibration",
+                    "横向": "transverse",
+                    "跨步": "stride",
+                    "侧向": "sideway",
+                    "步态评估": "gait_assessment",
+                }.items():
+                    if name in q:
+                        goal.iretour.activity_scope = code
+                goal.irego = None
+            return decision
         if re.fullmatch(r"(?:那)?(?:上一次|前一次)(?:呢)?[？?。\s]*", q):
             return IntentDecision(
                 decision="execute",
@@ -254,8 +326,18 @@ class ConservativePlanner:
 
 
 SYSTEM_PROMPT = """你是意图解析器，只返回结构化业务目标，不执行工具、不规划工具步骤。
+IReTour 已接入：kind=iretour/domain=iretour，填写 iretour（不要填 irego）。
+支持 overview/history/session/trend 和 need_artifact。
+IReTour 趋势 activity_scope 默认为 straight_primary；可按明确项目选择其它合法枚举。
+分析2–20次，图片3–20次。
+医院运营已接入：kind=hospital_query/domain=hospital，填写 hospital。
+只从原文提取机构编号、名称、比较对象及日期，不猜机构。
+多源患者上下文默认停用，不要将 IReTour 概览转成 IReGo 概览。IReMo 尚未接入。
+跨轮参考 record_domain/history_domain；“这次/上一次/下一页”沿用对应设备；不可混用不同设备记录。
 依据用户原话识别全部意图；每个query_span必须是原话连续片段。保留否定、重复动作和记录指代，动作方向不可互换。
 不要根据患者上下文默认增加医疗查询。普通聊天可respond且goals为空。未知设备用unsupported，不改为IREGO。缺信息clarify。
+若提供 patient_brief（可信注入的患者档案），只用于理解背景。
+任何目标与输出都不得出现患者姓名，一律以“您”称呼。
 每个scene_action代表一个原文动作（即使重复也单独编号），命令编号/URL/身份不能由你生成。
 记录引用只允许candidate_ref=null或提供的current，不生成session_ref。上一次相对current。
 iReGo 目标一律 kind="irego"、domain="irego"，业务参数只放在 irego 对象中，
@@ -285,7 +367,11 @@ class StructuredIntentPlanner:
         self.fallback = ConservativePlanner()
 
     async def parse(
-        self, query: str, memory: ConversationState, budget: LLMBudget
+        self,
+        query: str,
+        memory: ConversationState,
+        budget: LLMBudget,
+        patient_brief: str | None = None,
     ) -> IntentDecision:
         history = list(memory.turns[-6:])
         limit = min(
@@ -298,7 +384,11 @@ class StructuredIntentPlanner:
                 "query": query,
                 "recent_turns": history,
                 "record_candidates": ["current"] if memory.current_record else [],
+                "record_domain": memory.current_record.domain if memory.current_record else None,
+                "history_domain": memory.history_domain if memory.history_seen else None,
+                "history_page": memory.history_page if memory.history_seen else None,
                 "pending_goals": [g.model_dump(mode="json") for g in memory.pending_goals],
+                "patient_brief": patient_brief or None,
             }
             messages = [
                 ("system", SYSTEM_PROMPT),
@@ -335,4 +425,4 @@ class StructuredIntentPlanner:
             except Exception:
                 # Provider failures never turn an arbitrary utterance into a tool command.
                 break
-        return await self.fallback.parse(query, memory, budget)
+        return await self.fallback.parse(query, memory, budget, patient_brief=patient_brief)

@@ -19,11 +19,36 @@ from meta_agent.orchestration.identity import trusted_scope_from_inputs
 router = APIRouter()
 
 
-def scope_for(payload: RunAccessRequest, request: Request):
+async def scope_for(payload: RunAccessRequest, request: Request):
     try:
+        inputs = dict(payload.inputs)
+        project_id = inputs.get("projectPatientId")
+        if project_id is None:
+            project_id = inputs.get("project_patient_id")
+        phone = inputs.get("patientPhone")
+        if project_id is not None or phone is not None:
+            if any(
+                inputs.get(k) not in (None, "")
+                for k in ("patientId", "patient_id", "robotDbUserId")
+            ):
+                raise ValueError("原始患者编号与身份映射输入不可同时提供")
+            if (
+                phone is not None
+                or request.app.state.container.settings.orchestration_mode == "legacy"
+            ):
+                identity = (
+                    await request.app.state.container.ai_webapi_client.resolve_patient_identity(
+                        project_patient_id=project_id, phone=phone
+                    )
+                )
+                inputs["patientId"] = str(identity["robot_patient_id"])
+                inputs["projectPatientId"] = str(identity["project_patient_id"])
+                inputs["iretourPatientId"] = str(identity["project_patient_id"])
         return trusted_scope_from_inputs(
-            payload.inputs, payload.user, request.app.state.container.settings.default_tenant_id
+            inputs, payload.user, request.app.state.container.settings.default_tenant_id
         )
+    except DomainError as exc:
+        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
@@ -50,7 +75,7 @@ async def chat(payload: NativeChatRequest, request: Request):
     container = request.app.state.container
     if len(payload.query) > container.settings.max_query_length:
         raise HTTPException(422, "query 超过本轮长度限制")
-    scope = scope_for(payload, request)
+    scope = await scope_for(payload, request)
     conversation = (
         payload.conversation_id
         or "conversation_" + fingerprint([scope.scope_hash, payload.request_id])[:24]
@@ -114,7 +139,7 @@ async def stream(run: ApplicationRun, request: Request):
 
 @router.post("/v1/runs/{run_id}/status", dependencies=[Depends(require_service_identity)])
 async def run_status(run_id: str, payload: RunAccessRequest, request: Request):
-    scope = scope_for(payload, request)
+    scope = await scope_for(payload, request)
     record = await request.app.state.container.repository.run(scope.scope_hash, run_id)
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")
@@ -123,7 +148,7 @@ async def run_status(run_id: str, payload: RunAccessRequest, request: Request):
 
 @router.post("/v1/runs/{run_id}/cancel", dependencies=[Depends(require_service_identity)])
 async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
-    scope = scope_for(payload, request)
+    scope = await scope_for(payload, request)
     record = await request.app.state.container.application.cancel(scope.scope_hash, run_id)
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")

@@ -11,6 +11,8 @@ from meta_agent.config import Settings
 class AppTestSettings(Settings):
     """测试专用 Settings，不读取项目根目录 .env。"""
 
+    orchestration_mode: str = "legacy"
+
     model_config = SettingsConfigDict(
         **{
             **Settings.model_config,
