@@ -33,6 +33,7 @@ from meta_agent.domains.hospital import HospitalAdapter
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.scene import SceneAdapter, source_text
+from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
 
 CURRENT_RUN: ContextVar = ContextVar("single_agent_run")
 LAYER_TOOLS = {"get_patient_profile", "get_patient_consultation", "get_patient_rehab"}
@@ -53,7 +54,7 @@ TOOL_SPECS = {
     "get_iretour_patient_context": (EmptyArgs, "查询IReTour训练数据覆盖范围和可用结果数量。"),
     "get_iretour_patient_history": (
         TourHistoryArgs,
-        "按页查询IReTour训练历史，返回日期、项目、结果状态和session_ref；上一次或下一页从这里定位。",
+        "按页查询IReTour训练历史，返回日期、项目、训练及结果状态和session_ref；支持有结果/无结果、项目和状态筛选，上一次或下一页从这里定位。",
     ),
     "get_iretour_session_analysis": (
         SessionArgs,
@@ -106,6 +107,8 @@ def project_id(ctx):
 
 
 def tool_allowed(ctx, name):
+    if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
+        return False
     if name in LAYER_TOOLS or "iretour" in name:
         return project_id(ctx) is not None
     if "irego" in name:
@@ -191,6 +194,14 @@ async def _robot_id(ctx):
 
 
 async def _read(ctx, name, args):
+    ref = args.get("session_ref") or ""
+    if ("irego" in name and ref.startswith("iretour_s_v1_")) or (
+        "iretour" in name and ref.startswith("irego_s_v1_")
+    ):
+        message = "记录引用属于另一类设备，请使用同一设备的查询工具。"
+        if name.startswith("generate_") and not ctx.settings.iretour_reports_enabled:
+            message = "IReTour报表暂未启用，不能使用IReGo报表代替；仍可查询历史和分析结果。"
+        raise DomainError("record_domain_mismatch", message, outcome="unsupported")
     if name in LAYER_TOOLS or "iretour" in name:
         user = project_id(ctx)
     else:

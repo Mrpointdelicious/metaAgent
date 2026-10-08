@@ -27,8 +27,14 @@ class HistoryArgs(StrictModel):
 
 
 class TourHistoryArgs(HistoryArgs):
-    activity_scope: ActivityScope = "all"
-    result_state: str = Field(default="all", max_length=40)
+    record_scope: Literal["all", "with_result", "without_result"] = "all"
+    activity_scope: Literal["all"] | ActivityScope = "all"
+    training_state: Literal[
+        "all", "completed", "not_started", "not_completed", "interrupted", "execution_unknown"
+    ] = "all"
+    result_state: Literal[
+        "all", "summary_available", "raw_only", "no_result", "result_conflicting", "result_unusable"
+    ] = "all"
 
 
 class GoHistoryArgs(HistoryArgs):

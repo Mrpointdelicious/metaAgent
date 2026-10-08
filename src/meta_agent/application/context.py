@@ -16,6 +16,7 @@ from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
 
 
 @dataclass
@@ -49,6 +50,12 @@ class RunContext:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
+            raise DomainError(
+                "capability_disabled",
+                "IReTour报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
         if (
             endpoint == "get_multisource_patient_context"
             and not self.settings.multisource_patient_context_enabled

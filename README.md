@@ -20,8 +20,12 @@
 最后一次模型调用只要求形成回答。本地 Knowledge 查询另受模型调用预算和总执行时限约束。
 `ORCHESTRATION_MODE=legacy` 可回退到原有 Planner/Compiler/Scheduler 和领域工作流。
 
-已接入 IReTour 的概览、分页历史、单次分析、连续趋势、单次报表和趋势报表，
+已接入 IReTour 的概览、分页历史、单次分析和连续趋势，
 以及医院运营查询/报表、可信患者身份映射。IReGo、医生、场景和知识工具保留。
+IReTour 历史与 IReGo 一样通过可信患者身份、分页查询、Evidence 和多轮工具上下文接入，
+使用独立的 `record_scope=all/with_result/without_result`、项目、训练状态和结果状态筛选。
+`IRETOUR_REPORTS_ENABLED=false` 默认关闭 IReTour 单次及趋势报表：模型工具列表不暴露，
+Agent、legacy 和底层客户端均禁止调用。报表实现保留，IReGo 报表不受影响。
 `MULTISOURCE_PATIENT_CONTEXT_ENABLED=false` 默认禁用多源患者上下文，
 同时阻止每轮链首装填、显式患者概况和底层端点调用。旧实现保留，可由配置重新启用。
 

@@ -10,7 +10,7 @@ import pytest
 
 from meta_agent.contracts import DomainError, Goal, IReTourRequest, Selector
 from meta_agent.orchestration.identity import TrustedScope, trusted_scope_from_inputs
-from meta_agent.tools.ai_webapi import PATIENT_ENDPOINTS, AIWebApiClient
+from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS, PATIENT_ENDPOINTS, AIWebApiClient
 from meta_agent.tools.demo import demo_response
 from tests.helpers.runtime import SeedPlanner, answers, runtime
 from tests.helpers.runtime import request as base_request
@@ -45,7 +45,10 @@ def test_patient_endpoint_uses_patient_base(endpoint):
             return httpx.Response(200, json={})
 
         client = AIWebApiClient(
-            AppTestSettings(dry_run=False), transport=httpx.MockTransport(respond)
+            AppTestSettings(
+                dry_run=False, iretour_reports_enabled=endpoint in IRETOUR_REPORT_ENDPOINTS
+            ),
+            transport=httpx.MockTransport(respond),
         )
         try:
             await client.post(endpoint, {})
@@ -97,7 +100,7 @@ def test_tour_smoke_with_verified_fact_sources(query, endpoint):
 
 def test_tour_followups_keep_record_and_history_domain():
     async def check():
-        async with runtime() as (c, backend):
+        async with runtime(iretour_reports_enabled=True) as (c, backend):
             backend.overrides["generate_iretour_single_session_report"] = tour_report
             await c.application.execute(request("解读IReTour最近训练"))
             backend.calls.clear()

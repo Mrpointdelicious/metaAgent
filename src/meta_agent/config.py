@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
     patient_brief_include_name: bool = False
     multisource_patient_context_enabled: bool = False
+    iretour_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
 
     def runtime_issues(self) -> list[str]:

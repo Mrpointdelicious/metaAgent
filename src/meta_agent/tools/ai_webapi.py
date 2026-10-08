@@ -34,6 +34,9 @@ PATIENT_ENDPOINTS = frozenset(
 )
 REHAB_ENDPOINTS = frozenset({"navigate_scene", "search_doctors"})
 HOSPITAL_ENDPOINTS = frozenset({"query_hospital_operations"})
+IRETOUR_REPORT_ENDPOINTS = frozenset(
+    {"generate_iretour_single_session_report", "generate_iretour_longitudinal_report"}
+)
 # 三层患者接口使用 project 患者编号，独立于已停用的多源端点。
 PATIENT_ENDPOINTS_V17 = frozenset(
     {
@@ -130,6 +133,12 @@ class AIWebApiClient:
         ):
             raise BackendCallError(
                 "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
+            )
+        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "IReTour报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
             )
         if self.settings.dry_run:
             from meta_agent.tools.demo import demo_response
