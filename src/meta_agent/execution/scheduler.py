@@ -35,6 +35,7 @@ from meta_agent.contracts import (
     TaskResult,
     TaskSpec,
 )
+from meta_agent.events.stream import EventPersistenceError
 from meta_agent.execution.dispatcher import DomainDispatcher
 
 logger = logging.getLogger(__name__)
@@ -404,6 +405,9 @@ class TaskScheduler:
                 # Scheduler / Request 被取消时必须真正传播取消。
                 raise
 
+            except EventPersistenceError:
+                raise
+
             except DomainError as exc:
                 # retry_limit 表示允许的额外重试次数。
                 #
@@ -476,6 +480,8 @@ class TaskScheduler:
 
         ctx.record.results[task.task_id] = result
 
+        if ctx.emitter.persistence_failed:
+            raise EventPersistenceError("Event storage is unavailable")
         await ctx.repository.save_run(ctx.record)
 
         if ctx.on_result is not None:
@@ -827,6 +833,9 @@ class TaskScheduler:
                             message="任务已取消。",
                             attempts=0,
                         )
+
+                    except EventPersistenceError:
+                        raise
 
                     # 理论上 _execute_task 已经处理普通异常。
                     # 这里继续保留 executor-level fail-safe。

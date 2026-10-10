@@ -58,7 +58,7 @@ def test_postgres_migration_restart_dedup_lock_and_cleanup():
             assert resumed.reused and not backend.calls
             assert resumed.record.status == "cancelled"
             assert set(resumed.record.action_delivery.values()) == {"delivery_unknown"}
-            assert resumed.emitter.queue.empty()
+            assert await resumed.emitter.next_event(0) is None
             assert await c.repository.run("wrong", resumed.record.run_id) is None
             await c.repository.put("cache", "test-postgres", "expired", {"demo": True}, -1)
             assert await c.repository.cleanup() >= 1

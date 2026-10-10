@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     ai_webapi_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     dry_run: bool = True
     orchestration_mode: Literal["agent", "legacy"] = "agent"
+    prompt_bundle: str = "builtin-v1"
     agent_model: str = ""
     agent_max_model_calls: int = Field(default=8, ge=2, le=20)
     agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
@@ -124,7 +125,7 @@ class Settings(BaseSettings):
     def runtime_issues(self) -> list[str]:
         issues = []
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
-            issues.append("v1仅支持一个worker；扩容须实现跨进程租约与事件回放")
+            issues.append("v1仅支持一个worker；扩容须实现跨进程运行协调与事件通知")
         return issues
 
     def production_issues(self) -> list[str]:

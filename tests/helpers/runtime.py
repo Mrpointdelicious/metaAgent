@@ -19,7 +19,7 @@ class SeedPlanner:
     def __init__(self, goals):
         self.goals = goals
 
-    async def parse(self, query, memory, budget, patient_brief=None):
+    async def parse(self, query, memory, budget, patient_brief=None, **prompt_context):
         return IntentDecision(decision="execute", goals=deepcopy(self.goals))
 
 

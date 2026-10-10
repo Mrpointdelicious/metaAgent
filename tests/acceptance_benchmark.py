@@ -37,10 +37,12 @@ async def measure(parallel, concurrency):
                 request("打开面板，查询患者信息，解读最近训练并生成报告图片", f"r-{i}", scope=scope)
             )
             elapsed = {}
+            cursor = 0
             while True:
-                event = await run.emitter.queue.get()
+                event = await run.emitter.next_event(cursor)
                 if event is None:
                     break
+                cursor = event.seq
                 elapsed.setdefault(event.type, (time.perf_counter() - start) * 1000)
                 await run.emitter.mark_dispatched(event)
             await run.task

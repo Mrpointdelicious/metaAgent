@@ -26,13 +26,25 @@ from meta_agent.agent.schemas import (
     TourReportTrendArgs,
     TourTrendArgs,
 )
-from meta_agent.contracts import DomainError, Goal, HospitalRequest, TaskResult, TaskSpec, utcnow
+from meta_agent.application.frontend_context import conversational_only
+from meta_agent.contracts import (
+    ArtifactPayload,
+    DomainError,
+    FailurePayload,
+    Goal,
+    HospitalRequest,
+    RecordAnchor,
+    TaskResult,
+    TaskSpec,
+    utcnow,
+)
 from meta_agent.domains.doctors import DoctorAdapter
 from meta_agent.domains.facts import aware_date
 from meta_agent.domains.hospital import HospitalAdapter
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.scene import SceneAdapter, source_text
+from meta_agent.events.stream import EventPersistenceError
 from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
 
 CURRENT_RUN: ContextVar = ContextVar("single_agent_run")
@@ -107,6 +119,8 @@ def project_id(ctx):
 
 
 def tool_allowed(ctx, name):
+    if getattr(ctx, "frontend_context", None) and conversational_only(ctx.query):
+        return False
     if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
         return False
     if name in LAYER_TOOLS or "iretour" in name:
@@ -305,7 +319,9 @@ async def _adapter(ctx, name, args, tid):
     result = await adapter.execute(spec(ctx, name, tid, "scene.resolve", args, ids), args, ctx)
     ctx.record.results[tid] = result
     for gid, ref in result.outputs.get("action_ref", {}).items():
-        await adapter.dispatch(spec(ctx, name, tid, "scene.dispatch", {}, [gid]), ref, ctx)
+        dispatch = spec(ctx, name, tid, "scene.dispatch", {}, [gid])
+        dispatch.idempotency_key += ":" + gid
+        await adapter.dispatch(dispatch, ref, ctx)
     return result
 
 
@@ -314,8 +330,13 @@ async def invoke_tool(ctx, name, args):
     started = time.monotonic()
     result = TaskResult(task_id=tid, outputs={"tool_name": name, "arguments": args})
     # Allocate before awaiting so concurrent tools get distinct audit identifiers.
+    # 上下文装填记录
     ctx.record.results[tid] = result
-    await ctx.emitter.emit("progress", {"stage": "tool", "text": "正在查询相关信息。"}, task_id=tid)
+    # 发送对应报文
+    await ctx.events.progress(
+        "generating_artifact" if name.startswith("generate_") else "tool", task_id=tid
+    )
+    # 处理超域问题
     try:
         if not tool_allowed(ctx, name):
             raise DomainError(
@@ -327,9 +348,12 @@ async def invoke_tool(ctx, name, args):
             "query_hospital_operations",
             "navigate_scene",
         }:
+            # asyncio是干嘛的？
             async with asyncio.timeout(min(ctx.remaining, ctx.settings.tool_timeout_seconds)):
+                # adapter又干了什么？，执行工具？跟excute区别在哪？
                 adapted = await _adapter(ctx, name, args, tid)
             result = adapted
+            # 构造了 Python 字典
             result.outputs["tool_name"] = name
             body = {
                 "tool_name": name,
@@ -352,9 +376,25 @@ async def invoke_tool(ctx, name, args):
             result.status = {"success": "succeeded", "available": "succeeded"}.get(
                 body["status"], body["status"]
             )
+            # 编制对应id方便管理
             result.evidence_ids = [evidence.evidence_id]
+            # 更新
             result.outputs.update(cache_hit=cache_hit)
             body = {**body, "evidence_id": evidence.evidence_id}
+            data = body.get("data") or {}
+            if result.status in {"succeeded", "partial"} and "session_analysis" in name:
+                ref = data.get("session", {}).get("session_ref")
+                if isinstance(ref, str) and ref:
+                    ctx.memory.current_record = RecordAnchor(
+                        domain="iretour" if "iretour" in name else "irego",
+                        session_ref=ref,
+                        evidence_id=evidence.evidence_id,
+                        source_version=evidence.source_version,
+                    )
+            if result.status in {"succeeded", "partial"} and "patient_history" in name:
+                ctx.memory.history_seen = True
+                ctx.memory.history_domain = "iretour" if "iretour" in name else "irego"
+                ctx.memory.history_page = data.get("page", {}).get("page_number", 1)
             if name.startswith("generate_") and result.status in {"succeeded", "partial"}:
                 artifact = IReGoWorkflow._artifact(evidence)
                 expiry = aware_date(artifact["expires_at"])
@@ -369,10 +409,10 @@ async def invoke_tool(ctx, name, args):
                 result.code = "tool_" + result.status
                 result.message = body.get("patient_message") or "该项数据暂不可用。"
         artifact = result.outputs.get("artifact")
-        if artifact and artifact["artifact_ref"] not in ctx.artifact_refs:
-            await ctx.emitter.emit("artifact_ready", artifact, task_id=tid)
-            ctx.artifact_refs.add(artifact["artifact_ref"])
+        if artifact:
+            await ctx.events.artifact(ArtifactPayload.model_validate(artifact), task_id=tid)
         ctx.record.results[tid] = result
+    # 错误兜底
     except asyncio.CancelledError:
         result.status, result.code = "cancelled", "request_cancelled"
         raise
@@ -392,6 +432,8 @@ async def invoke_tool(ctx, name, args):
             "patient_message": result.message,
             "retryable": result.retryable,
         }
+    except EventPersistenceError:
+        raise
     except Exception:
         result.status, result.code, result.message = (
             "failed",
@@ -407,5 +449,16 @@ async def invoke_tool(ctx, name, args):
     finally:
         result.elapsed_ms = (time.monotonic() - started) * 1000
         ctx.record.results[tid] = result
-        await ctx.repository.save_run(ctx.record)
+        if not ctx.emitter.persistence_failed:
+            if result.status in {"failed", "unavailable", "unsupported", "clarification"}:
+                await ctx.events.failure(
+                    FailurePayload(
+                        code=result.code or "tool_unavailable",
+                        text=result.message or "该项查询暂不可用。",
+                        retryable=result.retryable,
+                    ),
+                    task_id=tid,
+                    goal_id="agent",
+                )
+            await ctx.repository.save_run(ctx.record)
     return compact_result(body, ctx.settings.agent_tool_output_tokens)

@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from meta_agent.api.agent_routes import router as agent_router
 from meta_agent.api.routes import router
 from meta_agent.config import Settings, get_settings
 from meta_agent.infrastructure.container import create_container
@@ -37,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.include_router(router)
+    application.include_router(agent_router)
     return application
 
 

@@ -12,10 +12,13 @@ from meta_agent.config import Settings
 from meta_agent.context.budget import LLMBudget
 from meta_agent.contracts import ConversationState, DomainError, Goal, RunRecord
 from meta_agent.domains.patient_identity import PatientBrief
-from meta_agent.events.stream import EventEmitter
+from meta_agent.events.publisher import RunEventPublisher
+from meta_agent.events.stream import EventEmitter, EventPersistenceError
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.prompts.contracts import PromptBinding
+from meta_agent.prompts.service import PromptService
 from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
 
 
@@ -37,19 +40,33 @@ class RunContext:
     patient_brief: PatientBrief | None = None
     compilation: Any = None
     goals: dict[str, Goal] = field(default_factory=dict)
-    answer_fingerprints: dict[str, str] = field(default_factory=dict)
-    answer_events: dict[str, Any] = field(default_factory=dict)
-    artifact_refs: set[str] = field(default_factory=set)
     interrupted: bool = False
     on_result: Any = None
     runtime_guard: Any = None
     agent_robot_id: str | None = None
+
+    events: RunEventPublisher = field(init=False)
+    prompts: PromptService = field(default_factory=PromptService)
+    prompt_binding: PromptBinding | None = None
+    patient_profile_context: dict[str, Any] | None = None
+    frontend_context: dict[str, Any] = field(default_factory=dict)
+    completing: bool = False
+
+    def __post_init__(self) -> None:
+        if self.emitter is None:
+            self.emitter = EventEmitter(self.record, self.repository)
+        self.events = RunEventPublisher(self.emitter)
+        if self.prompt_binding is None:
+            self.prompt_binding = self.prompts.bind(self.settings.prompt_bundle)
+        self.record.metrics.setdefault("prompt_bundle", self.prompt_binding.bundle)
 
     @property
     def remaining(self) -> float:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.emitter.persistence_failed:
+            raise EventPersistenceError("Event storage is unavailable")
         if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
             raise DomainError(
                 "capability_disabled",

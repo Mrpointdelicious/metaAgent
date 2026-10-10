@@ -1,6 +1,12 @@
 """
 创建日期：2026-10-05
 文件功能：验证真实create_agent循环、三层患者工具、失败恢复和会话隔离。
+
+该测试使用的是
+tool_call("get_patient_consultation"),
+tool_call("get_patient_rehab", call_id="call-2"),
+AIMessage("您有已记录的膝关节疼痛...")
+预设的toolcall，主要是测试工程上的稳健性，还没涉及LLM的表现。
 """
 
 import asyncio
@@ -40,6 +46,9 @@ def activate(container, messages):
 SCOPE = TrustedScope("tenant", "actor", project_patient_id="3799", iretour_patient_id="3799")
 
 
+# 测试三层工具能否正确调用，名称填写是否正确
+# assert语法不熟悉
+# 要求表达式为 True，否则抛出 AssertionError，pytest 就会将对应测试判为失败。
 def test_three_layers_are_agent_tools_without_model_visible_identity():
     names = {tool.name: tool for tool in build_tools()}
     for name in ["get_patient_profile", "get_patient_consultation", "get_patient_rehab"]:
@@ -49,6 +58,10 @@ def test_three_layers_are_agent_tools_without_model_visible_identity():
         assert not {"patientId", "patient_id", "system_context", "robot_patient_id"} & set(
             tool.args
         )
+
+
+# 测试Agent调用工具的返回测试用函数
+# async 是 Python 中用于定义异步函数（协程函数）的关键字，配合 await 使用，实现异步编程。
 
 
 def test_agent_calls_clinical_and_rehab_tools_and_writes_natural_answer():
@@ -79,6 +92,9 @@ def test_agent_calls_clinical_and_rehab_tools_and_writes_natural_answer():
     asyncio.run(check())
 
 
+# 测试部分数据无法获取时，其它源数据仍可以获取的例子
+
+
 def test_tool_failure_returns_to_model_and_other_layer_can_still_answer():
     async def check():
         async with runtime() as (c, backend):
@@ -100,6 +116,7 @@ def test_tool_failure_returns_to_model_and_other_layer_can_still_answer():
     asyncio.run(check())
 
 
+# 工具调用重试测试
 def test_agent_can_retry_tool_after_error_without_recompiling_plan():
     async def check():
         async with runtime() as (c, backend):
@@ -131,6 +148,7 @@ def test_agent_can_retry_tool_after_error_without_recompiling_plan():
     asyncio.run(check())
 
 
+# 测Agent是否记得历史信息
 def test_agent_history_keeps_tool_refs_for_followup_and_is_patient_scoped():
     async def check():
         async with runtime() as (c, backend):
@@ -154,6 +172,9 @@ def test_agent_history_keeps_tool_refs_for_followup_and_is_patient_scoped():
     asyncio.run(check())
 
 
+# 测试非患者信息能否会被拒绝进入上下文
+
+
 def test_patient_result_from_other_identity_is_rejected_and_never_enters_context():
     async def check():
         async with runtime() as (c, backend):
@@ -173,14 +194,24 @@ def test_patient_result_from_other_identity_is_rejected_and_never_enters_context
     asyncio.run(check())
 
 
+# 测试压缩和截断效果
+
+
 def test_compaction_keeps_explicit_truncation_and_prescription_name():
     body = {
         "status": "success",
         "data": {"prescriptions": [{"name": "已记录的处方名称", "content": "长文本" * 6000}]},
     }
+    # 这里负责压缩
     compact = compact_result(body, 512)
-    assert compact["context_truncated"] is True
-    assert compact["data"]["prescriptions"][0]["name"] == "已记录的处方名称"
+    assert compact["context_truncated"] is True  # 正确压缩
+    assert (
+        compact["data"]["prescriptions"][0]["name"] == "已记录的处方名称"
+    )  # 错误地压缩兜底？截断后诊断名称仍要留存。
+
+
+# 测试？robot mapping是什么意思？
+# robot数据库已经废弃，需要完全使用project
 
 
 @pytest.mark.parametrize("project_key", ["projectPatientId", "project_patient_id"])
@@ -237,6 +268,9 @@ def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
     asyncio.run(check())
 
 
+# fix 主动取消正在执行的工具，并检查取消传播、最终状态和没有生成回答。
+
+
 def test_agent_cancellation_stops_inflight_tool_and_emits_completed():
     async def check():
         async with runtime() as (c, backend):
@@ -248,12 +282,18 @@ def test_agent_cancellation_stops_inflight_tool_and_emits_completed():
                 await asyncio.sleep(0)
             await backend.entered["get_patient_consultation"].wait()
             await c.application.cancel(SCOPE.scope_hash, run.record.run_id)
+            # 模拟调用失败返回取消信息
             assert run.record.status == "cancelled"
             assert run.record.events[-1].type == "completed"
             assert "get_patient_consultation" in backend.cancelled
             assert not answers(run.record)
 
     asyncio.run(check())
+
+
+# 不同的工具域是否能正常运行
+# 接下来要看看后续是如何实现的，搞懂这边价值比较大
+# 被配置或身份限制禁用的工具，能否被执行层阻止
 
 
 def test_agent_cannot_execute_tools_hidden_by_settings_or_identity():
@@ -265,6 +305,10 @@ def test_agent_cannot_execute_tools_hidden_by_settings_or_identity():
             assert any(r.code == "tool_not_allowed" for r in run.record.results.values())
 
     asyncio.run(check())
+
+
+# 废弃证据信息更新之前的表现测试
+# fix:旧 Evidence 不可用后，历史工具消息被标记为 expired，并要求重新查询
 
 
 def test_expired_tool_evidence_is_replaced_before_next_model_call():
@@ -299,6 +343,7 @@ def test_expired_tool_evidence_is_replaced_before_next_model_call():
     asyncio.run(check())
 
 
+# 单代理可以完成最后预算模型调用，测试最大调用次数约束下能否正常运作
 def test_single_agent_can_finish_at_last_budgeted_model_call(monkeypatch):
     async def check():
         monkeypatch.setattr(

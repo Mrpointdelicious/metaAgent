@@ -17,6 +17,7 @@ from meta_agent.application.composer import ResponseComposer
 from meta_agent.application.service import ApplicationService
 from meta_agent.config import Settings
 from meta_agent.contracts import DomainError
+from meta_agent.events.native import NativeOutputAdapter
 from meta_agent.execution.dispatcher import DomainDispatcher
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.graph.runtime import build_runtime_graph
@@ -25,6 +26,7 @@ from meta_agent.infrastructure.repository import Repository
 from meta_agent.llm.models import create_planner_model
 from meta_agent.planning.compiler import PlanCompiler
 from meta_agent.planning.parser import ConservativePlanner, IntentPlanner, StructuredIntentPlanner
+from meta_agent.prompts.service import PromptService
 from meta_agent.tools.ai_webapi import AIWebApiClient
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,8 @@ class ServiceContainer:
     ai_webapi_client: AIWebApiClient
     exit_stack: AsyncExitStack
     persistence_status: str
+    prompts: PromptService
+    output_adapter: NativeOutputAdapter
     cleanup_task: asyncio.Task | None = None
     lease_connection: Any = None
 
@@ -56,10 +60,10 @@ class ServiceContainer:
         return await self.repository.ready()
 
 
-def create_task_planner(settings: Settings) -> IntentPlanner:
+def create_task_planner(settings: Settings, prompts: PromptService | None = None) -> IntentPlanner:
     if settings.planner_mode == "deterministic":
         return ConservativePlanner()
-    return StructuredIntentPlanner(create_planner_model(settings), settings)
+    return StructuredIntentPlanner(create_planner_model(settings), settings, prompts)
 
 
 async def cleanup_loop(container: ServiceContainer) -> None:
@@ -75,6 +79,9 @@ async def create_container(settings: Settings) -> ServiceContainer:
     issues = settings.production_issues()
     if issues:
         raise RuntimeError("；".join(issues))
+    prompts = PromptService()
+    prompts.bind(settings.prompt_bundle)
+    output_adapter = NativeOutputAdapter()
     stack = AsyncExitStack()
     await stack.__aenter__()
     lease = None
@@ -133,7 +140,9 @@ async def create_container(settings: Settings) -> ServiceContainer:
             )
         application = ApplicationService(
             settings=settings,
-            planner=ConservativePlanner() if agent_runtime else create_task_planner(settings),
+            planner=ConservativePlanner()
+            if agent_runtime
+            else create_task_planner(settings, prompts),
             compiler=PlanCompiler(settings),
             scheduler=TaskScheduler(DomainDispatcher()),
             repository=repository,
@@ -141,6 +150,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
             tool_limiter=PriorityLimiter(settings.max_concurrent_tools),
             composer=ResponseComposer(model),
             agent_runtime=agent_runtime,
+            prompts=prompts,
         )
         graph = (
             agent_runtime.graph
@@ -157,6 +167,8 @@ async def create_container(settings: Settings) -> ServiceContainer:
             client,
             stack,
             persistence,
+            prompts,
+            output_adapter,
             lease_connection=lease,
         )
         if lease:

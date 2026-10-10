@@ -173,14 +173,16 @@ class Repository:
 
     async def request_run(self, scope: str, request_id: str) -> RunRecord | None:
         mapping = await self.get("requests", scope, fingerprint(request_id))
-        return await self.run(scope, mapping["run_id"]) if mapping else None
+        return (
+            await self.run(mapping.get("scope_key", scope), mapping["run_id"]) if mapping else None
+        )
 
-    async def map_request(self, record: RunRecord) -> None:
+    async def map_request(self, record: RunRecord, *, namespace: str | None = None) -> None:
         await self.put(
             "requests",
-            record.scope_key,
+            namespace or record.scope_key,
             fingerprint(record.request_id),
-            {"run_id": record.run_id},
+            {"run_id": record.run_id, "scope_key": record.scope_key},
             self.settings.run_ttl_seconds,
         )
 

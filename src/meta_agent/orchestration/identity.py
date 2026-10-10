@@ -37,6 +37,11 @@ class TrustedScope:
     project_patient_id: str | None = None
 
     @property
+    def principal_hash(self) -> str:
+        material = json.dumps([self.tenant_id, self.end_user_id, self.role], separators=(",", ":"))
+        return sha256(material.encode("utf-8")).hexdigest()
+
+    @property
     def scope_hash(self) -> str:
         parts = [self.tenant_id, self.end_user_id, self.role, self.patient_id]
         if self.iretour_patient_id is not None:

@@ -106,10 +106,12 @@ def test_accepted_and_facts_arrive_before_slow_report():
             backend.gates["generate_irego_single_session_report"] = asyncio.Event()
             backend.overrides["generate_irego_single_session_report"] = report_response
             run = await c.application.start(request("解读最近训练并生成报告图片"))
-            first = await asyncio.wait_for(run.emitter.queue.get(), 1)
+            first = await asyncio.wait_for(run.emitter.next_event(0), 1)
             assert first.type == "accepted"
+            cursor = first.seq
             while True:
-                event = await asyncio.wait_for(run.emitter.queue.get(), 1)
+                event = await asyncio.wait_for(run.emitter.next_event(cursor), 1)
+                cursor = event.seq
                 if event.type == "answer_part" and "0.5 m/s" in event.payload["text"]:
                     break
             assert not run.task.done()
@@ -152,7 +154,7 @@ def test_action_occurrences_are_not_deduplicated_or_capped_at_five(count):
             assert run.record.status == "succeeded"
             again = await c.application.execute(request(query))
             assert again.reused and len(tool_calls(backend)) == 1
-            assert again.emitter.queue.empty()
+            assert await again.emitter.next_event(0) is None
 
     asyncio.run(check())
 

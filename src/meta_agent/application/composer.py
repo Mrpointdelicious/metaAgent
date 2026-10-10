@@ -4,25 +4,21 @@
 """
 
 import asyncio
-import json
 from typing import Any
-
-from pydantic import Field
 
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import ContextSelector, estimate_tokens
 from meta_agent.contracts import (
+    ArtifactPayload,
+    ClarificationPayload,
     DomainError,
     FactView,
-    StrictModel,
+    FailurePayload,
     TaskResult,
     TaskSpec,
-    fingerprint,
 )
-
-
-class FactSelection(StrictModel):
-    fact_ids: list[str] = Field(max_length=100)
+from meta_agent.events.publisher import AnswerContent
+from meta_agent.prompts.contracts import FactSelection, FactSelectionPromptInputs
 
 
 def safe_text(value: str) -> str:
@@ -72,9 +68,8 @@ class ResponseComposer:
 
     async def on_result(self, task: TaskSpec, result: TaskResult, ctx: RunContext) -> None:
         if result.status == "clarification":
-            await ctx.emitter.emit(
-                "clarification",
-                {"text": safe_text(result.message), "missing_slots": []},
+            await ctx.events.clarification(
+                ClarificationPayload(text=safe_text(result.message), missing_slots=[]),
                 task_id=task.task_id,
                 goal_id=task.goal_ids[0],
             )
@@ -85,22 +80,22 @@ class ResponseComposer:
             "blocked_dependency",
             "cancelled",
         }:
-            await ctx.emitter.emit(
-                "task_failed",
-                {
-                    "text": safe_text(result.message),
-                    "code": result.code or result.status,
-                    "retryable": result.retryable,
-                },
+            await ctx.events.failure(
+                FailurePayload(
+                    text=safe_text(result.message),
+                    code=result.code or result.status,
+                    retryable=result.retryable,
+                ),
                 task_id=task.task_id,
                 goal_id=task.goal_ids[0] if len(task.goal_ids) == 1 else None,
             )
         artifact = result.outputs.get("artifact")
-        if artifact and artifact["artifact_ref"] not in ctx.artifact_refs:
-            await ctx.emitter.emit(
-                "artifact_ready", artifact, task_id=task.task_id, goal_id=task.goal_ids[0]
+        if artifact:
+            await ctx.events.artifact(
+                ArtifactPayload.model_validate(artifact),
+                task_id=task.task_id,
+                goal_id=task.goal_ids[0],
             )
-            ctx.artifact_refs.add(artifact["artifact_ref"])
         if task.capability.startswith("scene."):
             return
         for gid in task.goal_ids:
@@ -148,29 +143,32 @@ class ResponseComposer:
             min(ctx.settings.answer_input_tokens, ctx.settings.model_context_tokens - 2048 - 512)
             // goal_count
         )
+        selection_prompt = ctx.prompts.render(
+            ctx.prompt_binding,
+            "answer.fact_select",
+            FactSelectionPromptInputs(query=goal.query_span, facts=[]),
+        )
         overhead = {
-            "instruction": "只选择相关事实编号，禁止创建或改写事实。",
+            "instruction": selection_prompt.system_message.content,
             "schema": FactSelection.model_json_schema(),
         }
         selected = self.selector.select(goal.query_span, {gid: views}, limit, overhead)[gid]
         # Selection is optional. Templates still work if model budget/provider fails.
         if self.model and ctx.llm_budget.calls < ctx.llm_budget.maximum:
-            messages = [
-                ("system", overhead["instruction"]),
-                (
-                    "human",
-                    json.dumps(
-                        {
-                            "query": goal.query_span,
-                            "facts": [v.model_dump(mode="json") for v in selected],
-                        },
-                        ensure_ascii=False,
-                    ),
+            rendered = ctx.prompts.render(
+                ctx.prompt_binding,
+                "answer.fact_select",
+                FactSelectionPromptInputs(
+                    query=goal.query_span, facts=[v.model_dump(mode="json") for v in selected]
                 ),
-            ]
+            )
+            messages = list(rendered.messages)
             if estimate_tokens(messages) + estimate_tokens(overhead["schema"]) <= limit:
                 try:
                     await ctx.llm_budget.take()
+                    ctx.record.metrics.setdefault("prompt_usages", []).append(
+                        rendered.usage(ctx.llm_budget.calls)
+                    )
                     async with asyncio.timeout(
                         min(ctx.settings.answer_timeout_seconds, ctx.remaining)
                     ):
@@ -209,19 +207,6 @@ class ResponseComposer:
     async def emit_answer(
         self, gid: str, text: str, facts: list[str], refs: list[str], ctx: RunContext
     ) -> None:
-        digest = fingerprint([text, facts, refs])
-        if ctx.answer_fingerprints.get(gid) == digest:
-            return
-        previous = ctx.answer_events.get(gid)
-        event = await ctx.emitter.emit(
-            "answer_part",
-            {
-                "text": text,
-                "fact_ids": facts,
-                "doc_refs": refs,
-                "revision": previous.payload["revision"] + 1 if previous else 1,
-                "replaces": previous.event_id if previous else None,
-            },
-            goal_id=gid,
+        await ctx.events.answer(
+            AnswerContent(text=text, fact_ids=facts, doc_refs=refs), goal_id=gid
         )
-        ctx.answer_fingerprints[gid], ctx.answer_events[gid] = digest, event

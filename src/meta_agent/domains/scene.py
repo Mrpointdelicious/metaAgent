@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from meta_agent.application.context import RunContext
-from meta_agent.contracts import DomainError, TaskResult, TaskSpec, fingerprint
+from meta_agent.contracts import ActionPayload, DomainError, TaskResult, TaskSpec, fingerprint
 from meta_agent.domains.rehab import list_field, object_field
 from meta_agent.infrastructure.repository import resolve_pointer
 
@@ -162,21 +162,20 @@ class SceneAdapter:
                 code="delivery_unknown",
                 message="该动作已有交付记录，未重复发送。",
             )
-        await ctx.emitter.emit(
-            "action_ready",
-            {
-                "action_id": action_id,
-                "command_code": raw,
-                "profile": "native",
-                "delivery_status": "ready",
-                "source_evidence_id": evidence.evidence_id,
-                "source_space_id": action["source_space_id"],
-                "scene_version": action["scene_version"],
-                "command_order": [
+        await ctx.events.action(
+            ActionPayload(
+                action_id=action_id,
+                command_code=raw,
+                profile="native",
+                delivery_status="ready",
+                source_evidence_id=evidence.evidence_id,
+                source_space_id=action["source_space_id"],
+                scene_version=action["scene_version"],
+                command_order=[
                     g.goal_id for g in ctx.goals.values() if g.kind == "scene_action"
                 ].index(action["goal_id"])
                 + 1,
-            },
+            ),
             task_id=task.task_id,
             goal_id=action["goal_id"],
         )

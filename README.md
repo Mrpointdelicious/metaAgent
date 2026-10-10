@@ -4,7 +4,7 @@
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
 一个模型在“回答或调用工具”的循环中自主选择查询、查看失败结果和调整参数重试，
-最终直接生成自然语言回答。每轮只自动装填一份可缓存的基本档案，其余查询由模型决定。
+最终直接生成自然语言回答。除普通问候外，每轮自动装填一份可缓存的基本档案，其余查询由模型决定。
 中间件管理可信身份、可用工具、历史上下文、证据时效、工具结果裁剪和调用预算，
 不再要求模型先生成固定计划，也不使用事实模板拼接患者回答。
 
@@ -55,6 +55,43 @@ IReTour 单位未知时原样标为未知，数值变化不转换为临床疗效
 IReGo 实体的 `robotdb_main` 连接标识。双库配置需启用 `MutiDBEnabled`，
 主库连接 project，额外配置 robotdb_main 和 project_identity_temp。
 当前本机新版 AI_WebApi 使用独立 Docker 容器和 15043 端口，保留原有 5043 服务。
+
+## Prompt 与出站报文管理
+
+当前 Agent、legacy 意图解析器和事实选择统一通过 `PromptService` 获取提示词。
+`prompts/templates/` 保存文本，`prompts/catalog.py` 的 `MANIFEST` 注册 ID、版本、输入类型和片段版本，
+`BUNDLES` 将各 Prompt 的版本组合成发布配置。`META_AGENT__PROMPT_BUNDLE=builtin-v1` 为默认配置。
+模板随 wheel/Docker 安装包发布，启动时读取并校验；新版本通过新增模板、注册新版本和 bundle 后发布。
+已有运行固定其启动时的绑定，配置切换只影响后续运行，不在执行过程中重新读取模板文件。
+
+运行 `metrics` 中的 `prompt_bundle`、`prompt_usages` 记录实际模板版本、内容 hash、片段及模型调用序号，
+`agent_tool_sets` 记录模型可见工具集合及其定义 hash。这些新增追踪字段不保存动态 Prompt 正文。
+患者基本档案保存在 `RunContext.patient_profile_context`，不再通过 `metrics.patient_profile_context` 返回；
+读取旧运行快照时也过滤该旧字段。
+
+业务模块使用 `ctx.events`（`RunEventPublisher`）发布类型化事件，由发布器统一管理回答修订、制品去重和完成事件。
+`EventEmitter` 先保存事件再推进可消费序号；SSE 通过 `EventDelivery` 按游标读取并等待变更通知，
+blocking 请求无需消费队列。`NativeOutputAdapter` 统一 SSE 编码以及首次 blocking、重复请求、status/cancel 的快照投影。
+旧 `/v1/chat` 的 SSE 断线后取消应用和子工具；新 Run API 的订阅独立于运行，断线可回放。
+事件保存失败时停止交付并结束等待。当前仍要求单 worker、单副本。
+
+模块职责、版本维护方法及兼容边界见 [Prompt 与出站报文统一管理方案](docs/prompt-and-outbound-management-design.md)。
+
+## 前端 Run API v0.1
+
+新增 `POST /v1/agent/runs`，立即返回 `202 + run_id`；前端通过独立的
+`GET /v1/agent/runs/{run_id}/events` 获取八种结构化事件。SSE `id` 使用 `seq`，
+支持 `after_seq` / `Last-Event-ID` 接续历史与实时事件。断开订阅不会取消运行，
+取消使用 `POST /v1/agent/runs/{run_id}/cancel`，状态使用 `GET /v1/agent/runs/{run_id}`。
+动作执行结果通过 `POST /v1/agent/runs/{run_id}/actions/{action_id}/ack` 确认，
+与服务端传输状态分别持久化。原 `/v1/chat` 及其状态、取消接口保持兼容。
+
+调用方继续使用服务 Bearer 认证；可信网关注入 `X-End-User-ID`、`X-Tenant-ID` 和角色，
+并校验患者授权。新接口 `context.patient_id` 统一为 `project.dbuser.Id`。
+UI 选择的记录先在该患者的历史中确认，再作为会话锚点；切换患者的会话状态独立。
+接口不返回内部 metrics、计划或工具结果。请求/上下文与响应字段已加入 OpenAPI。
+
+请求示例、错误契约、重连/ACK 规则及本阶段边界见 [前端通信接口 v0.1](docs/agent-run-api-v0.1.md)。
 
 ## Dify 展示入口
 

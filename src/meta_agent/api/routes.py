@@ -4,7 +4,6 @@
 """
 
 import asyncio
-from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -12,8 +11,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from meta_agent.api.schemas import HealthResponse, NativeChatRequest, RunAccessRequest
 from meta_agent.api.security import require_service_identity
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
-from meta_agent.contracts import DomainError, RunRecord, fingerprint
-from meta_agent.events.stream import NativeEventAdapter
+from meta_agent.contracts import DomainError, fingerprint
+from meta_agent.events.delivery import EventDelivery
+from meta_agent.events.native import SnapshotPurpose
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
 
 router = APIRouter()
@@ -53,23 +53,6 @@ async def scope_for(payload: RunAccessRequest, request: Request):
         raise HTTPException(422, str(exc)) from exc
 
 
-def snapshot(record: RunRecord, reused: bool = True) -> dict[str, Any]:
-    # Snapshots expose previous progress as data, never as replayable action events.
-    events = [e.model_dump(mode="json") for e in record.events if e.type != "action_ready"]
-    return {
-        "run_id": record.run_id,
-        "request_id": record.request_id,
-        "conversation_id": record.conversation_id,
-        "status": record.status,
-        "reused": reused,
-        "goal_statuses": record.goal_statuses,
-        "task_statuses": {tid: r.status for tid, r in record.results.items()},
-        "events": events,
-        "action_delivery": record.action_delivery,
-        "metrics": record.metrics,
-    }
-
-
 @router.post("/v1/chat", dependencies=[Depends(require_service_identity)])
 async def chat(payload: NativeChatRequest, request: Request):
     container = request.app.state.container
@@ -91,7 +74,8 @@ async def chat(payload: NativeChatRequest, request: Request):
         ) from exc
     if run.reused:
         return JSONResponse(
-            snapshot(run.record), status_code=202 if run.record.status == "running" else 200
+            container.output_adapter.snapshot(run.record, purpose=SnapshotPurpose.REUSED),
+            status_code=202 if run.record.status == "running" else 200,
         )
     if payload.response_mode == "streaming":
         return StreamingResponse(
@@ -108,33 +92,18 @@ async def chat(payload: NativeChatRequest, request: Request):
     except asyncio.CancelledError:
         await container.application.cancel(scope.scope_hash, run.record.run_id)
         raise
-    body = snapshot(run.record, False)
-    body["events"] = [e.model_dump(mode="json") for e in run.record.events]
-    # Blocking delivery has no transport acknowledgement; keep delivery_unknown.
-    return JSONResponse(body)
+    return JSONResponse(
+        container.output_adapter.snapshot(run.record, purpose=SnapshotPurpose.BLOCKING)
+    )
 
 
-async def stream(run: ApplicationRun, request: Request):
-    adapter = NativeEventAdapter()
-    exhausted = False
-    try:
-        while True:
-            event = await run.emitter.queue.get()
-            if event is None:
-                exhausted = True
-                break
-            yield adapter.encode(event)
-            await run.emitter.mark_dispatched(event)
-    finally:
-        if not exhausted:
-            # A generator disconnect cancels the same application run, including child tools.
-            async def terminate():
-                await request.app.state.container.application.cancel(
-                    run.record.scope_key, run.record.run_id
-                )
-                await run.emitter.disconnect()
-
-            await asyncio.shield(terminate())
+def stream(run: ApplicationRun, request: Request):
+    container = request.app.state.container
+    return EventDelivery(
+        run.emitter,
+        container.output_adapter,
+        lambda: container.application.cancel(run.record.scope_key, run.record.run_id),
+    ).stream()
 
 
 @router.post("/v1/runs/{run_id}/status", dependencies=[Depends(require_service_identity)])
@@ -143,7 +112,9 @@ async def run_status(run_id: str, payload: RunAccessRequest, request: Request):
     record = await request.app.state.container.repository.run(scope.scope_hash, run_id)
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")
-    return snapshot(record)
+    return request.app.state.container.output_adapter.snapshot(
+        record, purpose=SnapshotPurpose.STATUS
+    )
 
 
 @router.post("/v1/runs/{run_id}/cancel", dependencies=[Depends(require_service_identity)])
@@ -152,7 +123,9 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     record = await request.app.state.container.application.cancel(scope.scope_hash, run_id)
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")
-    return snapshot(record)
+    return request.app.state.container.output_adapter.snapshot(
+        record, purpose=SnapshotPurpose.CANCEL
+    )
 
 
 @router.post("/compat/dify/v1/chat-messages", dependencies=[Depends(require_service_identity)])
