@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "documents": [
+    {
+      "doc_id": "local-demo",
+      "domain": "help",
+      "version": "v1",
+      "title": "合成本地面板说明",
+      "source": "synthetic://local-demo",
+      "approved": true,
+      "approved_by": "technical-demo-author",
+      "sections": [
+        {
+          "section_id": "panel",
+          "title": "面板使用方法",
+          "text": "本地演示面板用于查看合成记录。"
+        }
+      ]
+    }
+  ]
+}

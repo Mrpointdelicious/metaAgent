@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     dry_run: bool = True
     orchestration_mode: Literal["agent", "legacy"] = "agent"
     prompt_bundle: str = "builtin-v1"
+    business_grounding_enabled: bool = False
     agent_model: str = ""
     agent_max_model_calls: int = Field(default=8, ge=2, le=20)
     agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
@@ -114,6 +115,16 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    knowledge_backend: Literal["local_bm25", "remote_rag"] = "local_bm25"
+    knowledge_rag_url: str = ""
+    knowledge_rag_token: SecretStr = SecretStr("")
+    knowledge_rag_tenant_id: str = "integration-demo"
+    knowledge_rag_scope_key: str = "integration-demo"
+    knowledge_rag_corpus_version: str = "demo-rehab-protocols-v1"
+    knowledge_rag_corpus_sha256: str = ""
+    knowledge_rag_timeout_seconds: float = Field(default=5, gt=0, le=15)
+    knowledge_rag_top_k: int = Field(default=6, ge=1, le=6)
+    knowledge_rag_max_chars: int = Field(default=6000, ge=600, le=6000)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
     # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
@@ -124,6 +135,8 @@ class Settings(BaseSettings):
 
     def runtime_issues(self) -> list[str]:
         issues = []
+        if self.knowledge_backend == "remote_rag" and self.app_env == "production":
+            issues.append("本阶段 remote_rag 仅允许隔离技术演示，禁止生产模式")
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
             issues.append("v1仅支持一个worker；扩容须实现跨进程运行协调与事件通知")
         return issues

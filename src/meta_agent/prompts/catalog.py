@@ -20,6 +20,66 @@ from meta_agent.prompts.contracts import (
 
 MANIFEST = MappingProxyType(
     {
+        ("rehab.agent", "business-v9"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v9"),
+                ("business_context", "v1"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
+        ("rehab.agent", "business-v8"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v8"),
+                ("business_context", "v1"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
+        ("rehab.agent", "business-v7"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v7"),
+                ("business_context", "v1"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
+        ("rehab.agent", "business-v6"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v6"),
+                ("business_context", "v1"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
+        ("rehab.agent", "business-v5"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v5"),
+                ("business_context", "v1"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
         ("rehab.agent", "v1"): (
             AgentPromptInputs,
             None,
@@ -30,8 +90,41 @@ MANIFEST = MappingProxyType(
                 ("budget_exhausted", "v1"),
             ),
         ),
+        ("rehab.agent", "business-v2"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v2"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
         ("intent.parse", "v1"): (IntentPromptInputs, IntentDecision, (("intent_system", "v1"),)),
+        ("rehab.agent", "business-v3"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v3"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
         ("intent.repair", "v1"): (EmptyPromptInputs, None, (("intent_repair", "v1"),)),
+        ("rehab.agent", "business-v4"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v1"),
+                ("business_grounding", "v4"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
         ("frontend.context", "v1"): (FrontendPromptInputs, None, (("frontend_context", "v1"),)),
         ("answer.fact_select", "v1"): (
             FactSelectionPromptInputs,
@@ -43,8 +136,64 @@ MANIFEST = MappingProxyType(
 
 BUNDLES = MappingProxyType(
     {
+        "business-grounded-v9": (
+            ("rehab.agent", "business-v9"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v8": (
+            ("rehab.agent", "business-v8"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v7": (
+            ("rehab.agent", "business-v7"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v6": (
+            ("rehab.agent", "business-v6"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v5": (
+            ("rehab.agent", "business-v5"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
         "builtin-v1": (
             ("rehab.agent", "v1"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v2": (
+            ("rehab.agent", "business-v2"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v3": (
+            ("rehab.agent", "business-v3"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+        ),
+        "business-grounded-v4": (
+            ("rehab.agent", "business-v4"),
             ("intent.parse", "v1"),
             ("intent.repair", "v1"),
             ("answer.fact_select", "v1"),

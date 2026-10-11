@@ -1,0 +1,28 @@
+{
+  "date": "2026-10-11",
+  "reviewer": "Codex technical review, not independent human review",
+  "old_inputs": "../../../docs/acceptance/business-eval-2026-10-11/baseline/inputs",
+  "revisions": [
+    {
+      "case": "all citation cases",
+      "reason": "Valid source IDs in parentheses/backticks were wrongly rejected by square-bracket-only smoke scorer; membership must accept equivalent formatting."
+    },
+    {
+      "case": "B03/B05",
+      "reason": "A single exact tool route violated the plan; permit a trend query or individual session analyses. Unknown-unit fixture must consistently represent all accessible records and provide the third record."
+    },
+    {
+      "case": "B07",
+      "reason": "Question requested device coverage, not numeric analysis; a correct overview must not fail for omitting unsolicited personal speed."
+    },
+    {
+      "case": "fixture provider",
+      "reason": "Align trend dates with latest/previous session dates; preserve all old results and rerun baseline before changing product behavior."
+    }
+  ],
+  "new_pins": {
+    "cases.json": "e55ff5c8c99224f9e7432e032af5a20122629bfc12a5a89bc18e425a083c88de",
+    "corpus.json": "dc994a7e328c2fc33839f61d0e7f6e7f48a3c018dbef36b4643ad38bc6c68836"
+  },
+  "not_a_new_blind_test": true
+}

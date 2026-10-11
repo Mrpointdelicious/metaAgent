@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "documents": [
+    {
+      "doc_id": "tour-speed",
+      "title": "合成IReTour指标说明",
+      "domain": "health",
+      "version": "v1",
+      "source": "repo://business-eval/tour-speed",
+      "approved": true,
+      "approved_by": "technical-synthetic-eval-2026-10-11",
+      "sections": [
+        {
+          "section_id": "definition",
+          "title": "步速定义",
+          "text": "本合成IReTour测试中，步速表示记录的步行距离除以记录时长，单位为m/s。该定义只用于本次合成业务评测，不是实际设备说明书；步速数值不能单独证明个人康复或训练疗效。"
+        },
+        {
+          "section_id": "limits",
+          "title": "数据限制",
+          "text": "本合成评测里，value_status=placeholder的0表示占位，并非实测零；value_status=measured的0仍为实测记录。未知单位不自行转换，trend_eligible=false的序列不可据此解释改善程度。测量值、派生值、缺失和占位必须区分。"
+        }
+      ]
+    },
+    {
+      "doc_id": "result-help",
+      "title": "合成结果查看帮助",
+      "domain": "help",
+      "version": "v1",
+      "source": "repo://business-eval/result-help",
+      "approved": true,
+      "approved_by": "technical-synthetic-eval-2026-10-11",
+      "sections": [
+        {
+          "section_id": "view",
+          "title": "查看结果",
+          "text": "在本合成产品中，打开训练历史，选择一条已完成且有结果的记录，点击查看结果即可阅读。只有用户明确要求图片时才生成报告；查看文字结果不需要生成图片或执行场景动作。"
+        }
+      ]
+    },
+    {
+      "doc_id": "protocol-a",
+      "title": "合成方案甲",
+      "domain": "health",
+      "version": "v1",
+      "source": "repo://business-eval/protocol-a",
+      "approved": true,
+      "approved_by": "technical-synthetic-eval-2026-10-11",
+      "sections": [
+        {
+          "section_id": "population",
+          "title": "研究人群",
+          "text": "方案甲计划招募40名卒中后步行受限的成年人。"
+        },
+        {
+          "section_id": "intervention",
+          "title": "干预方式",
+          "text": "方案甲比较步行训练加常规康复与常规康复；计划每周3次，持续6周。"
+        },
+        {
+          "section_id": "outcomes",
+          "title": "结局与限制",
+          "text": "方案甲计划以六分钟步行距离为主要结局，步行速度为次要结局；未提供试验结果、效应量或患者实际测量值。"
+        }
+      ]
+    },
+    {
+      "doc_id": "protocol-b",
+      "title": "合成方案乙",
+      "domain": "health",
+      "version": "v1",
+      "source": "repo://business-eval/protocol-b",
+      "approved": true,
+      "approved_by": "technical-synthetic-eval-2026-10-11",
+      "sections": [
+        {
+          "section_id": "population",
+          "title": "研究人群",
+          "text": "方案乙计划招募30名骨折后平衡受限的成年人。"
+        },
+        {
+          "section_id": "intervention",
+          "title": "干预方式",
+          "text": "方案乙比较平衡训练加常规康复与常规康复；计划每周2次，持续8周。"
+        },
+        {
+          "section_id": "outcomes",
+          "title": "结局与限制",
+          "text": "方案乙计划以Berg平衡量表为主要结局，日常活动能力为次要结局；未提供试验结果、效应量或患者实际测量值。"
+        }
+      ]
+    }
+  ]
+}

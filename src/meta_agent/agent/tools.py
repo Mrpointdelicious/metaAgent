@@ -358,6 +358,7 @@ async def invoke_tool(ctx, name, args):
             body = {
                 "tool_name": name,
                 "status": result.status,
+                "code": result.code,
                 "patient_message": result.message,
                 "facts": [
                     {
@@ -365,6 +366,7 @@ async def invoke_tool(ctx, name, args):
                         "value": v.fact.value,
                         "unit": v.fact.unit,
                         "value_status": v.fact.value_status,
+                        **({"doc_ref": v.fact.record_ref} if name == "search_knowledge" else {}),
                     }
                     for v in result.facts
                 ],
@@ -381,7 +383,20 @@ async def invoke_tool(ctx, name, args):
             # 更新
             result.outputs.update(cache_hit=cache_hit)
             body = {**body, "evidence_id": evidence.evidence_id}
+            if name == "get_patient_consultation":
+                body["interpretation_boundary"] = (
+                    "字段未返回不等于没有该项病史、诊断、处方或不适；仅可说明本次返回未提供。"
+                    "只引用已明确返回的记录，不以缺失字段推断不存在。"
+                )
             data = body.get("data") or {}
+            if (
+                ctx.settings.business_grounding_enabled
+                and name in {"get_patient_consultation", "get_patient_rehab"}
+                and result.status in {"succeeded", "partial"}
+            ):
+                from meta_agent.domains.patient_views import project_patient
+
+                body, result.facts = project_patient(name, evidence)
             if result.status in {"succeeded", "partial"} and "session_analysis" in name:
                 ref = data.get("session", {}).get("session_ref")
                 if isinstance(ref, str) and ref:
@@ -447,6 +462,7 @@ async def invoke_tool(ctx, name, args):
             "patient_message": result.message,
         }
     finally:
+        result.outputs["arguments"] = args
         result.elapsed_ms = (time.monotonic() - started) * 1000
         ctx.record.results[tid] = result
         if not ctx.emitter.persistence_failed:
@@ -461,4 +477,25 @@ async def invoke_tool(ctx, name, args):
                     goal_id="agent",
                 )
             await ctx.repository.save_run(ctx.record)
-    return compact_result(body, ctx.settings.agent_tool_output_tokens)
+    compact = compact_result(body, ctx.settings.agent_tool_output_tokens)
+    if body.get("business_view") and compact.get("context_truncated"):
+        result.status = "partial" if compact.get("facts") else "unavailable"
+        compact["status"] = result.status
+        result.outputs["business_context_truncated"] = True
+        await ctx.repository.save_run(ctx.record)
+    if name == "search_knowledge" and compact.get("context_truncated"):
+        result.outputs["model_visible_doc_refs"] = (compact.get("data") or {}).get("doc_refs", [])
+        if compact.get("code") == "knowledge_context_overflow":
+            result.status, result.code, result.message = (
+                "unavailable",
+                compact["code"],
+                compact["patient_message"],
+            )
+            await ctx.events.failure(
+                FailurePayload(code=result.code, text=result.message), task_id=tid, goal_id="agent"
+            )
+        elif result.status == "succeeded":
+            result.status = "partial"
+            compact["status"] = "partial"
+        await ctx.repository.save_run(ctx.record)
+    return compact

@@ -32,6 +32,14 @@ class PromptService:
         used = names[:1]
         if isinstance(values, AgentPromptInputs):
             text = definition.text("agent_system")
+            if "business_grounding" in names:
+                text += definition.text("business_grounding")
+                used.append("business_grounding")
+            if "business_context" in names and values.business_context is not None:
+                text += definition.text("business_context") + json.dumps(
+                    values.business_context, ensure_ascii=False
+                )
+                used.append("business_context")
             text += definition.text("agent_time").replace("{now}", values.now.isoformat())
             used.append("agent_time")
             if values.patient_profile:

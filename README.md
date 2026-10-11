@@ -1,5 +1,9 @@
 # MetaAgent
 
+新增 [Remote RAG Integration Spike 验收](docs/remote-rag-acceptance.md) 与 [隔离运行手册](docs/remote-rag-runbook.md)：现有search_knowledge可通过默认关闭的开关调用独立RAG演示服务。默认仍为local_bm25；仅允许非生产、无患者绑定的operator演示，完整验收保留E02/E09部分失败与Docker未验证项。
+
+[业务 RAG EVAL 首批结果](docs/business-rag-eval-results.md)：12 个合成开发用例、真实模型和检索、逐轮证据可见性及定点回归。工程检查已完成，完整业务验收为 PARTIAL；提示词候选需显式选择，默认仍为 builtin-v1。该结果不代表临床准确率或真实患者远程链路验收。
+
 ## 单 Agent 与三层患者工具（2026-10）
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
@@ -258,8 +262,18 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 
 ## 知识语料
 
+可选远程检索与隔离演示见 [Remote RAG Runbook](docs/remote-rag-runbook.md)。默认仍使用本地 BM25。
+
+业务事实投影由 `META_AGENT__BUSINESS_GROUNDING_ENABLED=false` 默认关闭。
+隔离评测使用 `true` 配合 `META_AGENT__PROMPT_BUNDLE=business-grounded-v9`：
+就诊/康复按原始证据路径生成事实，区分未提供、空值和记录内空列表；医嘱/处方按完整字段保留，
+放不下时整体省略并标记。当前工具权限、预算和新鲜分页状态进入模型能力提示，执行仍由原有工具门控。
+开关启用后，本地知识回答也会在发布前检查引用时效与成员，失效引用会阻断输出。
+这不是自由文本语义正确性的保证。实现、评分勘误及真实模型结果见
+[契约对齐业务评测](docs/contract-business-eval-results.md)。原有配置文件与默认提示词未切换。
+
 当前 `search_knowledge` 使用 `KnowledgeAdapter → 本地 approved JSON corpus → BM25`，
-仍是简化实现。Dify RAG、独立 RAG Service、Hybrid Retrieval 和 Reranker 均未接入。
+仍是简化实现。可选 `remote_rag` 已接入隔离演示端点；正式 Dify RAG 与生产知识服务尚未验收。
 
 `KNOWLEDGE_CORPUS_PATH` 指向本地 JSON。格式由
 [domains/knowledge.py](src/meta_agent/domains/knowledge.py) 中的

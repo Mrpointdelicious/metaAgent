@@ -1,0 +1,1067 @@
+{
+  "schema_version": "business-eval-1",
+  "split": "development_pilot",
+  "synthetic_only": true,
+  "clinical_approval": false,
+  "human_gold_review": "NOT_ASSESSED",
+  "fixture_version": "contract-fixtures-v1",
+  "cases": [
+    {
+      "case_id": "C01",
+      "family": "contract_development",
+      "fixture": "rx_empty",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "查询上次医嘱和处方，说明日期、本次返回范围和未提供的信息。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C02",
+      "family": "contract_development",
+      "fixture": "rx_present",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "查询上次医嘱和处方，说明日期、本次返回范围和未提供的信息。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C03",
+      "family": "contract_development",
+      "fixture": "rx_null",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "查询上次医嘱和处方，说明日期、本次返回范围和未提供的信息。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C04",
+      "family": "contract_development",
+      "fixture": "malformed",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "查询上次医嘱和处方，说明日期、本次返回范围和未提供的信息。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "unavailable",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C05",
+      "family": "contract_development",
+      "fixture": "training_only",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "结合医嘱、康复计划与最近实际训练，说明能否核对是否按计划执行。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation",
+            "get_patient_rehab"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C06",
+      "family": "contract_development",
+      "fixture": "plan_only",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "结合医嘱、康复计划与最近实际训练，说明能否核对是否按计划执行。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation",
+            "get_patient_rehab"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C07",
+      "family": "contract_development",
+      "fixture": "unlinked",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "结合医嘱、康复计划与最近实际训练，说明能否核对是否按计划执行。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation",
+            "get_patient_rehab"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C08",
+      "family": "contract_development",
+      "fixture": "flag_conflict",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "结合医嘱、康复计划与最近实际训练，说明能否核对是否按计划执行。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_patient_consultation",
+            "get_patient_rehab"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C09",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "请为最近一次IReTour训练生成图片报告，若不能生成请说明具体原因。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_iretour_session_analysis"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial",
+            "unsupported",
+            "unavailable"
+          ]
+        }
+      ],
+      "reports_enabled": false
+    },
+    {
+      "case_id": "C10",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "请为最近一次IReTour训练生成图片报告，若不能生成请说明具体原因。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_iretour_session_analysis",
+            "generate_iretour_single_session_report"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial",
+            "unsupported",
+            "unavailable"
+          ],
+          "allow_artifact": true
+        }
+      ],
+      "reports_enabled": true
+    },
+    {
+      "case_id": "C11",
+      "family": "contract_development",
+      "fixture": "end_page",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "列出第一页IReTour有结果的历史记录。",
+          "required_patterns": [],
+          "required_tools": [
+            "get_iretour_patient_history"
+          ],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        },
+        {
+          "query": "继续下一页。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [],
+          "knowledge": "optional",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_backend": [
+            "get_iretour_patient_history"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "C12",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "依据合成指标资料说明步速定义及限制。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "tour-speed@v1#definition",
+            "tour-speed@v1#limits"
+          ],
+          "knowledge": "required",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        },
+        {
+          "query": "刚才资料的定义和限制再说明一下。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "tour-speed@v1#definition",
+            "tour-speed@v1#limits"
+          ],
+          "knowledge": "reuse",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        },
+        {
+          "query": "再查刚才资料的定义与限制。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "tour-speed@v1#definition",
+            "tour-speed@v1#limits"
+          ],
+          "knowledge": "required",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "transition": "expire_knowledge"
+        }
+      ],
+      "patient": false
+    },
+    {
+      "case_id": "C13",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "依据合成帮助说明怎样查看训练结果，不要生成图片。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "result-help@v1#view"
+          ],
+          "knowledge": "required",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ],
+      "patient": false
+    },
+    {
+      "case_id": "C14",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "先检索product领域的合成结果查看说明；若没命中，再检索help领域并依据资料说明操作。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "result-help@v1#view"
+          ],
+          "knowledge": "required",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ],
+      "patient": false
+    },
+    {
+      "case_id": "C15",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "依据资料比较合成方案甲乙的人群、干预和主要结局，未返回的维度明确说明，不能猜测。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [
+            "protocol-a@v1#population",
+            "protocol-a@v1#intervention",
+            "protocol-a@v1#outcomes",
+            "protocol-b@v1#population",
+            "protocol-b@v1#intervention"
+          ],
+          "knowledge": "required",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ],
+      "patient": false,
+      "corpus": "partial_corpus.json"
+    },
+    {
+      "case_id": "C16",
+      "family": "contract_development",
+      "fixture": "measured",
+      "backend": "contract",
+      "turns": [
+        {
+          "query": "依据合成帮助说明怎样查看训练结果，说明依据是否可获取，不要猜测操作。",
+          "required_patterns": [],
+          "required_tools": [],
+          "required_refs": [],
+          "knowledge": "unnecessary",
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ]
+        }
+      ],
+      "patient": false,
+      "disable_knowledge": true
+    },
+    {
+      "case_id": "B01",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "查询最近一次IReTour训练的实际步速、单位和记录日期。",
+          "required_patterns": [
+            "0\\.64",
+            "m/s|米[／/]秒|米每秒",
+            "10月10日|10[-/]10"
+          ],
+          "required_tools": [
+            "get_iretour_session_analysis"
+          ],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B02",
+      "family": "contract_aligned_regression",
+      "fixture": "placeholder",
+      "turns": [
+        {
+          "query": "最近一次IReTour步速字段为0，是否说明我完全走不了？请核查记录。",
+          "required_patterns": [
+            "占位",
+            "不能|不代表|无法|并非",
+            "实测|测量"
+          ],
+          "required_tools": [
+            "get_iretour_session_analysis"
+          ],
+          "knowledge": "optional",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B03",
+      "family": "contract_aligned_regression",
+      "fixture": "unknown_unit",
+      "turns": [
+        {
+          "query": "最近三次IReTour的速度怎样变化，单位是否支持比较？请查实际记录。",
+          "required_patterns": [
+            "未知|未确认|不明",
+            "不可比较|不能比较|无法.*比较|不宜.*比较|不能.*改善|无法.*改善"
+          ],
+          "required_tools": [],
+          "knowledge": "optional",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "tool_alternatives": [
+            [
+              "get_iretour_longitudinal_analysis"
+            ],
+            [
+              "get_iretour_session_analysis"
+            ]
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B04",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "查询最近一次IReTour步速，并依据已批准资料解释这个指标、标明资料引用和解释限制。",
+          "required_patterns": [
+            "0\\.64",
+            "距离",
+            "时长|时间",
+            "不能|不代表|无法"
+          ],
+          "required_tools": [
+            "get_iretour_session_analysis"
+          ],
+          "knowledge": "required",
+          "required_refs": [
+            "tour-speed@v1#definition"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B05",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "最近两次IReTour步速提高了吗？这是否说明我已经康复？请结合实际记录说明。",
+          "required_patterns": [
+            "0\\.48",
+            "0\\.64",
+            "不能|不代表|无法|不足以"
+          ],
+          "required_tools": [],
+          "knowledge": "optional",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "tool_alternatives": [
+            [
+              "get_iretour_longitudinal_analysis"
+            ],
+            [
+              "get_iretour_session_analysis"
+            ]
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B06",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "医生上次有什么医嘱？结合最近的训练记录解释，区分已有医嘱和一般建议。",
+          "required_patterns": [
+            "10月8日|10[-/]08|10[-/]8",
+            "按既有计划训练",
+            "不适",
+            "0\\.64"
+          ],
+          "required_tools": [
+            "get_patient_consultation",
+            "get_iretour_session_analysis"
+          ],
+          "knowledge": "optional",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B07",
+      "family": "contract_aligned_regression",
+      "fixture": "mapping_failure",
+      "turns": [
+        {
+          "query": "帮我看看最近训练，说明哪些设备的数据可以取得、哪些缺失。",
+          "required_patterns": [
+            "IReGo|IREGO",
+            "映射|未确认|无法|失败"
+          ],
+          "required_tools": [
+            "get_patient_rehab"
+          ],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "tool_alternatives": [
+            [
+              "get_iretour_patient_history"
+            ],
+            [
+              "get_iretour_session_analysis"
+            ]
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B08",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "查看IReTour有结果训练的第一页。",
+          "required_patterns": [
+            "10月10日|10[-/]10"
+          ],
+          "required_tools": [
+            "get_iretour_patient_history"
+          ],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        },
+        {
+          "query": "解读刚才第一页第一条记录，说明步速和日期。",
+          "required_patterns": [
+            "0\\.64",
+            "10月10日|10[-/]10"
+          ],
+          "required_tools": [
+            "get_iretour_session_analysis"
+          ],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        },
+        {
+          "query": "再看下一页。",
+          "required_patterns": [
+            "10月6日|10[-/]06|10[-/]6"
+          ],
+          "required_tools": [
+            "get_iretour_patient_history"
+          ],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        },
+        {
+          "query": "还有下一页吗？",
+          "required_patterns": [
+            "没有|无更多|最后|不能|已.*全部"
+          ],
+          "required_tools": [],
+          "knowledge": "unnecessary",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B09",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "依据已批准资料，解释本合成IReTour步速指标并标明引用。",
+          "required_patterns": [
+            "距离",
+            "时长|时间"
+          ],
+          "required_tools": [],
+          "knowledge": "required",
+          "required_refs": [
+            "tour-speed@v1#definition"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        },
+        {
+          "query": "刚才那份指标资料的解释限制是什么？请沿用仍有效的依据。",
+          "required_patterns": [
+            "不能|不代表|无法|仅"
+          ],
+          "required_tools": [],
+          "knowledge": "reuse",
+          "required_refs": [
+            "tour-speed@v1#definition"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        },
+        {
+          "query": "再核实刚才那份指标资料的定义和解释限制，标明依据。",
+          "required_patterns": [
+            "距离",
+            "时长|时间"
+          ],
+          "required_tools": [],
+          "knowledge": "required",
+          "required_refs": [
+            "tour-speed@v1#definition"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ],
+          "transition": "expire_knowledge"
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B10",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "turns": [
+        {
+          "query": "依据合成产品帮助，怎样查看训练结果？不要生成图片，也不要执行跳转。请标明资料依据。",
+          "required_patterns": [
+            "训练历史",
+            "查看结果"
+          ],
+          "required_tools": [],
+          "knowledge": "required",
+          "required_refs": [
+            "result-help@v1#view"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B11",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "patient": false,
+      "turns": [
+        {
+          "query": "根据已批准资料比较合成方案甲、乙的研究人群、干预方式和主要结局，逐项标明引用；没有实际结果就明确说明。",
+          "required_patterns": [
+            "40",
+            "30",
+            "每周3次|每周.*3.*次|3次/周",
+            "每周2次|每周.*2.*次|2次/周",
+            "六分钟",
+            "Berg",
+            "未提供|没有.*结果|无.*结果"
+          ],
+          "required_tools": [],
+          "knowledge": "required",
+          "required_refs": [
+            "protocol-a@v1#population",
+            "protocol-a@v1#intervention",
+            "protocol-a@v1#outcomes",
+            "protocol-b@v1#population",
+            "protocol-b@v1#intervention",
+            "protocol-b@v1#outcomes"
+          ],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    },
+    {
+      "case_id": "B12",
+      "family": "contract_aligned_regression",
+      "fixture": "measured",
+      "fault": "timeout",
+      "turns": [
+        {
+          "query": "请检索已批准的合成产品帮助，告诉我怎样查看训练结果，标明依据。",
+          "required_patterns": [
+            "超时|失败|无法|不可用|未能",
+            "资料|检索|查询|知识"
+          ],
+          "required_tools": [],
+          "knowledge": "attempt",
+          "required_refs": [],
+          "allowed_statuses": [
+            "succeeded",
+            "partial"
+          ],
+          "forbidden_tools": [
+            "navigate_scene",
+            "generate_irego_single_session_report",
+            "generate_irego_longitudinal_report",
+            "generate_iretour_single_session_report",
+            "generate_iretour_longitudinal_report"
+          ]
+        }
+      ],
+      "backend": "contract"
+    }
+  ],
+  "not_blind_test": true,
+  "deployment_version_verified": false
+}

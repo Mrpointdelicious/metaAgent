@@ -17,6 +17,7 @@ class AgentPromptInputs(StrictModel):
     now: datetime
     patient_profile: dict[str, Any] | None = None
     budget_exhausted: bool = False
+    business_context: dict[str, Any] | None = None
 
 
 class FrontendPromptInputs(StrictModel):

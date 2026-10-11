@@ -1,0 +1,9 @@
+{
+  "repository_commit": "116cd85162c01f2d7fe573b26f6862f3132763a2",
+  "files": {
+    "AI_WebApi.Model/DTOs/AITools/PatientLayerDtos.cs": "935397fe61992e7e37353465e0d02bd740a7ffc8764b28b2ecd323cca7a83a2f",
+    "AI_WebApi.Services/AITools/PatientLayerService.cs": "b0da19bab9e388860314c7375bcb937dbf456dbfd150c1e8b62d9b1827f2755a",
+    "AI_WebApi.Tests/PatientLayerServiceTests.cs": "22ee58abeb18307e05788e0f63f30a8c357dafd2173875fc6bab3aa0c4df3fdb"
+  },
+  "meaning": "local source snapshot only, not deployment or clinical approval"
+}

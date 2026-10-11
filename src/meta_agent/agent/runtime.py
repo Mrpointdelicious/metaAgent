@@ -3,6 +3,7 @@
 文件功能：运行LangChain单Agent循环，通过中间件控制患者上下文与调用预算。
 """
 
+import re
 from typing import Any
 
 from langchain.agents import create_agent
@@ -21,11 +22,15 @@ from meta_agent.application.context import RunContext
 from meta_agent.application.frontend_context import conversational_only, validate_natural_answer
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.contracts import DomainError, fingerprint, utcnow
+from meta_agent.domains.knowledge_citations import audit_remote_answer
 from meta_agent.events.publisher import AnswerContent
 from meta_agent.prompts.contracts import AgentPromptInputs, FrontendPromptInputs
 
 
 class PatientContextMiddleware(AgentMiddleware):
+    def __init__(self, model_input_observer=None):
+        self.model_input_observer = model_input_observer
+
     async def awrap_model_call(self, request, handler):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
@@ -36,6 +41,12 @@ class PatientContextMiddleware(AgentMiddleware):
         )
         if budget_exhausted or (ctx.frontend_context and conversational_only(ctx.query)):
             tools = []
+        business = None
+        if ctx.settings.business_grounding_enabled:
+            from meta_agent.domains.patient_views import business_context
+
+            business = await business_context(ctx, request.messages, {t.name for t in tools})
+            ctx.record.metrics.setdefault("business_contexts", []).append(business)
         rendered = ctx.prompts.render(
             ctx.prompt_binding,
             "rehab.agent",
@@ -43,6 +54,7 @@ class PatientContextMiddleware(AgentMiddleware):
                 now=utcnow(),
                 patient_profile=ctx.patient_profile_context,
                 budget_exhausted=budget_exhausted,
+                business_context=business,
             ),
         )
         prompt = rendered.system_message.content
@@ -95,6 +107,8 @@ class PatientContextMiddleware(AgentMiddleware):
                 ),
             }
         )
+        if self.model_input_observer is not None:
+            await self.model_input_observer(ctx, messages)
         response = await handler(
             request.override(system_prompt=prompt, messages=messages, tools=tools)
         )
@@ -118,11 +132,11 @@ class PatientContextMiddleware(AgentMiddleware):
 
 class SingleAgentRuntime:
     # 各类参数信息填充 创建由 LangChain 管理模型与工具循环的 Agent 图
-    def __init__(self, model: Any, *, checkpointer=None, store=None):
+    def __init__(self, model: Any, *, checkpointer=None, store=None, model_input_observer=None):
         self.graph = create_agent(
             model=model,
             tools=build_tools(),
-            middleware=[PatientContextMiddleware()],
+            middleware=[PatientContextMiddleware(model_input_observer)],
             # Context is runtime-only; it contains authenticated identities and dependencies.
             context_schema=RunContext,
             checkpointer=checkpointer,
@@ -183,11 +197,20 @@ class SingleAgentRuntime:
                 )
             if not isinstance(answer, str) or not answer.strip():
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
+            if re.search(
+                r"<[｜|]*DSML[｜|]*\s+(?:calls|invoke|parameter)\b|<tool_call\b|<function_calls\b",
+                answer,
+                re.I,
+            ):
+                raise DomainError(
+                    "agent_tool_markup", "模型未形成可展示的回答，请重试。", outcome="unavailable"
+                )
             if ctx.frontend_context:
                 validate_natural_answer(answer)
             # 发送回答报文
+            doc_refs, fact_ids = await audit_remote_answer(answer, history, ctx)
             await ctx.events.answer(
-                AnswerContent(text=answer, fact_ids=[], doc_refs=[]), goal_id="agent"
+                AnswerContent(text=answer, fact_ids=fact_ids, doc_refs=doc_refs), goal_id="agent"
             )
             # The natural answer is retained alongside complete tool-call pairs, not a fixed plan.
             # 记忆更新
@@ -195,9 +218,16 @@ class SingleAgentRuntime:
                 bounded_history(history, ctx.settings.agent_history_tokens)
             )
             latest = {}
-            # 返回数据情况：根据工具名称保存各工具的最新状态。
+            # Distinct knowledge queries remain visible; preserve other tools' recovery semantics.
             for task in ctx.record.results.values():
-                latest[task.outputs.get("tool_name", task.task_id)] = task.status
+                name = task.outputs.get("tool_name", task.task_id)
+                key = (
+                    name,
+                    fingerprint(task.outputs.get("arguments", {}))
+                    if name == "search_knowledge"
+                    else None,
+                )
+                latest[key] = task.status
             good = any(s in {"succeeded", "partial"} for s in latest.values())
             bad = any(s not in {"succeeded", "partial"} for s in latest.values())
             ctx.record.status = "partial" if good and bad else "unavailable" if bad else "succeeded"

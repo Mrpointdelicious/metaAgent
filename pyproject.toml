@@ -35,6 +35,9 @@ llm-deepseek = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/meta_agent"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/outputs/**"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]

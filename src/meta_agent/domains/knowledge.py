@@ -74,6 +74,10 @@ def rank(query: str, sections: list[tuple[Document, Section]]) -> list[tuple[flo
 
 class KnowledgeAdapter:
     async def execute(self, task: TaskSpec, args: dict, ctx: RunContext) -> TaskResult:
+        if ctx.settings.knowledge_backend == "remote_rag":
+            from meta_agent.domains.remote_knowledge import RemoteKnowledgeAdapter
+
+            return await RemoteKnowledgeAdapter().execute(task, args, ctx)
         path = Path(ctx.settings.knowledge_corpus_path)
         try:
             if not path.is_file() or path.stat().st_size > 10_000_000:
@@ -126,7 +130,8 @@ class KnowledgeAdapter:
         )
         builder = FactBuilder(evidence)
         for index, snippet in enumerate(snippets):
-            view = builder.add(
+            builder.record_ref = snippet["doc_ref"]
+            builder.add(
                 f"/snippets/{index}/text",
                 "knowledge_excerpt",
                 f"{snippet['title']} · {snippet['section']}",
