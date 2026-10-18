@@ -1,13 +1,13 @@
 """
 创建日期：2026-10-18
-文件功能：验证 MaxKB 接入的引用、签名、流式元数据和可信空间边界。
+文件功能：用少量原生 API 夹具验证无 bridge 的检索、回答与权限边界。
 """
 
 import hashlib
-import hmac
+import importlib.util
 import json
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -15,46 +15,130 @@ from fastapi.testclient import TestClient
 
 from meta_agent.app import create_app
 from meta_agent.domains.maxkb import MaxKBWorkflow
-from meta_agent.domains.maxkb_contract import Snippet, canonical, estimate_tokens
-from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.domains.maxkb_contract import canonical
+from meta_agent.domains.maxkb_policy import STRATEGIES
 from tests.helpers.settings import TestSettings as IsolatedSettings
+
+HEADERS = {"Authorization": "Bearer service-test"}
+
+
+def load_tool(name):
+    path = Path(__file__).resolve().parents[1] / f"tools/{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
-def maxkb_settings(tmp_path):
-    release = {
-        "backend": "maxkb",
+def sample(tmp_path):
+    kb, other, doc_id, para_id = [str(uuid4()) for _ in range(4)]
+    text = "按空格跳跃，按Shift奔跑。"
+    original = tmp_path / "originals"
+    original.mkdir()
+    (original / "guide.txt").write_text(text, encoding="utf8")
+    sha = hashlib.sha256(text.encode()).hexdigest()
+    route = {
+        "knowledge_id": kb,
+        "enabled": True,
+        "scope_kind": "space",
+        "space_id": "A",
+        "knowledge_type": "sop_kb",
+        "roles": ["operator"],
+    }
+    doc = {
+        "id": doc_id,
+        "knowledge_id": kb,
+        "name": "操作说明",
+        "code": "d-test",
+        "published": True,
+        "scope_kind": "space",
+        "space_id": "A",
+        "roles": ["operator"],
+        "knowledge_type": "sop_kb",
+        "original_file": "guide.txt",
+        "sha256": sha,
+        "revision_sha256": sha,
+        "group": "fixture",
+    }
+    paragraph = {
+        "knowledge_id": kb,
+        "document_id": doc_id,
+        "text": text,
+        "title": "步骤",
+        "published": True,
+        "page": 2,
+    }
+    catalog = {
         "schema_version": 2,
+        "strategies": STRATEGIES,
+        "routes": [route, {**route, "space_id": "B", "knowledge_id": other}],
+        "documents": {doc_id: doc},
+        "paragraphs": {para_id: paragraph},
+    }
+    release = {
+        "schema_version": 2,
+        "backend": "maxkb",
         "scope_key": "maxkb-pilot",
         "space_ids": ["A"],
         "corpus_version": "maxkb-test",
-        "corpus_sha256": "a" * 64,
-        "index_sha256": "b" * 64,
+        "catalog_file": "catalog.json",
+        "corpus_sha256": hashlib.sha256(canonical(catalog["documents"])).hexdigest(),
+        "index_sha256": hashlib.sha256(canonical(catalog)).hexdigest(),
     }
-    path = tmp_path / "release.json"
-    path.write_text(json.dumps(release), encoding="utf8")
-    return IsolatedSettings(
+    (tmp_path / "catalog.json").write_text(json.dumps(catalog), encoding="utf8")
+    (tmp_path / "release.json").write_text(json.dumps(release), encoding="utf8")
+    (tmp_path / "native.json").write_text(
+        json.dumps({"username": "test", "password": "fake"}), encoding="utf8"
+    )
+    settings = IsolatedSettings(
         app_env="test",
         service_bearer_token="service-test",
         dry_run=True,
         persistence_backend="memory",
         planner_mode="deterministic",
         maxkb_enabled=True,
-        maxkb_release_path=str(path),
-        maxkb_url="http://bridge.test/v1/experimental/hybrid/retrieve",
-        maxkb_token="k" * 40,
+        maxkb_release_path=str(tmp_path / "release.json"),
+        maxkb_config_path=str(tmp_path / "native.json"),
+        maxkb_url="http://maxkb.test/admin/api",
         maxkb_answer_mode="llm",
-        deepseek_api_key="test-model-key",
+        deepseek_api_key="fake-answer-key",
     )
+    return {
+        "settings": settings,
+        "root": tmp_path,
+        "catalog": catalog,
+        "release": release,
+        "kb": kb,
+        "other": other,
+        "doc": doc,
+        "para": para_id,
+        "text": text,
+        "calls": [],
+    }
 
 
-def transport(settings, calls, *, tamper=False):
+def publish(sample):
+    root, catalog, release = sample["root"], sample["catalog"], sample["release"]
+    release["corpus_sha256"] = hashlib.sha256(canonical(catalog["documents"])).hexdigest()
+    release["index_sha256"] = hashlib.sha256(canonical(catalog)).hexdigest()
+    (root / "catalog.json").write_text(json.dumps(catalog), encoding="utf8")
+    (root / "release.json").write_text(json.dumps(release), encoding="utf8")
+
+
+def install(monkeypatch, sample, *, tamper=False, disabled=False, expired=False, fail=False):
+    calls = sample["calls"]
+    stale = [expired]
+
     def handle(request):
-        body = json.loads(request.content)
-        calls.append(request.url.path)
-        if request.url.path.endswith("/chat/completions"):
-            rows = json.loads(body["messages"][-1]["content"])["evidence"]
-            ref = rows[0]["doc_ref"]
+        path = request.url.path
+        calls.append(path)
+        assert request.url.host in {"maxkb.test", "api.deepseek.com"}
+        if path.endswith("/user/login"):
+            return httpx.Response(200, json={"code": 200, "data": {"token": "fake-session"}})
+        if path.endswith("/chat/completions"):
+            body = json.loads(request.content)
+            ref = json.loads(body["messages"][-1]["content"])["evidence"][0]["doc_ref"]
             return httpx.Response(
                 200,
                 json={
@@ -63,7 +147,7 @@ def transport(settings, calls, *, tamper=False):
                             "message": {
                                 "content": json.dumps(
                                     {
-                                        "answer": "按空格跳跃。[" + ref + "]",
+                                        "answer": f"按空格跳跃。[{ref}]",
                                         "citations": [ref],
                                     }
                                 )
@@ -72,123 +156,183 @@ def transport(settings, calls, *, tamper=False):
                     ]
                 },
             )
-        source, ref = "http://source.test/d-test?space_id=A", "d-test@v-test#c-test"
-        text = "按空格跳跃，按Shift奔跑。"
-        snippet = Snippet(
-            source_id=uuid5(NAMESPACE_URL, source),
-            chunk_id=uuid5(NAMESPACE_URL, source + "@v-test#c-test"),
-            doc_ref=ref,
-            document_version="v-test",
-            title="操作说明",
-            source=source,
-            section="步骤",
-            section_id="c-test",
-            start=0,
-            end=len(text),
-            text=text,
-            text_sha256=hashlib.sha256(text.encode()).hexdigest(),
-            score=0.9,
-            space_id="A",
-            knowledge_type="sop_kb",
-        ).model_dump(mode="json")
-        release = json.loads(Path(settings.maxkb_release_path).read_text(encoding="utf8"))
-        result = {
-            "schema_version": "retrieval-v1",
-            "request_id": body["request_id"],
-            "retrieval_run_id": str(uuid4()),
-            "backend": "maxkb",
-            "strategy": "hybrid_selection",
-            "approval": "technical_demo_only",
-            "clinical_approval": False,
-            "scope_key": "maxkb-pilot",
-            "domain": body["domain"],
-            **{k: release[k] for k in ("corpus_version", "corpus_sha256", "index_sha256")},
-            "status": "success",
-            "code": "ok",
-            "elapsed_ms": 1,
-            "reranker_used": None,
-            "rerank_applied": False,
-            "degradation": [],
-            "candidate_count": 1,
-            "post_rerank_count": 1,
-            "selected_count": 1,
-            "budget_truncated": False,
-            "context_tokens_estimated": estimate_tokens(snippet),
-            "model_calls": {"embedding": 1, "rerank": 0},
-            "stages": {"space_id": "A"},
-            "evidence": [snippet],
-        }
-        result["signature"] = hmac.new(b"k" * 40, canonical(result), hashlib.sha256).hexdigest()
-        if tamper:
-            result["evidence"][0]["text"] = "tampered"
-        return httpx.Response(200, json=result)
+        if stale[0]:
+            stale[0] = False
+            return httpx.Response(401, json={"code": 401})
+        if fail:
+            return httpx.Response(500, json={"code": 500, "message": "private-provider-detail"})
+        if path.endswith("/hit_test"):
+            assert sample["other"] not in path
+            row = {
+                "id": sample["para"],
+                "document_id": sample["doc"]["id"],
+                "content": "tampered" if tamper else sample["text"],
+                "title": "步骤",
+                "is_active": True,
+                "comprehensive_score": 0.9,
+            }
+            data = [row]
+        elif path.endswith("/paragraph"):
+            data = [
+                {
+                    "id": sample["para"],
+                    "content": sample["text"],
+                    "title": "步骤",
+                    "is_active": True,
+                }
+            ]
+        else:
+            data = {"id": sample["doc"]["id"], "is_active": not disabled}
+        return httpx.Response(200, json={"code": 200, "data": data})
 
-    return httpx.MockTransport(handle)
-
-
-def install(monkeypatch, settings, calls, **kwargs):
     original = MaxKBWorkflow.__init__
 
-    def init(self, supplied):
-        original(self, supplied)
-        self.http = httpx.AsyncClient(transport=transport(settings, calls, **kwargs))
+    def init(self, settings):
+        original(self, settings)
+        self.http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+        self.retriever.http = self.http
+        self.retriever.client.http = self.http
 
     monkeypatch.setattr(MaxKBWorkflow, "__init__", init)
 
 
 def payload(space="A", mode="blocking"):
     return {
-        "query": "请查询知识库，电脑端如何跳跃？",
+        "query": "请检索知识库，电脑端如何跳跃？",
         "user": "operator",
         "inputs": {"tenantId": "maxkb-pilot", "role": "operator", "space_id": space},
         "response_mode": mode,
     }
 
 
-def test_graph_answers_with_scoped_citations_and_stream_metadata(maxkb_settings, monkeypatch):
-    calls = []
-    install(monkeypatch, maxkb_settings, calls)
-    with TestClient(create_app(maxkb_settings)) as client:
-        headers = {"Authorization": "Bearer service-test"}
-        reply = client.post("/compat/dify/v1/chat-messages", headers=headers, json=payload())
+def query():
+    return {"query": "电脑端如何跳跃？", "tenant_id": "maxkb-pilot", "space_id": "A"}
+
+
+def test_native_dify_answer_and_stream_smoke(sample, monkeypatch):
+    install(monkeypatch, sample)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/compat/dify/v1/chat-messages", headers=HEADERS, json=payload())
         assert reply.status_code == 200
-        value = reply.json()
-        assert "按空格跳跃" in value["answer"] and "[d-test@v-test#c-test]" in value["answer"]
-        assert value["metadata"]["knowledge_retrieval"]["response_verified"]
-        assert value["metadata"]["citations"][0]["space_id"] == "A"
+        body = reply.json()
+        assert "按空格跳跃" in body["answer"]
+        assert body["metadata"]["knowledge_retrieval"]["integration"] == "native"
+        assert body["metadata"]["citations"][0]["page"] == 2
         stream = client.post(
-            "/compat/dify/v1/chat-messages", headers=headers, json=payload(mode="streaming")
+            "/compat/dify/v1/chat-messages", headers=HEADERS, json=payload(mode="streaming")
         )
         assert '"knowledge_retrieval"' in stream.text and '"status":"succeeded"' in stream.text
-        assert len(calls) == 4
+    assert sample["calls"].count("/admin/api/user/login") == 1
+    assert all("hybrid/retrieve" not in c for c in sample["calls"])
 
 
 @pytest.mark.parametrize("space,status", [(None, 422), ("B", 403)])
-def test_scope_rejected_before_outbound_request(maxkb_settings, monkeypatch, space, status):
-    calls = []
-    install(monkeypatch, maxkb_settings, calls)
-    with TestClient(create_app(maxkb_settings)) as client:
-        reply = client.post(
-            "/compat/dify/v1/chat-messages",
-            headers={"Authorization": "Bearer service-test"},
-            json=payload(space),
+def test_scope_rejected_before_any_outbound(sample, monkeypatch, space, status):
+    install(monkeypatch, sample)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/compat/dify/v1/chat-messages", headers=HEADERS, json=payload(space))
+        assert reply.status_code == status
+    assert not sample["calls"]
+
+
+def test_retrieval_only_and_authenticated_source(sample, monkeypatch):
+    sample["settings"].maxkb_answer_mode = "disabled"
+    sample["settings"].deepseek_api_key = ""
+    install(monkeypatch, sample)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/v1/knowledge/retrieve", headers=HEADERS, json=query())
+        assert reply.status_code == 200
+        evidence = reply.json()["evidence"][0]
+        source = evidence["source"].replace("http://127.0.0.1:18084", "")
+        assert client.get(source).status_code == 401
+        assert client.get(source, headers=HEADERS).text == sample["text"]
+        assert (
+            client.get(source.replace("space_id=A", "space_id=B"), headers=HEADERS).status_code
+            == 403
         )
-        assert reply.status_code == status and not calls
-    assert (
-        TrustedScope("t", "u", space_id="A").scope_hash
-        != TrustedScope("t", "u", space_id="B").scope_hash
+        smoke = load_tool("smoke_maxkb")
+        access = {
+            "release": "maxkb-test",
+            "tenant_id": "maxkb-pilot",
+            "space_id": "A",
+            "service_token": "service-test",
+            "retrieve_url": "http://127.0.0.1:18084/v1/knowledge/retrieve",
+        }
+        assert smoke.check(client, access, "sop")["rerank_applied"] is False
+        assert smoke.check(client, access, "scope")["http_status"] == 403
+    assert not any("completions" in c for c in sample["calls"])
+
+
+def test_changed_evidence_cannot_reach_answer_model(sample, monkeypatch):
+    install(monkeypatch, sample, tamper=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/compat/dify/v1/chat-messages", headers=HEADERS, json=payload())
+        assert reply.status_code == 409
+    assert not any("completions" in c for c in sample["calls"])
+
+
+def test_disabled_document_not_recalled_or_downloadable(sample, monkeypatch):
+    install(monkeypatch, sample, disabled=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/v1/knowledge/retrieve", headers=HEADERS, json=query())
+        assert reply.json()["evidence"] == []
+        source = "/v1/knowledge/sources/d-test?tenant_id=maxkb-pilot&space_id=A"
+        assert client.get(source, headers=HEADERS).status_code == 404
+
+
+def test_expired_native_session_recovers_once(sample, monkeypatch):
+    install(monkeypatch, sample, expired=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        assert (
+            client.post("/v1/knowledge/retrieve", headers=HEADERS, json=query()).status_code == 200
+        )
+    assert sample["calls"].count("/admin/api/user/login") == 2
+
+
+def test_native_api_does_not_claim_reranking(sample, monkeypatch):
+    for route in sample["catalog"]["routes"]:
+        route["knowledge_type"] = "clinical_kb"
+    sample["doc"]["knowledge_type"] = "clinical_kb"
+    publish(sample)
+    install(monkeypatch, sample)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post(
+            "/v1/knowledge/retrieve", headers=HEADERS, json={**query(), "domain": "health"}
+        )
+        body = reply.json()
+        assert reply.status_code == 200 and body["status"] == "partial"
+        assert body["rerank_applied"] is False and body["model_calls"]["rerank"] == 0
+        assert body["degradation"] == ["native_hit_test_has_no_rerank"]
+
+
+def test_provider_failure_is_not_empty_retrieval_or_leaked(sample, monkeypatch):
+    install(monkeypatch, sample, fail=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post("/v1/knowledge/retrieve", headers=HEADERS, json=query())
+        assert reply.status_code == 503 and "private-provider-detail" not in reply.text
+
+
+def test_catalog_tampering_blocks_startup(sample):
+    (sample["root"] / "catalog.json").write_text("{}", encoding="utf8")
+    with pytest.raises(RuntimeError, match="integrity"):
+        MaxKBWorkflow(sample["settings"])
+
+
+def test_prepare_keeps_cleared_key_and_no_provider_credentials(sample):
+    module = load_tool("prepare_maxkb_dev")
+    root, output = sample["root"], sample["root"] / "output"
+    (root / "access.json").write_text(
+        json.dumps({"username": "test", "password": "fake"}), encoding="utf8"
     )
-
-
-def test_tampered_evidence_cannot_reach_answer_model(maxkb_settings, monkeypatch):
-    calls = []
-    install(monkeypatch, maxkb_settings, calls, tamper=True)
-    with TestClient(create_app(maxkb_settings)) as client:
-        reply = client.post(
-            "/compat/dify/v1/chat-messages",
-            headers={"Authorization": "Bearer service-test"},
-            json=payload(),
-        )
-        assert reply.status_code == 502
-        assert reply.json()["detail"] == "maxkb_evidence_invalid"
-        assert calls == ["/v1/experimental/hybrid/retrieve"]
+    (root / "agent.env").write_text("META_AGENT__DEEPSEEK_API_KEY=must-not-copy", encoding="utf8")
+    result = module.prepare(
+        root,
+        output,
+        maxkb_url="http://maxkb:8080/admin/api",
+        public_url="http://127.0.0.1:18084",
+        answer_mode="disabled",
+        data_volume="test",
+    )
+    assert result["answer_key_configured"] is False
+    assert "must-not-copy" not in (output / "agent.env").read_text("utf8")
+    assert set(json.loads((output / "native.json").read_text("utf8"))) == {"username", "password"}

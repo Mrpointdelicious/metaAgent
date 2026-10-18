@@ -108,13 +108,14 @@ class Settings(BaseSettings):
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
     maxkb_enabled: bool = False
-    maxkb_url: str = "http://host.docker.internal:18082/v1/experimental/hybrid/retrieve"
-    maxkb_token: SecretStr = SecretStr("")
+    maxkb_url: str = "http://host.docker.internal:18081/admin/api"
+    maxkb_config_path: str = ""
+    maxkb_public_base_url: str = "http://127.0.0.1:18084"
     maxkb_release_path: str = ""
     maxkb_timeout_seconds: float = Field(default=15, gt=0, le=45)
     maxkb_top_k: int = Field(default=3, ge=1, le=6)
     maxkb_context_budget: int = Field(default=10000, ge=100, le=12000)
-    maxkb_answer_mode: Literal["llm", "extractive"] = "llm"
+    maxkb_answer_mode: Literal["llm", "extractive", "disabled"] = "llm"
     maxkb_answer_timeout_seconds: float = Field(default=30, gt=0, le=60)
     maxkb_answer_max_tokens: int = Field(default=768, ge=128, le=2048)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
