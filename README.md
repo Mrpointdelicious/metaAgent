@@ -11,6 +11,9 @@
 - 多租户、多患者、多会话线程隔离。
 - 开发环境内存持久化，生产环境 PostgreSQL Checkpoint 与 Store。
 - 启动配置门、健康检查、结构化日志与基础契约测试。
+- 可选 MaxKB 检索与带引用的模型回答，强制校验 spaceid、发布版本和检索签名。
+
+MaxKB 的 Docker 启动、调用和本次 smoke 结果见 [dev 接入说明](docs/maxkb-dev.md)。
 
 ## 本地开发
 

@@ -12,3 +12,19 @@ htmlcov/
 dist/
 build/
 .idea/
+
+# Private runtime configuration and generated evidence.
+/.local/
+/outputs/
+**/obj/
+**/bin/
+
+# Private notes and integration runners retained across local branches.
+/manual/collect_test_results.py
+/manual/evaluate_single_agent.py
+/manual/evaluate_webapi.py
+/manual/project_test_patients.py
+/manual/start_ai_webapi_test.ps1
+/docs/dify-integration-v1/
+/docs/freeze-v1.0/
+/docs/implementation-v1/

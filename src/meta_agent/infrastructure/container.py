@@ -1,24 +1,12 @@
 """
 创建日期：2026-09-03
-文件功能：测试 Container 的 Planner 策略创建与依赖装配。
+文件功能：创建 Planner 并装配存储、工作流和可选 MaxKB 依赖。
 """
 
-from typing import Any
-
-import pytest
-from langchain_core.runnables import RunnableLambda
-
-from meta_agent.config import Settings
-from meta_agent.orchestration.llm_planner import (
-    LLMTaskPlanner,
-)
-from meta_agent.orchestration.planner import (
-    DeterministicTaskPlanner,
-    PlannerDecision,
-)
 import asyncio
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
@@ -28,18 +16,19 @@ from meta_agent.context.compiler import ContextCompiler
 from meta_agent.evidence.store import EvidenceRepository
 from meta_agent.graph.builder import build_agent_graph
 from meta_agent.infrastructure.locks import ThreadLockRegistry
-from meta_agent.orchestration.planner import DeterministicTaskPlanner
+from meta_agent.llm.models import create_planner_model
+from meta_agent.orchestration.llm_planner import (
+    LLMTaskPlanner,
+)
+from meta_agent.orchestration.planner import (
+    DeterministicTaskPlanner,
+    TaskPlanner,
+)
 from meta_agent.orchestration.validator import PlanValidator
 from meta_agent.tools.ai_webapi import AIWebApiClient
 from meta_agent.validation.claims import ClaimValidator
 from meta_agent.workflows.irego import IReGoWorkflow
 
-from meta_agent.llm.models import create_planner_model
-from meta_agent.orchestration.llm_planner import LLMTaskPlanner
-from meta_agent.orchestration.planner import (
-    DeterministicTaskPlanner,
-    TaskPlanner,
-)
 
 @dataclass(slots=True)
 class ServiceContainer:
@@ -53,10 +42,12 @@ class ServiceContainer:
     persistence_status: str
     request_limiter: asyncio.Semaphore
     thread_locks: ThreadLockRegistry
+    maxkb_workflow: Any = None
 
     async def close(self) -> None:
         """按反向顺序释放数据库和网络资源。"""
         await self.exit_stack.aclose()
+
 
 def create_task_planner(
     settings: Settings,
@@ -67,17 +58,11 @@ def create_task_planner(
         return DeterministicTaskPlanner()
 
     if settings.planner_mode == "llm":
-        model = create_planner_model(
-            settings
-        )
+        model = create_planner_model(settings)
 
-        return LLMTaskPlanner(
-            model=model
-        )
+        return LLMTaskPlanner(model=model)
 
-    raise RuntimeError(
-        f"未知 Planner 模式: {settings.planner_mode}"
-    )
+    raise RuntimeError(f"未知 Planner 模式: {settings.planner_mode}")
 
 
 async def create_container(settings: Settings) -> ServiceContainer:
@@ -111,9 +96,13 @@ async def create_container(settings: Settings) -> ServiceContainer:
     exit_stack.push_async_callback(client.close)
     evidence_repository = EvidenceRepository(store, settings.evidence_ttl_seconds)
     workflow = IReGoWorkflow(client, settings)
-    planner = create_task_planner(
-    settings
-    )
+    maxkb_workflow = None
+    if settings.maxkb_enabled:
+        from meta_agent.domains.maxkb import MaxKBWorkflow
+
+        maxkb_workflow = MaxKBWorkflow(settings)
+        exit_stack.push_async_callback(maxkb_workflow.close)
+    planner = create_task_planner(settings)
 
     graph = build_agent_graph(
         checkpointer=checkpointer,
@@ -123,6 +112,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
         evidence_repository=evidence_repository,
         context_compiler=ContextCompiler(),
         claim_validator=ClaimValidator(),
+        maxkb_workflow=maxkb_workflow,
     )
     return ServiceContainer(
         settings=settings,
@@ -133,4 +123,5 @@ async def create_container(settings: Settings) -> ServiceContainer:
         persistence_status=persistence_status,
         request_limiter=asyncio.Semaphore(settings.max_concurrent_requests),
         thread_locks=ThreadLockRegistry(),
+        maxkb_workflow=maxkb_workflow,
     )

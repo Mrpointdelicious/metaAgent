@@ -3,8 +3,8 @@
 文件功能：定义环境变量配置、生产运行门和外部依赖参数。
 """
 
-from functools import lru_cache
 import os
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -107,6 +107,16 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    maxkb_enabled: bool = False
+    maxkb_url: str = "http://host.docker.internal:18082/v1/experimental/hybrid/retrieve"
+    maxkb_token: SecretStr = SecretStr("")
+    maxkb_release_path: str = ""
+    maxkb_timeout_seconds: float = Field(default=15, gt=0, le=45)
+    maxkb_top_k: int = Field(default=3, ge=1, le=6)
+    maxkb_context_budget: int = Field(default=10000, ge=100, le=12000)
+    maxkb_answer_mode: Literal["llm", "extractive"] = "llm"
+    maxkb_answer_timeout_seconds: float = Field(default=30, gt=0, le=60)
+    maxkb_answer_max_tokens: int = Field(default=768, ge=128, le=2048)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
 
     def runtime_issues(self) -> list[str]:
@@ -132,12 +142,8 @@ class Settings(BaseSettings):
             issues.append("PostgreSQL 持久化需要 META_AGENT__POSTGRES_DSN")
         if self.auto_setup_persistence:
             issues.append("生产环境须先运行迁移，AUTO_SETUP_PERSISTENCE必须关闭")
-        if self.planner_mode == "llm":
-            if not self.deepseek_api_key.get_secret_value():
-                issues.append(
-                    "启用 LLM Planner 时必须配置 "
-                    "META_AGENT__DEEPSEEK_API_KEY"
-                )
+        if self.planner_mode == "llm" and not self.deepseek_api_key.get_secret_value():
+            issues.append("启用 LLM Planner 时必须配置 META_AGENT__DEEPSEEK_API_KEY")
         return issues
 
 

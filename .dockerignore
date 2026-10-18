@@ -11,3 +11,9 @@ __pycache__
 /doc/
 doc
 
+.local
+outputs
+docs/acceptance
+preproduction
+manual
+

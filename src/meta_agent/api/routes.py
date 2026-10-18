@@ -59,9 +59,13 @@ def _initial_state(
         tenant_id=scope.tenant_id,
         end_user_id=scope.end_user_id,
         patient_id=scope.patient_id,
+        role=scope.role,
+        space_id=scope.space_id,
         scope_hash=scope.scope_hash,
         conversation_id=conversation_id,
         run_id=run_id,
+        citations=[],
+        knowledge_retrieval={},
     )
 
 
@@ -76,15 +80,32 @@ def _legacy_messages(state: dict[str, Any]) -> list[str]:
     return messages
 
 
+def _result_metadata(state: dict[str, Any]) -> dict[str, Any]:
+    metadata = {"result_ref": state.get("result_ref", "")}
+    for key in ("citations", "knowledge_retrieval"):
+        if state.get(key):
+            metadata[key] = state[key]
+    return metadata
+
+
 async def _invoke_graph(
     request: Request,
     state: AgentState,
     config: dict[str, Any],
 ) -> dict[str, Any]:
     container = request.app.state.container
+    _authorize_knowledge(request, state)
     thread_id = str(config["configurable"]["thread_id"])
     async with container.request_limiter, container.thread_locks.hold(thread_id):
         return await container.graph.ainvoke(state, config=config)
+
+
+def _authorize_knowledge(request: Request, state: AgentState) -> None:
+    from meta_agent.domains.maxkb import knowledge_question
+
+    workflow = request.app.state.container.maxkb_workflow
+    if workflow is not None and knowledge_question(state["query"]):
+        workflow.authorize(state)
 
 
 async def _stream_graph(
@@ -114,7 +135,7 @@ async def _stream_graph(
                     if node_name == "compose_response":
                         for message in _legacy_messages(aggregate):
                             yield encode_sse(event_factory.message(message))
-        metadata = {"result_ref": aggregate.get("result_ref", "")}
+        metadata = _result_metadata(aggregate)
         yield encode_sse(event_factory.message_end(metadata))
         yield encode_sse(
             event_factory.workflow_finished(
@@ -190,6 +211,7 @@ async def send_chat_message(payload: DifyChatRequest, request: Request) -> Any:
     task_id = _new_identifier("task")
     workflow_run_id = _new_identifier("run")
     state = _initial_state(payload.query, scope, conversation_id, workflow_run_id)
+    _authorize_knowledge(request, state)
     config = _graph_config(scope, conversation_id)
     events = DifyEventFactory(task_id, workflow_run_id, conversation_id)
 
@@ -210,7 +232,7 @@ async def send_chat_message(payload: DifyChatRequest, request: Request) -> Any:
             "conversation_id": conversation_id,
             "mode": "advanced-chat",
             "answer": answer,
-            "metadata": {"result_ref": result.get("result_ref", "")},
+            "metadata": _result_metadata(result),
         }
     )
 
@@ -234,6 +256,7 @@ async def run_workflow(payload: DifyWorkflowRequest, request: Request) -> Any:
     task_id = _new_identifier("task")
     workflow_run_id = _new_identifier("run")
     state = _initial_state(query, scope, conversation_id, workflow_run_id)
+    _authorize_knowledge(request, state)
     config = _graph_config(scope, conversation_id)
     events = DifyEventFactory(task_id, workflow_run_id, conversation_id)
 
@@ -257,6 +280,7 @@ async def run_workflow(payload: DifyWorkflowRequest, request: Request) -> Any:
                     "result": result.get("response_text", ""),
                     "result_ref": result.get("result_ref", ""),
                     "image_urls": result.get("image_urls", []),
+                    "metadata": _result_metadata(result),
                 },
             },
         }

@@ -1,0 +1,27 @@
+name: metaagent-maxkb-dev
+services:
+  agent:
+    image: metaagent-maxkb:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.maxkb
+    env_file: .local/maxkb-dev/agent.env
+    ports: ["127.0.0.1:18084:8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - type: bind
+        source: $MAXKB_RELEASE_FILE
+        target: /run/maxkb/release.json
+        read_only: true
+    mem_limit: 512m
+    cpus: 1
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
