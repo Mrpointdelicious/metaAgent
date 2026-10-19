@@ -180,6 +180,8 @@ class MaxKBWorkflow:
                 "response_verified": True,
                 "integration": "native",
                 "rerank_applied": result.rerank_applied,
+                "reranker_used": result.reranker_used,
+                "native_rerank_requests": result.stages.get("native_rerank_requests", 0),
                 "degradation": result.degradation,
                 "space_id": state["space_id"],
                 "domain": result.domain,

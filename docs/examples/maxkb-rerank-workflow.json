@@ -1,0 +1,144 @@
+{
+  "nodes": [
+    {
+      "id": "base-node",
+      "type": "base-node",
+      "x": 0,
+      "y": 300,
+      "properties": {
+        "stepName": "Config",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "name": "MetaAgent native rerank",
+          "desc": "Rerank only, no LLM",
+          "prologue": ""
+        },
+        "user_input_field_list": [],
+        "api_input_field_list": [
+          {
+            "field": "candidates",
+            "label": "Candidates",
+            "type": "json",
+            "required": true
+          },
+          {
+            "field": "request_id",
+            "label": "Request ID",
+            "type": "string",
+            "required": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "start-node",
+      "type": "start-node",
+      "x": 300,
+      "y": 300,
+      "properties": {
+        "stepName": "Start",
+        "config": {
+          "fields": [
+            {
+              "label": "Question",
+              "value": "question"
+            }
+          ],
+          "globalFields": [
+            {
+              "label": "Candidates",
+              "value": "candidates"
+            },
+            {
+              "label": "Request ID",
+              "value": "request_id"
+            }
+          ]
+        },
+        "node_data": null
+      }
+    },
+    {
+      "id": "rerank-node",
+      "type": "reranker-node",
+      "x": 650,
+      "y": 300,
+      "properties": {
+        "stepName": "Rerank",
+        "config": {
+          "fields": [
+            {
+              "label": "Results",
+              "value": "result_list"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reranker_setting": {
+            "top_n": 6,
+            "similarity": 0,
+            "max_paragraph_char_number": 20000
+          },
+          "question_reference_address": [
+            "start-node",
+            "question"
+          ],
+          "reranker_model_id": "00000000-0000-4000-8000-000000000001",
+          "reranker_model_id_type": "custom",
+          "reranker_reference_list": [
+            [
+              "global",
+              "candidates"
+            ]
+          ],
+          "show_knowledge": false
+        }
+      }
+    },
+    {
+      "id": "reply-node",
+      "type": "reply-node",
+      "x": 1000,
+      "y": 300,
+      "properties": {
+        "stepName": "JSON",
+        "config": {
+          "fields": [
+            {
+              "label": "Answer",
+              "value": "answer"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reply_type": "custom",
+          "is_result": true,
+          "content": "{\"schema_version\":\"maxkb-rerank-v1\",\"request_id\":{{ global.request_id | tojson }},\"results\":{{ Rerank.result_list | tojson }}}"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "0",
+      "type": "app-edge",
+      "sourceNodeId": "start-node",
+      "targetNodeId": "rerank-node",
+      "sourceAnchorId": "start-node_right",
+      "targetAnchorId": "rerank-node_left"
+    },
+    {
+      "id": "1",
+      "type": "app-edge",
+      "sourceNodeId": "rerank-node",
+      "targetNodeId": "reply-node",
+      "sourceAnchorId": "rerank-node_right",
+      "targetAnchorId": "reply-node_left"
+    }
+  ]
+}

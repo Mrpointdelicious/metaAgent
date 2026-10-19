@@ -126,14 +126,64 @@ def publish(sample):
     (root / "release.json").write_text(json.dumps(release), encoding="utf8")
 
 
-def install(monkeypatch, sample, *, tamper=False, disabled=False, expired=False, fail=False):
+def install(
+    monkeypatch,
+    sample,
+    *,
+    tamper=False,
+    disabled=False,
+    expired=False,
+    fail=False,
+    rerank=False,
+    bad_rerank=None,
+    disable_during_rerank=False,
+):
     calls = sample["calls"]
     stale = [expired]
+    enabled = [not disabled]
+    if rerank:
+        (sample["root"] / "native.json").write_text(
+            json.dumps(
+                {
+                    "username": "test",
+                    "password": "fake",
+                    "rerank": {
+                        "enabled": True,
+                        "api_base": "http://maxkb.test/chat/api",
+                        "api_key": "agent-fake-native",
+                        "application_id": str(uuid4()),
+                    },
+                }
+            ),
+            encoding="utf8",
+        )
 
     def handle(request):
         path = request.url.path
         calls.append(path)
         assert request.url.host in {"maxkb.test", "api.deepseek.com"}
+        if path == "/chat/api/open":
+            assert request.headers["Authorization"] == "Bearer agent-fake-native"
+            return httpx.Response(200, json={"code": 200, "data": str(uuid4())})
+        if path.startswith("/chat/api/chat_message/"):
+            if disable_during_rerank:
+                enabled[0] = False
+            if bad_rerank == "provider":
+                return httpx.Response(500, json={"code": 500, "message": "private-provider-detail"})
+            body = json.loads(request.content)
+            form = body["form_data"]
+            value = {
+                "schema_version": "maxkb-rerank-v1",
+                "request_id": form["request_id"],
+                "results": [
+                    {"metadata": {**c, "relevance_score": 0.95}} for c in form["candidates"][:6]
+                ],
+            }
+            if bad_rerank == "identity":
+                value["results"][0]["metadata"]["id"] = "foreign-paragraph"
+            if bad_rerank == "request":
+                value["request_id"] = "another-request"
+            return httpx.Response(200, json={"code": 200, "data": {"content": json.dumps(value)}})
         if path.endswith("/user/login"):
             return httpx.Response(200, json={"code": 200, "data": {"token": "fake-session"}})
         if path.endswith("/chat/completions"):
@@ -182,7 +232,7 @@ def install(monkeypatch, sample, *, tamper=False, disabled=False, expired=False,
                 }
             ]
         else:
-            data = {"id": sample["doc"]["id"], "is_active": not disabled}
+            data = {"id": sample["doc"]["id"], "is_active": enabled[0]}
         return httpx.Response(200, json={"code": 200, "data": data})
 
     original = MaxKBWorkflow.__init__
@@ -289,20 +339,67 @@ def test_expired_native_session_recovers_once(sample, monkeypatch):
     assert sample["calls"].count("/admin/api/user/login") == 2
 
 
-def test_native_api_does_not_claim_reranking(sample, monkeypatch):
+def clinical(sample):
     for route in sample["catalog"]["routes"]:
         route["knowledge_type"] = "clinical_kb"
     sample["doc"]["knowledge_type"] = "clinical_kb"
     publish(sample)
+
+
+def test_required_rerank_needs_native_configuration(sample, monkeypatch):
+    clinical(sample)
     install(monkeypatch, sample)
     with TestClient(create_app(sample["settings"])) as client:
         reply = client.post(
             "/v1/knowledge/retrieve", headers=HEADERS, json={**query(), "domain": "health"}
         )
         body = reply.json()
-        assert reply.status_code == 200 and body["status"] == "partial"
-        assert body["rerank_applied"] is False and body["model_calls"]["rerank"] == 0
-        assert body["degradation"] == ["native_hit_test_has_no_rerank"]
+        assert reply.status_code == 503 and body["detail"] == "maxkb_rerank_not_configured"
+    assert not any(c.startswith("/chat/") for c in sample["calls"])
+
+
+def test_native_workflow_rerank_and_new_sessions(sample, monkeypatch):
+    clinical(sample)
+    install(monkeypatch, sample, rerank=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        for _ in range(2):
+            reply = client.post(
+                "/v1/knowledge/retrieve", headers=HEADERS, json={**query(), "domain": "health"}
+            )
+            body = reply.json()
+            assert reply.status_code == 200 and body["rerank_applied"]
+            assert body["stages"]["native_rerank_requests"] == 1
+            assert body["evidence"][0]["page"] == 2
+            assert body["evidence"][0]["text"] == sample["text"]
+    assert sample["calls"].count("/chat/api/open") == 2
+    sessions = [p for p in sample["calls"] if p.startswith("/chat/api/chat_message/")]
+    assert len(set(sessions)) == 2
+
+
+def test_document_disabled_during_rerank_is_not_returned(sample, monkeypatch):
+    clinical(sample)
+    install(monkeypatch, sample, rerank=True, disable_during_rerank=True)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post(
+            "/v1/knowledge/retrieve", headers=HEADERS, json={**query(), "domain": "health"}
+        )
+        body = reply.json()
+        assert reply.status_code == 200 and body["evidence"] == []
+        assert body["rerank_applied"] is False
+        assert body["stages"]["native_rerank_requests"] == 1
+
+
+@pytest.mark.parametrize("failure,status", [("identity", 502), ("request", 502), ("provider", 503)])
+def test_native_rerank_rejects_failed_or_foreign_results(sample, monkeypatch, failure, status):
+    clinical(sample)
+    install(monkeypatch, sample, rerank=True, bad_rerank=failure)
+    with TestClient(create_app(sample["settings"])) as client:
+        reply = client.post(
+            "/v1/knowledge/retrieve", headers=HEADERS, json={**query(), "domain": "health"}
+        )
+        assert reply.status_code == status
+        assert "private-provider-detail" not in reply.text
+    assert not any("completions" in c for c in sample["calls"])
 
 
 def test_provider_failure_is_not_empty_retrieval_or_leaked(sample, monkeypatch):
@@ -336,3 +433,22 @@ def test_prepare_keeps_cleared_key_and_no_provider_credentials(sample):
     assert result["answer_key_configured"] is False
     assert "must-not-copy" not in (output / "agent.env").read_text("utf8")
     assert set(json.loads((output / "native.json").read_text("utf8"))) == {"username", "password"}
+    native = json.loads((output / "native.json").read_text("utf8"))
+    native["rerank"] = {
+        "enabled": True,
+        "api_base": "http://previous/chat/api",
+        "api_key": "agent-test-only",
+        "application_id": str(uuid4()),
+    }
+    (output / "native.json").write_text(json.dumps(native), encoding="utf8")
+    module.prepare(
+        root,
+        output,
+        maxkb_url="http://maxkb:8080/admin/api",
+        public_url="http://127.0.0.1:18084",
+        answer_mode="disabled",
+        data_volume="test",
+    )
+    saved = json.loads((output / "native.json").read_text("utf8"))["rerank"]
+    assert saved["api_key"] == "agent-test-only"
+    assert saved["api_base"] == "http://maxkb:8080/chat/api"

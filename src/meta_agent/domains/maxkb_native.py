@@ -23,6 +23,7 @@ from meta_agent.domains.maxkb_policy import (
     resolve_types,
     select_routes,
 )
+from meta_agent.domains.maxkb_rerank import NativeWorkflowReranker
 
 PINS = ("corpus_version", "corpus_sha256", "index_sha256", "scope_key", "space_ids")
 
@@ -60,6 +61,7 @@ class NativeMaxKBRetriever:
         if not config.get("username") or not config.get("password"):
             raise RuntimeError("MaxKB native admin-session credentials are required")
         self.client = MaxKBClient(http, settings.maxkb_url, config["username"], config["password"])
+        self.reranker = NativeWorkflowReranker(config.get("rerank"), settings.maxkb_url)
         self.public_base = validate_url(settings.maxkb_public_base_url, path="")
         self.limit = asyncio.Semaphore(2)
 
@@ -110,6 +112,7 @@ class NativeMaxKBRetriever:
     async def retrieve(self, state, domain, *, types=None, top_k=None):
         self.authorize(state)  # Must precede login and native recall.
         started = time.monotonic()
+        request_id = uuid4()
         async with asyncio.timeout(self.settings.maxkb_timeout_seconds), self.limit:
             await asyncio.to_thread(self.assert_current)
             routes = select_routes(
@@ -149,7 +152,7 @@ class NativeMaxKBRetriever:
                         or not row.get("is_active", True)
                     ):
                         continue
-                    if row["content"] != meta["text"]:
+                    if row["content"] != meta["text"] or row.get("title", "") != meta["title"]:
                         raise HTTPException(409, "maxkb_knowledge_changed_publish_required")
                     score = row.get("comprehensive_score")
                     score = row.get("similarity", 0) if score is None else score
@@ -178,30 +181,27 @@ class NativeMaxKBRetriever:
             # Preserve per-KB ranking without pretending scores across types are calibrated.
             ranked = hits
             wants_rerank = any(STRATEGIES[r["knowledge_type"]]["rerank"] for r in routes)
+            rerank_requests = 0
+            if wants_rerank and hits:
+                candidates = self.reranker.candidates(hits, state["query"], excerpt)
+                checked, docs, paragraphs = [], {}, {}
+                for hit, candidate in candidates:
+                    if await self.live_hit(hit, docs, paragraphs):
+                        checked.append((hit, candidate))
+                if checked:
+                    ranked = await self.reranker.rank(
+                        self.http, state["query"], checked, request_id
+                    )
+                    rerank_requests = 1
+                else:
+                    ranked = []
             evidence, tokens, truncated = [], 0, False
             live_docs, live_rows = {}, {}
             for hit in ranked:
                 meta, route = hit["meta"], hit["route"]
                 doc = self.catalog["documents"][meta["document_id"]]
-                if doc["id"] not in live_docs:
-                    try:
-                        live_docs[doc["id"]] = await self.client.call(
-                            "GET", self.document_path(doc)
-                        )
-                    except HTTPException as exc:
-                        if exc.status_code != 404:
-                            raise
-                        live_docs[doc["id"]] = {}
-                if not live_docs[doc["id"]].get("is_active"):
+                if not await self.live_hit(hit, live_docs, live_rows):
                     continue
-                if doc["id"] not in live_rows:
-                    rows = await self.client.call("GET", self.document_path(doc) + "/paragraph")
-                    live_rows[doc["id"]] = {p["id"]: p for p in rows if p.get("is_active")}
-                live = live_rows[doc["id"]].get(hit["id"])
-                if not live:
-                    continue
-                if live["content"] != meta["text"] or live.get("title", "") != meta["title"]:
-                    raise HTTPException(409, "maxkb_knowledge_changed_publish_required")
                 text, offset = excerpt(meta["text"], state["query"])
                 truncated |= offset > 0 or len(text) < len(meta["text"])
                 source = (
@@ -250,28 +250,29 @@ class NativeMaxKBRetriever:
                 if len(evidence) >= (top_k or self.settings.maxkb_top_k):
                     break
             await asyncio.to_thread(self.assert_current)
+        rerank_applied = bool(rerank_requests and evidence)
         return RetrievalResponse(
-            request_id=uuid4(),
+            request_id=request_id,
             retrieval_run_id=uuid4(),
             backend="maxkb",
-            strategy="hybrid_selection",
+            strategy="hybrid_rerank" if rerank_applied else "hybrid_selection",
             scope_key=self.release["scope_key"],
             domain=domain,
             **{k: self.release[k] for k in ("corpus_version", "corpus_sha256", "index_sha256")},
-            status=("partial" if wants_rerank else "success") if evidence else "unavailable",
-            code=("native_rerank_not_available" if wants_rerank else "ok")
-            if evidence
-            else "no_evidence",
+            status="success" if evidence else "unavailable",
+            code="ok" if evidence else "no_evidence",
             elapsed_ms=(time.monotonic() - started) * 1000,
-            reranker_used=None,
-            rerank_applied=False,
-            degradation=["native_hit_test_has_no_rerank"] if wants_rerank else [],
+            reranker_used=f"maxkb-workflow:{self.reranker.config.application_id}"
+            if rerank_applied
+            else None,
+            rerank_applied=rerank_applied,
+            degradation=[],
             candidate_count=len(hits),
             post_rerank_count=len(ranked),
             selected_count=len(evidence),
             budget_truncated=truncated,
             context_tokens_estimated=tokens,
-            model_calls={"rerank": 0},
+            model_calls={} if rerank_requests else {"rerank": 0},
             stages={
                 "implementation": "maxkb-v2.10.7-lts-native",
                 "space_id": state["space_id"],
@@ -280,17 +281,40 @@ class NativeMaxKBRetriever:
                     {
                         "knowledge_id": r["knowledge_id"],
                         "mode": STRATEGIES[r["knowledge_type"]]["mode"],
-                        "rerank_applied": False,
                     }
                     for r in routes
                 ],
                 "maxkb_api": "admin_session",
                 "native_recall_requests": len(routes),
-                "model_call_accounting": "embedding_managed_by_maxkb_not_observed",
+                "native_rerank_requests": rerank_requests,
+                "rerank_requested": wants_rerank,
+                "model_call_accounting": "provider_calls_managed_by_maxkb_not_observed",
                 "authorization": "before_recall_and_on_source_access",
             },
             evidence=evidence,
         )
+
+    async def live_hit(self, hit, docs, paragraphs):
+        meta = hit["meta"]
+        doc = self.catalog["documents"][meta["document_id"]]
+        if doc["id"] not in docs:
+            try:
+                docs[doc["id"]] = await self.client.call("GET", self.document_path(doc))
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                docs[doc["id"]] = {}
+        if not docs[doc["id"]].get("is_active"):
+            return False
+        if doc["id"] not in paragraphs:
+            rows = await self.client.call("GET", self.document_path(doc) + "/paragraph")
+            paragraphs[doc["id"]] = {p["id"]: p for p in rows if p.get("is_active")}
+        live = paragraphs[doc["id"]].get(hit["id"])
+        if not live:
+            return False
+        if live["content"] != meta["text"] or live.get("title", "") != meta["title"]:
+            raise HTTPException(409, "maxkb_knowledge_changed_publish_required")
+        return True
 
     @staticmethod
     def document_path(doc):

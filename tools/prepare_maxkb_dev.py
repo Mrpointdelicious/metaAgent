@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,6 +43,21 @@ def prepare(upstream, folder, *, maxkb_url, public_url, answer_mode, data_volume
         else {}
     )
     model = env_values(folder / "agent.env")
+    native_path = folder / "native.json"
+    native = json.loads(native_path.read_text("utf8")) if native_path.exists() else {}
+    # Preserve this deployment's MaxKB application auth only, never a provider key.
+    rerank = native.get("rerank")
+    if rerank and set(rerank) - {
+        "enabled",
+        "api_base",
+        "api_key",
+        "application_id",
+        "timeout_seconds",
+    }:
+        raise ValueError("Unexpected native rerank configuration fields")
+    if rerank:
+        parsed = urlsplit(maxkb_url)
+        rerank = {**rerank, "api_base": f"{parsed.scheme}://{parsed.netloc}/chat/api"}
     # Retain only this deployment's existing answer credential; never read old
     # source .env, archives, bridge.json or another application's model key.
     token = prior.get("service_token") or secrets.token_urlsafe(40)
@@ -71,7 +87,11 @@ def prepare(upstream, folder, *, maxkb_url, public_url, answer_mode, data_volume
     write_private(
         folder / "native.json",
         json.dumps(
-            {"username": access["username"], "password": access["password"]},
+            {
+                "username": access["username"],
+                "password": access["password"],
+                **({"rerank": rerank} if rerank else {}),
+            },
             ensure_ascii=False,
         ),
     )

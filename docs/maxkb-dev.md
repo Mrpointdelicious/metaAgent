@@ -1,5 +1,8 @@
 # dev：MetaAgent 直连 MaxKB
 
+2026-10-19 更新：已接入原生 rerank 工作流。配置步骤与本机结果见
+[原生重排落地记录](maxkb-native-rerank-2026-10-19.md)。
+
 2026-10-18。本版取消 bridge 运行时依赖，使用固定版本 MaxKB v2.10.7-lts 的原生管理会话 API。
 不新增检索服务，不在 MetaAgent 中转 embedding / rerank 请求，也不挂载定制模型驱动。
 
@@ -50,13 +53,12 @@ space_id 必须与发布中的值完全一致；当前为「上海中医药大�
 | clinical_kb / rehab_kb | blend | 24 |
 | technical_kb | blend | 20 |
 
-v2.10.7-lts 的原生 `hit_test` 没有 rerank 参数。本版不在 MetaAgent 实现重排，
-原策略需要 rerank 的类型会返回 `rerank_applied=false`、
-`degradation=["native_hit_test_has_no_rerank"]`；有证据时状态为 `partial`。
-因此本版不保证与旧 bridge 的混合检索加通义 rerank 等价。
-后续需要重排时应接 MaxKB 原生工作流节点，当前未实现该路径。
-跨知识库结果按各库内部排名交错选取，不直接比较不同库的原始分数。
-embedding 由 MaxKB 管理，MetaAgent 不掌握其实际厂商调用数，响应中不伪造该指标。
+v2.10.7-lts 的原生 `hit_test` 没有 rerank 参数，本版将已授权候选交给 MaxKB 原生高级智能体工作流重排。
+场景、医院、纯 SOP 请求跳过重排；设备、医学、康复、技术资料及包含这些类型的混合请求合并后重排一次。
+先按单库内部排名交错选候选，再受 48 个候选／250 KB 正文预算限制，不直接比较各库原始分数。
+未配置重排应用或调用失败时返回明确错误，不将普通排序标为重排成功。
+成功响应包含 `rerank_applied=true`、`reranker_used` 与 `stages.native_rerank_requests`。
+embedding／rerank 的厂商实际调用数由 MaxKB 掌握，MetaAgent 只统计原生接口请求数。
 
 官方依据：[固定版本 HitTestSerializer 和 hit_test](https://github.com/1Panel-dev/MaxKB/blob/v2.10.7-lts/apps/knowledge/serializers/knowledge.py)。
 这是固定版本的管理端接口适配；升级 MaxKB 前需要重跑接入 smoke，不能视为跨版本稳定的公共 API。
@@ -69,6 +71,7 @@ embedding 由 MaxKB 管理，MetaAgent 不掌握其实际厂商调用数，响�
 ```powershell
 Set-Location D:\Project\metaAgent
 .\.venv\Scripts\python.exe -X utf8 tools/prepare_maxkb_dev.py
+.\.venv\Scripts\python.exe -X utf8 tools/configure_maxkb_rerank.py --model-id <MaxKB原生重排模型UUID>
 docker compose --env-file .local/maxkb-dev/compose.env -f compose.maxkb.yaml up -d --build agent
 ```
 
@@ -88,6 +91,7 @@ Agent 只挂载发布文件、对应 catalog、原文和 `native.json`，不会�
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 tools/prepare_maxkb_dev.py --maxkb-url http://maxkb:8080/admin/api --data-volume metarag-maxkb_maxkb_data
+.\.venv\Scripts\python.exe -X utf8 tools/configure_maxkb_rerank.py --model-id <MaxKB原生重排模型UUID> --agent-admin-url http://maxkb:8080/admin/api
 docker compose --env-file .local/maxkb-dev/compose.env -f compose.maxkb.yaml --profile maxkb up -d --build
 ```
 
@@ -145,11 +149,12 @@ Content-Type: application/json
 .\.venv\Scripts\python.exe -X utf8 tools/smoke_maxkb.py --answer
 ```
 
-默认仅调用检索 API：操作说明、医院场景、医学 PDF 各 1 个样本，加 1 个越权空间拒绝。
+默认仅调用检索 API：操作说明、医院场景、医学 PDF、MD 混合类型各 1 个样本，加 1 个越权空间拒绝。
 核对有证据、空间／发布一致、PDF 页码、可认证下载来源；结果保存在 `.local/maxkb-dev/native-smoke.json`。
 这不是全量召回、语义正确性、性能或内存评测；真实检索仍可能产生 MaxKB embedding API 用量。
 
-本次本地 15 项检查通过，使用模拟原生 API 验证接入、Dify 阻塞和 SSE、权限、禁用、
+2026-10-18 基线的本地 15 项检查通过，使用模拟原生 API 验证接入、Dify 阻塞和 SSE、权限、禁用、
 会话恢复、内容防篡改及不恢复旧密钥。局域网断开、外部模型密钥未配置，
-**本版尚未完成真实 MaxKB／局域网 smoke，也未更新局域网服务**。
+该基线当时未完成真实 MaxKB／局域网 smoke，未更新局域网服务。
+10 月 19 日的本机真实接入验证另见落地记录；局域网服务没有在本次操作中更新。
 旧 `maxkb-dev-smoke-2026-10-18.json` 属于 bridge 方案历史记录，不能作为本版上线证据。

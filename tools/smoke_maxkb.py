@@ -1,4 +1,4 @@
-"""Probe three native retrieval samples and one scope boundary, without a full eval."""
+"""Probe a few native retrieval/rerank samples and one scope boundary."""
 
 import argparse
 import json
@@ -20,6 +20,10 @@ CASES = {
     "pdf": (
         "请根据2025年脑卒中智能康复技术应用专家共识说明条目数量，并引用文献与页码。",
         ["clinical_kb", "rehab_kb"],
+    ),
+    "md": (
+        "岳阳医院元宇宙医生端登录后，如何使用工作台？请根据医生端使用说明回答。",
+        ["sop_kb", "technical_kb"],
     ),
 }
 
@@ -72,6 +76,9 @@ def check(client, access, name, *, answer=False):
     assert evidence and all(e["space_id"] == access["space_id"] for e in evidence)
     if name == "pdf":
         assert any(isinstance(e["page"], int) and e["page"] >= 1 for e in evidence)
+    if name == "md":
+        assert any(e["heading_path"] and e["title"].lower().endswith(".md") for e in evidence)
+    assert trace["rerank_applied"] is (name in {"pdf", "md"})
     # Do not forward a service token to an arbitrary URL returned by a backend.
     base = (
         url.split("/compat/dify/", 1)[0] if answer else url.removesuffix("/v1/knowledge/retrieve")
@@ -114,6 +121,8 @@ def main():
             except (httpx.HTTPError, AssertionError, KeyError, ValueError) as exc:
                 # Never copy a native/provider error body into logs or a report.
                 record = {"case": name, "passed": False, "error": type(exc).__name__}
+                if isinstance(exc, httpx.HTTPStatusError):
+                    record["http_status"] = exc.response.status_code
                 failed = True
             report["samples"].append(record)
             print(
