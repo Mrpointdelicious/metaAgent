@@ -10,18 +10,10 @@ __pycache__
 *.pyc
 /doc/
 doc
-<<<<<<< HEAD
-
-.local
-outputs
-docs/acceptance
-preproduction
-manual
-
-=======
 docs
 dist
 build
 outputs/
 manual/
->>>>>>> 86c5a786007618ec6bf9b24df9c844cf42ac75f8
+.local
+preproduction
