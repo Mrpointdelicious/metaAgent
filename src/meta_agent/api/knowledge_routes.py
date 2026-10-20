@@ -28,7 +28,7 @@ class KnowledgeQuery(BaseModel):
 
 
 def workflow_for(request):
-    workflow = request.app.state.container.maxkb_workflow
+    workflow = getattr(request.app.state.container, "maxkb_workflow", None)
     if workflow is None:
         raise HTTPException(503, "maxkb_disabled")
     return workflow
