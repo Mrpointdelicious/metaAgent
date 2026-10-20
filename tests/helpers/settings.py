@@ -19,3 +19,7 @@ class AppTestSettings(Settings):
             "env_file": None,
         }
     )
+
+
+# 兼容旧命名（tests/test_maxkb.py 等历史用例仍引用 TestSettings）。
+TestSettings = AppTestSettings
