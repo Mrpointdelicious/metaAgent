@@ -1,5 +1,9 @@
 FROM python:3.12-slim AS builder
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv
+# 国内网络下 PyPI 直连会超时，默认使用阿里云镜像；构建时可用 --build-arg 覆盖。
+ARG PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PIP_INDEX_URL=${PYPI_INDEX_URL} \
+    UV_DEFAULT_INDEX=${PYPI_INDEX_URL}
 WORKDIR /app
 RUN pip install --no-cache-dir uv==0.11.16
 COPY pyproject.toml uv.lock README.md ./

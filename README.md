@@ -66,7 +66,9 @@ IReGo 实体的 `robotdb_main` 连接标识。双库配置需启用 `MutiDBEnabl
 Dify 的 `METAAGENT_URL` 配置为 `http://meta_agent:8080`，通过共享 Docker 网络访问服务。
 页面先展示最终回答，中间步骤统一附在回答末尾，不展示原始工具 JSON；
 `show_workflow_steps=false`、`prompt_public=false`。迁移保留了原应用、展示链接和患者绑定。
-Dify RAG 尚未接入。两个 `/compat/dify/...` 入口仍返回 HTTP 501，`events/dify.py` 保留适配器接口。
+Dify RAG 尚未接入。服务对外采用 Dify chat-messages 契约：`POST /v1/chat-messages`（以及别名
+`/v1/chat`、`/compat/dify/v1/chat-messages`）接收 Dify 请求、返回 `message`/`message_end` 事件；
+`/compat/dify/v1/workflows/run` 仍返回 HTTP 501。
 
 旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，
 不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
@@ -105,30 +107,40 @@ uv run python main.py
 
 `main.py` 使用兼容 Windows PostgreSQL 驱动的 Selector 循环。直接使用 Uvicorn CLI 且在 Windows 接 PostgreSQL 时，添加 `--loop meta_agent.infrastructure.event_loop:loop_factory`。Linux 容器使用默认事件循环。
 
-## 原生请求
+## 接口（Dify chat-messages 兼容）
 
-可信网关携带服务 Bearer Token，注入真实用户、租户、角色、患者及当前空间。身份不是从用户问题中提取的；服务令牌不能直接分发给患者客户端。
+可信网关携带服务 Bearer Token（`META_AGENT__SERVICE_BEARER_TOKEN`，即 Dify 调用方的 `api_key`），
+注入真实用户、租户、角色、患者及当前空间。身份不从用户问题中提取；服务令牌不能直接分发给患者客户端。
+
+聊天请求 `POST /v1/chat-messages`（别名 `/v1/chat`、`/compat/dify/v1/chat-messages`）：
 
 ```json
 {
-  "request_id": "request-unique-001",
-  "conversation_id": "conversation-001",
-  "user": "trusted-actor",
   "inputs": {"tenantId": "hospital-a", "projectPatientId": "3799", "role": "patient"},
   "query": "解读最近训练并生成报告图片",
-  "response_mode": "streaming"
+  "response_mode": "streaming",
+  "conversation_id": "conversation-001",
+  "user": "trusted-actor",
+  "files": [],
+  "auto_generate_name": true
 }
 ```
 
-`conversation_id` 可省略，首次请求返回生成值，续聊必须复用它。`request_id` 在同一作用域内标识一次请求；相同编号、相同内容返回运行快照，内容不同返回 409。在去重保留期内不重新发动作。流式重复请求返回 JSON 快照（运行中为 202），不是第二条 SSE 订阅。
+- `response_mode=blocking` 返回 `{"event":"message","task_id","message_id","conversation_id","mode":"chat","answer","metadata","created_at"}`；`answer` 为最终答复（consultation_room 各子流程为 JSON 事件字符串）。
+- `response_mode=streaming` 返回 SSE：`data: {"event":"message",...}` → `data: {"event":"message_end",...}`，中间 `event: ping` 保活；失败发 `data: {"event":"error",...}`。
+- `conversation_id` 可省略，首次请求在响应中返回生成值，续聊必须复用；相同 `conversation_id`（同一患者作用域）的会话内容聚合存储。
 
-- `POST /v1/chat`：`streaming` 为 SSE，`blocking` 为终态 JSON。
+历史查询：
+
+- `GET /v1/conversations?user=...&last_id=&limit=20`：列出该用户的会话（按 `updated_at` 降序，`last_id` 游标分页）。
+- `GET /v1/messages?user=...&conversation_id=...`：返回该会话的消息（`query`/`answer` 逐条）。
+
+管理与健康：
+
 - `POST /v1/runs/{run_id}/status`、`POST /v1/runs/{run_id}/cancel`：请求体为相同的 `user`、`inputs`；不同作用域返回 404。
 - `GET /health/live`、`/health/ready`、`/health/dependencies`：分别检查进程、持久化与实例锁、外部服务。
 
-SSE 的 `data` 为 `OutboundEvent`：`accepted → progress → action_ready / answer_part / artifact_ready / clarification / task_failed → completed`。事件带单调 `seq`、运行/目标/任务编号。一个目标的新 `answer_part` 用 `revision` 和 `replaces` 替换旧解释，客户端应按目标更新，而非重复播报全部旧内容。`completed` 包含每个目标/任务的真实终态。
-
-场景动作需显式启用 `SCENE_ACTIONS_ENABLED=true`，并提供 `spaceId`、`sceneVersion`。指令必须来自后端当前目录、逐项对应原话；仅接受匹配项，保留重复和顺序。切换空间后停止旧目录的后续动作。`dispatched` 仅代表交给输出通道，不证明 Unity 执行完成；阻塞返回和断线保留 `delivery_unknown`。状态与去重快照不会重放 `action_ready`。医生查询只返回数量和姓名，不自动联系医生。
+场景动作需显式启用 `SCENE_ACTIONS_ENABLED=true`，并提供 `spaceId`、`sceneVersion`；医生查询只返回数量和姓名，不自动联系医生。
 
 ## 持久化与部署
 
