@@ -12,11 +12,13 @@ from pydantic import ValidationError
 from meta_agent.config import Settings
 from meta_agent.context.budget import LLMBudget, estimate_tokens
 from meta_agent.contracts import (
+    AssessmentRequest,
     ConversationState,
     DomainError,
     Goal,
     HospitalRequest,
     IntentDecision,
+    IReCogRequest,
     IReGoRequest,
     IReTourRequest,
     Selector,
@@ -161,6 +163,44 @@ class ConservativePlanner:
                 }.items():
                     if name in q:
                         goal.iretour.activity_scope = code
+                goal.irego = None
+            return decision
+        explicit_cog = bool(re.search(r"irecog", q, re.I))
+        explicit_assess = bool(re.search(r"量表|测评|认知评估", q))
+        device = None
+        if explicit_cog:
+            device = "irecog"
+        elif explicit_assess:
+            device = "assessment"
+        elif followup and memory.current_record and memory.current_record.domain in {
+            "irecog",
+            "assessment",
+        }:
+            device = memory.current_record.domain
+        elif (
+            memory.history_seen
+            and memory.history_domain in {"irecog", "assessment"}
+            and bool(re.fullmatch(r"(?:请)?(?:继续|下一页|再一页|上一页)[。\s]*", q))
+        ):
+            device = memory.history_domain
+        if device and not explicit_go and not explicit_tour:
+            # 将设备词替换为训练语义后复用 IReGo 解析，再改写成对应设备目标。
+            base_query = re.sub(r"irecog|量表|测评|认知评估|评估", "训练", q, flags=re.I).strip()
+            base_memory = memory.model_copy(deep=True)
+            base_memory.history_domain = "irego"
+            if base_memory.current_record:
+                base_memory.current_record.domain = "irego"
+            decision = await self.parse(base_query, base_memory, budget, patient_brief)
+            for goal in decision.goals:
+                if goal.kind != "irego" or goal.irego is None:
+                    continue
+                if device == "irecog":
+                    goal.kind, goal.domain = "irecog", "irecog"
+                    goal.irecog = IReCogRequest(**goal.irego.model_dump())
+                else:
+                    goal.kind, goal.domain = "assessment", "assessment"
+                    goal.assessment = AssessmentRequest(**goal.irego.model_dump())
+                goal.query_span = q
                 goal.irego = None
             return decision
         if re.fullmatch(r"(?:那)?(?:上一次|前一次)(?:呢)?[？?。\s]*", q):

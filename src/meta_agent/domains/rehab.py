@@ -50,7 +50,11 @@ class RehabAdapter:
     }
 
     async def fetch(self, ctx: RunContext, endpoint: str, args: dict[str, Any]) -> EvidenceEnvelope:
-        patient_id = ctx.scope.iretour_patient_id if "iretour" in endpoint else ctx.scope.patient_id
+        if "iretour" in endpoint or "irecog" in endpoint or "assessment" in endpoint:
+            # IReTour/IReCog/量表三类工具以 project 患者编号定位，不使用 robot 编号。
+            patient_id = ctx.scope.iretour_patient_id or ctx.scope.project_patient_id
+        else:
+            patient_id = ctx.scope.patient_id
         if not patient_id:
             raise DomainError("patient_required", "请先绑定患者身份。", outcome="clarification")
         body = await ctx.call(
@@ -67,7 +71,15 @@ class RehabAdapter:
             envelope = PatientEnvelope.model_validate(body)
         except ValidationError as exc:
             raise DomainError("invalid_contract", "工具返回不符合患者接口契约。") from exc
-        expected_version = "iretour-1.0.0" if "iretour" in endpoint else "1.6.0"
+        expected_version = (
+            "iretour-1.0.0"
+            if "iretour" in endpoint
+            else "irecog-1.0.0"
+            if "irecog" in endpoint
+            else "assessment-1.0.0"
+            if "assessment" in endpoint
+            else "1.6.0"
+        )
         # 第一版 IReTour 读接口沿用 1.6.0 外层封套，但声明独立 registry contract。
         legacy_tour = (
             "iretour" in endpoint

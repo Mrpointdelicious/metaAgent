@@ -14,6 +14,7 @@ class PlanValidator:
 
     _allowed_tasks: frozenset[TaskName] = frozenset(
         {
+            "knowledge_search",
             "patient_context",
             "session_analysis",
             "single_report",

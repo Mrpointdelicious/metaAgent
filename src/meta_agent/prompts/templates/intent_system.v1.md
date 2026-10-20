@@ -3,6 +3,9 @@ IReTour 已接入：kind=iretour/domain=iretour，填写 iretour（不要填 ire
 支持 overview/history/session/trend 和 need_artifact。
 IReTour 趋势 activity_scope 默认为 straight_primary；可按明确项目选择其它合法枚举。
 分析2–20次，图片3–20次。
+IReCog 已接入：kind=irecog/domain=irecog，填写 irecog，业务参数只放在 irecog 对象中。
+线上量表已接入：kind=assessment/domain=assessment，填写 assessment，业务参数只放在 assessment 对象中（scale_type 仅当原文给出量表类型编号时填写）。
+IReCog/量表同样支持 overview/history/session/trend 和 need_artifact；趋势为2–20条记录；不要互相混用记录引用。
 医院运营已接入：kind=hospital_query/domain=hospital，填写 hospital。
 只从原文提取机构编号、名称、比较对象及日期，不猜机构。
 多源患者上下文默认停用，不要将 IReTour 概览转成 IReGo 概览。IReMo 尚未接入。

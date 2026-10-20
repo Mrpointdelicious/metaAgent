@@ -114,12 +114,25 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    maxkb_enabled: bool = False
+    maxkb_url: str = "http://host.docker.internal:18081/admin/api"
+    maxkb_config_path: str = ""
+    maxkb_public_base_url: str = "http://127.0.0.1:18084"
+    maxkb_release_path: str = ""
+    maxkb_timeout_seconds: float = Field(default=15, gt=0, le=45)
+    maxkb_top_k: int = Field(default=3, ge=1, le=6)
+    maxkb_context_budget: int = Field(default=10000, ge=100, le=12000)
+    maxkb_answer_mode: Literal["llm", "extractive", "disabled"] = "llm"
+    maxkb_answer_timeout_seconds: float = Field(default=30, gt=0, le=60)
+    maxkb_answer_max_tokens: int = Field(default=768, ge=128, le=2048)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
     # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
     patient_brief_include_name: bool = False
     multisource_patient_context_enabled: bool = False
     iretour_reports_enabled: bool = False
+    irecog_reports_enabled: bool = False
+    assessment_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
 
     def runtime_issues(self) -> list[str]:

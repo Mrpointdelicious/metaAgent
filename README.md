@@ -8,7 +8,20 @@
 中间件管理可信身份、可用工具、历史上下文、证据时效、工具结果裁剪和调用预算，
 不再要求模型先生成固定计划，也不使用事实模板拼接患者回答。
 
+<<<<<<< HEAD
+- Dify 风格的阻塞与 SSE 流式请求。
+- `[answer]`、`[mode]`、`[image]` 旧前端标签适配。
+- IREGO 查询、训练分析和按需报表的统合 Workflow。
+- 完整工具结果保存在上下文之外，图状态只保留事实、引用和患者可读文案。
+- 多租户、多患者、多会话线程隔离。
+- 开发环境内存持久化，生产环境 PostgreSQL Checkpoint 与 Store。
+- 启动配置门、健康检查、结构化日志与基础契约测试。
+- 可选 MaxKB 检索与带引用的模型回答，强制校验 spaceid、发布版本和检索签名。
+
+MaxKB 的 Docker 启动、调用和本次 smoke 结果见 [dev 接入说明](docs/maxkb-dev.md)。
+=======
 三层工具已经在配套 AI_WebApi 中实现并向 Agent 暴露：
+>>>>>>> 86c5a786007618ec6bf9b24df9c844cf42ac75f8
 
 - `get_patient_profile`：`project.dbuser.UserDetails` 中的基本信息与档案自述病史，白名单排除姓名和电话。
 - `get_patient_consultation`：`dbmedical` 病历、诊断、医嘱、关联处方及 `dbconsultationinfo` 就诊记录，支持分页。

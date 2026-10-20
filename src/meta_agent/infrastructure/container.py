@@ -172,7 +172,6 @@ async def create_container(settings: Settings) -> ServiceContainer:
             lease_connection=lease,
         )
         if lease:
-
             async def guard():
                 try:
                     async with asyncio.timeout(2):

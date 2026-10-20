@@ -76,7 +76,7 @@ def test_intent_and_fact_messages_preserve_roles_and_literal_data():
     )
     rendered = prompts.render(binding, "intent.parse", inputs)
     assert hashlib.sha256(rendered.system_message.content.encode()).hexdigest() == (
-        "a89493171820efd1d147ce644ef0a62390692d5ca82d22b3e94a777fa5bba19c"
+        "a205f7bfc33c322aacc93ad32403e6c3b58af0c578edbf9ac87a9bdb98d421a2"
     )
     assert json.loads(rendered.messages[1][1]) == inputs.model_dump()
     assert rendered.messages[1][0] == "human"

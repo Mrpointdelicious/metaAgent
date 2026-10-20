@@ -11,9 +11,11 @@ from pydantic import Field, model_validator
 
 from meta_agent.config import Settings
 from meta_agent.contracts import (
+    AssessmentRequest,
     Capability,
     Effect,
     HospitalRequest,
+    IReCogRequest,
     IReGoRequest,
     IReTourRequest,
     Selector,
@@ -107,6 +109,18 @@ def capability_specs(settings: Settings) -> dict[str, CapabilitySpec]:
             IReTourRequest,
             requires_patient=True,
             provides=("session_ref", "evidence_id", "artifact_ref", "window"),
+        ),
+        CapabilitySpec(
+            "irecog.execute",
+            IReCogRequest,
+            requires_patient=True,
+            provides=("session_ref", "evidence_id", "artifact_ref", "window"),
+        ),
+        CapabilitySpec(
+            "assessment.execute",
+            AssessmentRequest,
+            requires_patient=True,
+            provides=("assessment_ref", "evidence_id", "artifact_ref", "window"),
         ),
         CapabilitySpec("hospital.query", HospitalRequest),
         CapabilitySpec(

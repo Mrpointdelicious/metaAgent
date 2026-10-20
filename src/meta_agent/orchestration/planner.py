@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, Field
 
 TaskName = Literal[
+    "knowledge_search",
     "patient_context",
     "session_analysis",
     "single_report",

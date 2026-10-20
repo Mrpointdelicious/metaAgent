@@ -1,0 +1,196 @@
+{
+  "date": "2026-10-19",
+  "verification": "real-vendor-native-published-workflow",
+  "source_base_commit": "91e91c4",
+  "unit_checks_passed": 20,
+  "corpus_version": "maxkb-scoped-508a6ce72170",
+  "retained_catalog_documents": 204,
+  "retained_catalog_paragraphs": 10025,
+  "application": {
+    "application_id": "01a1519c-7fd7-7f40-8aa3-c7cb6dcfbae1",
+    "model_id": "01a1519b-94c2-7791-b70a-f7bf4c056efc",
+    "workflow_sha256": "7503d02a5f4331c50041f401139ddd3cb01f94c5ebaeda82673b150a0accc028",
+    "published_version_id": "01a1519c-8081-7243-a230-77bcaf0ef2b5",
+    "sharing_enabled": false,
+    "long_term_memory": false
+  },
+  "application_auth_verified": true,
+  "wrong_application_key_rejected": true,
+  "anonymous_sharing_disabled": true,
+  "vendor_key_in_agent_config": false,
+  "answer_model_key_restored": false,
+  "bridge_stopped": true,
+  "provider_quality_benchmark": false,
+  "samples": [
+    {
+      "case": "sop",
+      "at": "2026-10-19T00:47:54.882076+00:00",
+      "release": "maxkb-scoped-508a6ce72170",
+      "http_status": 200,
+      "elapsed_ms": 11954.79,
+      "status": "success",
+      "rerank_applied": false,
+      "degradation": [],
+      "passed": true,
+      "sources": [
+        {
+          "title": "[Dify] 元宇宙通用基础操作使用说明.txt",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "Dify 原分块 002"
+        },
+        {
+          "title": "[Dify] 元宇宙岳阳医院患者端使用说明.txt",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "Dify 原分块 002"
+        },
+        {
+          "title": "[Dify] 元宇宙岳阳医院医生端使用说明.txt",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "Dify 原分块 002"
+        }
+      ]
+    },
+    {
+      "case": "scene",
+      "at": "2026-10-19T00:51:20.393859+00:00",
+      "release": "maxkb-scoped-508a6ce72170",
+      "http_status": 200,
+      "elapsed_ms": 5281.93,
+      "status": "success",
+      "rerank_applied": false,
+      "degradation": [],
+      "passed": true,
+      "sources": [
+        {
+          "title": "[Dify] 元宇宙岳阳医院场景说明.txt",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "scene_kb",
+          "heading_path": "Dify 原分块 001"
+        },
+        {
+          "title": "[已审MD] 岳阳医院元宇宙场景说明__b7de9b96__v2.md",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "scene_kb",
+          "heading_path": "元宇宙上海中医药大学附属岳阳中西医结合医院使用说明（通用文档） / 元宇宙上海中医药大学附属岳阳中西医结合医院场景说明 / [通用][五楼] 数据中心 / 这个医院场景是怎么分层的"
+        },
+        {
+          "title": "[已审MD] 岳阳医院元宇宙场景说明__b7de9b96__v2.md",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "scene_kb",
+          "heading_path": "元宇宙上海中医药大学附属岳阳中西医结合医院使用说明（通用文档） / 元宇宙上海中医药大学附属岳阳中西医结合医院场景说明 / [通用][五楼] 数据中心"
+        }
+      ]
+    },
+    {
+      "case": "pdf",
+      "at": "2026-10-19T00:51:46.372449+00:00",
+      "release": "maxkb-scoped-508a6ce72170",
+      "http_status": 200,
+      "elapsed_ms": 13015.7,
+      "status": "success",
+      "rerank_applied": true,
+      "degradation": [],
+      "passed": true,
+      "sources": [
+        {
+          "title": "[已选PDF] D041__脑卒中智能康复技术应用专家共识（2025）__8a0387606a06.pdf",
+          "page": 1,
+          "page_end": 1,
+          "knowledge_type": "rehab_kb",
+          "heading_path": ""
+        },
+        {
+          "title": "[已选PDF] D041__脑卒中智能康复技术应用专家共识（2025）__8a0387606a06.pdf",
+          "page": 2,
+          "page_end": 2,
+          "knowledge_type": "rehab_kb",
+          "heading_path": ""
+        }
+      ]
+    },
+    {
+      "case": "md",
+      "at": "2026-10-19T00:48:21.036812+00:00",
+      "release": "maxkb-scoped-508a6ce72170",
+      "http_status": 200,
+      "elapsed_ms": 13012.39,
+      "status": "success",
+      "rerank_applied": true,
+      "degradation": [],
+      "passed": true,
+      "sources": [
+        {
+          "title": "[已审MD] 元宇宙岳阳医院医生端使用说明__8bff8d0f__v1.md",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "元宇宙产品使用说明书（医生端） / 元宇宙界面功能布局说明 / [通用][按钮功能][详细介绍]"
+        },
+        {
+          "title": "[已审MD] 元宇宙岳阳医院医生端使用说明__8bff8d0f__v1.md",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "元宇宙产品使用说明书（医生端） / 元宇宙医生端专项功能 / [通用][通用] 快速通道功能"
+        },
+        {
+          "title": "[Dify] 元宇宙岳阳医院医生端使用说明.txt",
+          "page": null,
+          "page_end": null,
+          "knowledge_type": "sop_kb",
+          "heading_path": "Dify 原分块 002"
+        }
+      ]
+    },
+    {
+      "case": "scope",
+      "at": "2026-10-19T00:48:35.006726+00:00",
+      "release": "maxkb-scoped-508a6ce72170",
+      "http_status": 403,
+      "elapsed_ms": 24.31,
+      "passed": true,
+      "sources": []
+    }
+  ],
+  "initial_scene_failure": {
+    "http_status": 503,
+    "reason": "not established",
+    "targeted_retry_passed": true
+  },
+  "bridge_disabled_rechecks": [
+    "scene",
+    "pdf"
+  ],
+  "containers": [
+    {
+      "name": "metaagent-maxkb-dev-agent-1",
+      "image": "sha256:79003e8776bcdd0faf17db7ed487d3954329a287f288d5c177903081d72f5be9",
+      "state": "running",
+      "restart_count": 0,
+      "oom_killed": false
+    },
+    {
+      "name": "metaagent-maxkb-dev-maxkb-1",
+      "image": "sha256:5ffdafc7956a472ea59ef6820aec5c965282d37c1875109378abae1cbbc2b067",
+      "state": "running",
+      "restart_count": 0,
+      "oom_killed": false
+    },
+    {
+      "name": "metarag-maxkb-bridge-1",
+      "image": "sha256:c1dd006bc704709d4b85c65a9a989650ece369f082747d987274d433134e9a85",
+      "state": "exited",
+      "restart_count": 0,
+      "oom_killed": false
+    }
+  ]
+}

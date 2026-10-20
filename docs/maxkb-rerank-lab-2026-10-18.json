@@ -1,0 +1,40 @@
+{
+  "image": "maxkb:v2.10.7-lts",
+  "mode": "stock-workflow-native-provider-fake-api",
+  "real_vendor_quality_tested": false,
+  "cases": [
+    {
+      "case": "native-workflow-order-and-reference-json",
+      "passed": true,
+      "provider_calls": 1,
+      "first_id": "p-medical"
+    },
+    {
+      "case": "empty-no-provider-call",
+      "passed": true,
+      "provider_calls": 0
+    },
+    {
+      "case": "provider-failure-not-success",
+      "passed": true,
+      "provider_calls": 1,
+      "http_status": 500
+    }
+  ],
+  "provider_paths": [
+    "/api/v1/services/rerank/text-rerank/text-rerank"
+  ],
+  "date": "2026-10-18",
+  "image_digest": "sha256:5ffdafc7956a472ea59ef6820aec5c965282d37c1875109378abae1cbbc2b067",
+  "exit_code": 0,
+  "oom_killed": false,
+  "memory_limit_bytes": 1610612736,
+  "peak_memory_measured": false,
+  "model_database_lookup": "test_double",
+  "chat_persistence": "test_double",
+  "published_application_http_api_tested": false,
+  "network": "none; provider stub on container loopback only",
+  "existing_data_mounted": false,
+  "provider_credentials_restored": false,
+  "nonfatal_lab_warning": "read-only sandbox initialization could not chmod its bundled library; no tool node was used"
+}

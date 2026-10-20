@@ -17,6 +17,7 @@ class ContextCompiler:
         "session_ref",
         "ability_evaluations",
         "available_actions",
+        "knowledge_evidence",
     }
 
     def compile(self, query: str, facts: dict[str, Any]) -> dict[str, Any]:

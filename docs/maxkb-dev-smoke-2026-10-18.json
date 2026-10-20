@@ -1,0 +1,37 @@
+{
+  "date": "2026-10-18",
+  "branch": "dev",
+  "baseline": "64694c2",
+  "saved_exploration": "8aa6436",
+  "release": "maxkb-scoped-508a6ce72170",
+  "local_checks_passed": 13,
+  "smoke": [
+    {
+      "case": "sop",
+      "http_status": 200,
+      "passed": true
+    },
+    {
+      "case": "scene",
+      "http_status": 200,
+      "passed": true
+    },
+    {
+      "case": "pdf",
+      "http_status": 200,
+      "passed": true,
+      "elapsed_ms": 6786.18
+    },
+    {
+      "case": "scope",
+      "http_status": 403,
+      "passed": true,
+      "elapsed_ms": 10.39
+    }
+  ],
+  "deployed_source_matches": true,
+  "deployed_module": "/app/src/meta_agent/domains/maxkb.py",
+  "deployed_sha256": "845660df673341902a0ca9647904d6b64dde5afd2a963d687f989f9bb3dbc635",
+  "docker_containers_stopped": 21,
+  "running_containers": 7
+}

@@ -1,0 +1,57 @@
+name: metaagent-maxkb-dev
+services:
+  # Optional replacement. Stop the old MaxKB before starting this profile;
+  # two PostgreSQL processes must never share the same data volume.
+  maxkb:
+    profiles: [maxkb]
+    image: registry.fit2cloud.com/maxkb/maxkb:v2.10.7-lts@sha256:5ffdafc7956a472ea59ef6820aec5c965282d37c1875109378abae1cbbc2b067
+    ports: ["127.0.0.1:18081:8080"]
+    environment:
+      MAXKB_CORE_WORKER: "1"
+      MAXKB_LOCAL_MODEL_HOST_WORKER: "1"
+      MAXKB_DB_MAX_OVERFLOW: "10"
+      OMP_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - maxkb_data:/opt/maxkb
+      - ./deploy/maxkb/start-maxkb.sh:/usr/bin/start-maxkb.sh:ro
+    mem_limit: 2304m
+    cpus: 2
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/admin/', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      start_period: 180s
+      retries: 30
+  agent:
+    image: metaagent-maxkb:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.maxkb
+    env_file: .local/maxkb-dev/agent.env
+    ports: ["127.0.0.1:18084:8080"]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ${MAXKB_RELEASE_FILE:?prepare deployment first}:/run/maxkb/release.json:ro
+      - ${MAXKB_CATALOG_FILE:?prepare deployment first}:/run/maxkb/${MAXKB_CATALOG_NAME}:ro
+      - ${MAXKB_ORIGINALS_DIR:?prepare deployment first}:/run/maxkb/originals:ro
+      - ./.local/maxkb-dev/native.json:/run/maxkb/native.json:ro
+    mem_limit: 512m
+    cpus: 1
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+volumes:
+  maxkb_data:
+    external: true
+    name: ${MAXKB_DATA_VOLUME:-metarag-maxkb_maxkb_data}

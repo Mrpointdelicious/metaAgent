@@ -10,10 +10,12 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from meta_agent.context.compiler import ContextCompiler
+from meta_agent.domains.maxkb import knowledge_question
 from meta_agent.evidence.store import EvidenceRepository
 from meta_agent.graph.state import AgentState
 from meta_agent.orchestration.planner import (
     TaskName,
+    TaskPlan,
     TaskPlanner,
 )
 from meta_agent.orchestration.validator import PlanValidator
@@ -31,6 +33,7 @@ def build_agent_graph(
     evidence_repository: EvidenceRepository,
     context_compiler: ContextCompiler,
     claim_validator: ClaimValidator,
+    maxkb_workflow: Any = None,
 ) -> Any:
     """构建并编译最小可运行图。"""
 
@@ -56,6 +59,14 @@ def build_agent_graph(
     async def execute_domain_workflow(
         state: AgentState,
     ) -> dict[str, Any]:
+        if state.get("tasks") == ["knowledge_search"]:
+            if maxkb_workflow is None:
+                raise RuntimeError("MaxKB workflow is not configured")
+            result = await maxkb_workflow.execute(state)
+            evidence = await evidence_repository.save(
+                scope_hash=state["scope_hash"], source="maxkb", payload=result.pop("_evidence")
+            )
+            return {**result, "result_ref": evidence.result_ref}
         tasks = cast(
             tuple[TaskName, ...],
             tuple(state.get("tasks") or []),

@@ -12,7 +12,9 @@ class AgentState(TypedDict):
     query: str
     tenant_id: str
     end_user_id: str
-    patient_id: str
+    patient_id: str | None
+    role: str
+    space_id: str | None
     scope_hash: str
     conversation_id: str
     run_id: str
@@ -25,3 +27,5 @@ class AgentState(TypedDict):
     response_text: NotRequired[str]
     image_urls: NotRequired[list[str]]
     mode_commands: NotRequired[list[str]]
+    citations: NotRequired[list[dict[str, Any]]]
+    knowledge_retrieval: NotRequired[dict[str, Any]]

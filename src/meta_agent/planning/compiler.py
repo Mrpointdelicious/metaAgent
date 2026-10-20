@@ -199,6 +199,26 @@ class PlanCompiler:
                     task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
                     task.priority_class = "artifact"
                 continue
+            if g.kind in {"irecog", "assessment"} and g.domain == g.kind:
+                if not (scope.iretour_patient_id or scope.project_patient_id):
+                    result.dispositions[gid] = ("clarification", "请先绑定患者身份。")
+                    continue
+                payload = g.irecog if g.kind == "irecog" else g.assessment
+                if payload is None:
+                    result.dispositions[gid] = (
+                        "clarification",
+                        f"请明确{'IReCog' if g.kind == 'irecog' else '量表'}查询内容。",
+                    )
+                    continue
+                request = payload.model_copy(deep=True)
+                if "artifact" in g.excluded_outputs or REPORT_NEGATION.search(query):
+                    request.need_artifact = False
+                task = add([gid], f"{g.kind}.execute", request.model_dump(exclude_none=True))
+                task.retry_limit = 0
+                if request.need_artifact:
+                    task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
+                    task.priority_class = "artifact"
+                continue
             is_rehab = g.kind.startswith("rehab_") or g.kind in {"report", "irego"}
             if is_rehab and (g.domain != "irego" or not scope.patient_id):
                 result.dispositions[gid] = ("clarification", "请先通过患者端绑定有效患者身份。")
@@ -475,8 +495,8 @@ class PlanCompiler:
             if (
                 spec.requires_patient
                 and not (
-                    scope.iretour_patient_id
-                    if task.capability == "iretour.execute"
+                    scope.iretour_patient_id or scope.project_patient_id
+                    if task.capability in {"iretour.execute", "irecog.execute", "assessment.execute"}
                     else scope.patient_id
                 )
                 or spec.requires_space
