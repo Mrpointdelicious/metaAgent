@@ -1,11 +1,11 @@
 """
 创建日期：2026-09-08
-文件功能：实现冻结版意图、计划、事实、事件及原生运行状态契约。
+文件功能：实现初版意图、计划、事实、事件及原生运行状态契约。
 """
 
+import json
 from datetime import UTC, datetime
 from hashlib import sha256
-import json
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -21,39 +21,173 @@ def identifier(prefix: str) -> str:
 
 
 def fingerprint(value: Any) -> str:
-    return sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
-                             separators=(",", ":"), default=str).encode()).hexdigest()
+    return sha256(
+        json.dumps(
+            value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str
+        ).encode()
+    ).hexdigest()
 
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 
-Domain = Literal["conversation", "irego", "iremo", "iretour", "scene", "doctors",
-                 "health", "product", "help", "hospital"]
-GoalKind = Literal["chat", "rehab_overview", "rehab_history", "rehab_session",
-                   "rehab_trend", "report", "scene_action", "doctor_query",
-                   "knowledge_query", "unsupported"]
-OutcomeStatus = Literal["succeeded", "partial", "unavailable", "failed", "cancelled",
-                        "clarification", "unsupported", "blocked_dependency", "skipped_condition"]
+Domain = Literal[
+    "conversation",
+    "irego",
+    "iremo",
+    "iretour",
+    "irecog",
+    "assessment",
+    "scene",
+    "doctors",
+    "health",
+    "product",
+    "help",
+    "hospital",
+]
+GoalKind = Literal[
+    "chat",
+    "iretour",
+    "irecog",
+    "assessment",
+    "hospital_query",
+    "irego",
+    "rehab_overview",
+    "rehab_history",
+    "rehab_session",
+    "rehab_trend",
+    "report",
+    "scene_action",
+    "doctor_query",
+    "knowledge_query",
+    "unsupported",
+]
+OutcomeStatus = Literal[
+    "succeeded",
+    "partial",
+    "unavailable",
+    "failed",
+    "cancelled",
+    "clarification",
+    "unsupported",
+    "blocked_dependency",
+    "skipped_condition",
+]
+RunStatus = Literal[
+    "running",
+    "succeeded",
+    "partial",
+    "unavailable",
+    "failed",
+    "cancelled",
+    "clarification",
+    "unsupported",
+    "blocked_dependency",
+    "skipped_condition",
+]
+ActionDeliveryStatus = Literal[
+    "ready",
+    "dispatched",
+    "delivery_unknown",
+]
 Effect = Literal["read", "prepare_artifact", "emit_frontend_action"]
-Capability = Literal["rehab.overview", "rehab.history", "rehab.resolve_session", "rehab.session",
-                     "rehab.trend", "rehab.single_report", "rehab.trend_report", "scene.resolve",
-                     "scene.dispatch", "doctors.search", "knowledge.search", "answer.compose"]
+Capability = Literal[
+    "iretour.execute",
+    "irecog.execute",
+    "assessment.execute",
+    "hospital.query",
+    "irego.execute",
+    "rehab.overview",
+    "rehab.history",
+    "rehab.resolve_session",
+    "rehab.session",
+    "rehab.trend",
+    "rehab.single_report",
+    "rehab.trend_report",
+    "scene.resolve",
+    "scene.dispatch",
+    "doctors.search",
+    "knowledge.search",
+    "answer.compose",
+]
 
 
 class Selector(StrictModel):
-    mode: Literal["none", "current_ref", "latest_record", "latest_usable", "previous_record",
-                  "ordinal", "date_range", "latest_count"] = "none"
+    mode: Literal[
+        "none",
+        "current_ref",
+        "latest_record",
+        "latest_usable",
+        "previous_record",
+        "ordinal",
+        "date_range",
+        "latest_count",
+        "recent_ordinal_range",
+    ] = "none"
     count: int | None = Field(default=None, ge=1, le=100)
     start: str | None = None
     end: str | None = None
     candidate_ref: str | None = None
+    start_ordinal: int | None = Field(default=None, ge=1, le=10000)
+    end_ordinal: int | None = Field(default=None, ge=1, le=10000)
 
 
 class Condition(StrictModel):
     text: str = Field(min_length=1, max_length=500)
     source_goal_ids: list[str] = Field(min_length=1, max_length=6)
+
+
+class IReGoRequest(StrictModel):
+    """Planner 对 IReGo 的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+    operation: Literal["overview", "history", "session", "trend"]
+    selector: Selector = Field(default_factory=Selector)
+    topics: list[str] = Field(default_factory=list, max_length=10)
+    need_artifact: bool = False
+    force_refresh: bool = False
+
+
+ActivityScope = Literal[
+    "straight_primary",
+    "straight_secondary",
+    "reaction_primary",
+    "reaction_secondary",
+    "balance_bridge",
+    "vibration",
+    "transverse",
+    "stride",
+    "sideway",
+    "gait_assessment",
+]
+
+
+class IReTourRequest(IReGoRequest):
+    activity_scope: ActivityScope = "straight_primary"
+
+
+class IReCogRequest(IReGoRequest):
+    """IReCog 认知测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+
+class AssessmentRequest(IReGoRequest):
+    """线上量表测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+    scale_type: int | None = Field(default=None, ge=1, le=99)
+
+
+class HospitalRequest(StrictModel):
+    scope: Literal["institution", "comparison", "platform"] = "institution"
+    hospital_id: int | None = Field(default=None, gt=0)
+    hospital_name: str | None = Field(default=None, max_length=200)
+    hospital_ids: list[int] = Field(default_factory=list, max_length=2)
+    section: Literal[
+        "all", "overview", "consultation", "rooms", "assessment_training", "records", "analysis"
+    ] = "all"
+    start_date: str | None = None
+    end_date: str | None = None
+    output_mode: Literal["analysis", "report", "analysis_and_report"] = "analysis"
+    analysis_depth: Literal["summary", "standard"] = "standard"
 
 
 class Goal(StrictModel):
@@ -64,11 +198,18 @@ class Goal(StrictModel):
     selector: Selector = Field(default_factory=Selector)
     topics: list[str] = Field(default_factory=list, max_length=10)
     output: Literal["answer", "list", "artifact", "action", "answer_and_artifact"] = "answer"
-    excluded_outputs: list[Literal["artifact", "action"]] = Field(default_factory=list, max_length=2)
+    excluded_outputs: list[Literal["artifact", "action"]] = Field(
+        default_factory=list, max_length=2
+    )
     after_goal_ids: list[str] = Field(default_factory=list, max_length=6)
     missing_slots: list[str] = Field(default_factory=list, max_length=8)
     clarification: str | None = None
     condition: Condition | None = None
+    irego: IReGoRequest | None = None
+    iretour: IReTourRequest | None = None
+    irecog: IReCogRequest | None = None
+    assessment: AssessmentRequest | None = None
+    hospital: HospitalRequest | None = None
 
 
 class IntentDecision(StrictModel):
@@ -89,8 +230,13 @@ class Binding(StrictModel):
 
 class Guard(StrictModel):
     source_task_id: str
-    predicate: Literal["has_results", "no_results", "record_completed", "report_available",
-                       "scene_context_confirmed"]
+    predicate: Literal[
+        "has_results",
+        "no_results",
+        "record_completed",
+        "report_available",
+        "scene_context_confirmed",
+    ]
     on_false: Literal["skip", "clarify"] = "skip"
 
 
@@ -142,14 +288,23 @@ class Fact(StrictModel):
 
 class FactView(StrictModel):
     """显示信息来自适配器，既不改写事实值也不成为新的事实来源。"""
+
     fact: Fact
     label: str
     topic: str = "general"
     required: bool = False
 
 
-EventType = Literal["accepted", "progress", "action_ready", "answer_part", "artifact_ready",
-                    "clarification", "task_failed", "completed"]
+EventType = Literal[
+    "accepted",
+    "progress",
+    "action_ready",
+    "answer_part",
+    "artifact_ready",
+    "clarification",
+    "task_failed",
+    "completed",
+]
 
 
 class OutboundEvent(StrictModel):
@@ -229,9 +384,13 @@ class CompletionPayload(StrictModel):
 
 
 payload_types: dict[str, type[StrictModel]] = {
-    "accepted": TextPayload, "progress": ProgressPayload, "answer_part": AnswerPayload,
-    "action_ready": ActionPayload, "artifact_ready": ArtifactPayload,
-    "clarification": ClarificationPayload, "task_failed": FailurePayload,
+    "accepted": TextPayload,
+    "progress": ProgressPayload,
+    "answer_part": AnswerPayload,
+    "action_ready": ActionPayload,
+    "artifact_ready": ArtifactPayload,
+    "clarification": ClarificationPayload,
+    "task_failed": FailurePayload,
     "completed": CompletionPayload,
 }
 
@@ -250,6 +409,7 @@ class TaskResult(StrictModel):
 
 
 class RecordAnchor(StrictModel):
+    domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     session_ref: str
     evidence_id: str
     observed_at: datetime = Field(default_factory=utcnow)
@@ -259,8 +419,11 @@ class RecordAnchor(StrictModel):
 
 class ConversationState(StrictModel):
     turns: list[dict[str, str]] = Field(default_factory=list)
+    agent_messages: list[dict[str, Any]] = Field(default_factory=list)
     current_record: RecordAnchor | None = None
     history_page: int = 1
+    history_seen: bool = False
+    history_domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     pending_goals: list[Goal] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -271,21 +434,36 @@ class RunRecord(StrictModel):
     request_hash: str
     scope_key: str
     conversation_id: str
-    status: str = "running"
+    status: RunStatus = "running"
     created_at: datetime = Field(default_factory=utcnow)
     events: list[OutboundEvent] = Field(default_factory=list)
     decision: IntentDecision | None = None
     plan: ValidatedPlan | None = None
     results: dict[str, TaskResult] = Field(default_factory=dict)
     goal_statuses: dict[str, OutcomeStatus] = Field(default_factory=dict)
-    action_delivery: dict[str, str] = Field(default_factory=dict)
+    action_delivery: dict[str, ActionDeliveryStatus] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class DomainError(RuntimeError):
-    """异常只携带稳定错误分类与可展示说明，不附带HTTP正文或身份。"""
-    def __init__(self, code: str, message: str, *, retryable: bool = False,
-                 outcome: OutcomeStatus = "failed") -> None:
+    """领域错误：携带稳定错误码、用户可展示信息和终态分类。"""
+
+    code: str
+    message: str
+    retryable: bool
+    outcome: OutcomeStatus
+
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        outcome: OutcomeStatus = "failed",
+    ) -> None:
         super().__init__(message)
-        self.code, self.message = code, message
-        self.retryable, self.outcome = retryable, outcome
+
+        self.code = code
+        self.message = message
+        self.retryable = retryable
+        self.outcome = outcome

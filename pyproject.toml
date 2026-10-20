@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "meta-agent"
-version = "0.1.0"
-description = "LangGraph-based rehabilitation agent orchestration service with Dify compatibility."
+version = "1.0.0"
+description = "Evidence-grounded rehabilitation orchestration with native events and bounded task plans."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [

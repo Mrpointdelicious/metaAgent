@@ -40,10 +40,7 @@ def build_agent_graph(
     async def plan_tasks(
         state: AgentState,
     ) -> dict[str, Any]:
-        if maxkb_workflow is not None and knowledge_question(state["query"]):
-            plan = TaskPlan(tasks=("knowledge_search",), requested_output="answer")
-        else:
-            plan = await planner.plan(state["query"])
+        plan = await planner.plan(state["query"])
 
         tasks = plan_validator.validate(plan)
 

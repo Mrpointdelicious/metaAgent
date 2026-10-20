@@ -1,9 +1,10 @@
 """
 创建日期：2026-09-03
-文件功能：创建 Planner 并装配存储、工作流和可选 MaxKB 依赖。
+文件功能：装配原生执行链、数据库单实例租约和定时物理清理。
 """
 
 import asyncio
+import logging
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any
@@ -11,117 +12,181 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
+from meta_agent.agent.runtime import SingleAgentRuntime
+from meta_agent.application.composer import ResponseComposer
+from meta_agent.application.service import ApplicationService
 from meta_agent.config import Settings
-from meta_agent.context.compiler import ContextCompiler
-from meta_agent.evidence.store import EvidenceRepository
-from meta_agent.graph.builder import build_agent_graph
-from meta_agent.infrastructure.locks import ThreadLockRegistry
+from meta_agent.contracts import DomainError
+from meta_agent.events.native import NativeOutputAdapter
+from meta_agent.execution.dispatcher import DomainDispatcher
+from meta_agent.execution.scheduler import TaskScheduler
+from meta_agent.graph.runtime import build_runtime_graph
+from meta_agent.infrastructure.limiter import PriorityLimiter
+from meta_agent.infrastructure.repository import Repository
 from meta_agent.llm.models import create_planner_model
-from meta_agent.orchestration.llm_planner import (
-    LLMTaskPlanner,
-)
-from meta_agent.orchestration.planner import (
-    DeterministicTaskPlanner,
-    TaskPlanner,
-)
-from meta_agent.orchestration.validator import PlanValidator
+from meta_agent.planning.compiler import PlanCompiler
+from meta_agent.planning.parser import ConservativePlanner, IntentPlanner, StructuredIntentPlanner
+from meta_agent.prompts.service import PromptService
 from meta_agent.tools.ai_webapi import AIWebApiClient
-from meta_agent.validation.claims import ClaimValidator
-from meta_agent.workflows.irego import IReGoWorkflow
+
+logger = logging.getLogger(__name__)
+INSTANCE_LOCK = 730914081  # Stable per database: v1 does not provide cross-process run leases.
 
 
 @dataclass(slots=True)
 class ServiceContainer:
-    """保存单个进程共享、线程安全的服务依赖。"""
-
     settings: Settings
     graph: Any
-    evidence_repository: EvidenceRepository
+    repository: Repository
+    application: ApplicationService
     ai_webapi_client: AIWebApiClient
     exit_stack: AsyncExitStack
     persistence_status: str
-    request_limiter: asyncio.Semaphore
-    thread_locks: ThreadLockRegistry
-    maxkb_workflow: Any = None
+    prompts: PromptService
+    output_adapter: NativeOutputAdapter
+    cleanup_task: asyncio.Task | None = None
+    lease_connection: Any = None
 
     async def close(self) -> None:
-        """按反向顺序释放数据库和网络资源。"""
+        await self.application.close()
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            await asyncio.gather(self.cleanup_task, return_exceptions=True)
         await self.exit_stack.aclose()
 
+    async def ready(self) -> bool:
+        if self.lease_connection:
+            await self.lease_connection.execute("SELECT 1")
+        return await self.repository.ready()
 
-def create_task_planner(
-    settings: Settings,
-) -> TaskPlanner:
-    """根据运行配置创建任务规划器。"""
 
+def create_task_planner(settings: Settings, prompts: PromptService | None = None) -> IntentPlanner:
     if settings.planner_mode == "deterministic":
-        return DeterministicTaskPlanner()
+        return ConservativePlanner()
+    return StructuredIntentPlanner(create_planner_model(settings), settings, prompts)
 
-    if settings.planner_mode == "llm":
-        model = create_planner_model(settings)
 
-        return LLMTaskPlanner(model=model)
-
-    raise RuntimeError(f"未知 Planner 模式: {settings.planner_mode}")
+async def cleanup_loop(container: ServiceContainer) -> None:
+    while True:
+        await asyncio.sleep(container.settings.cleanup_interval_seconds)
+        try:
+            await container.repository.cleanup()
+        except Exception as exc:
+            logger.error("TTL cleanup failed error_type=%s", type(exc).__name__)
 
 
 async def create_container(settings: Settings) -> ServiceContainer:
-    """根据环境选择内存或 PostgreSQL 持久化并装配应用依赖。"""
-    exit_stack = AsyncExitStack()
-    await exit_stack.__aenter__()
+    issues = settings.production_issues()
+    if issues:
+        raise RuntimeError("；".join(issues))
+    prompts = PromptService()
+    prompts.bind(settings.prompt_bundle)
+    output_adapter = NativeOutputAdapter()
+    stack = AsyncExitStack()
+    await stack.__aenter__()
+    lease = None
+    try:
+        if settings.persistence_backend == "postgres":
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+            from langgraph.store.postgres.aio import AsyncPostgresStore
+            from psycopg import AsyncConnection
+            from psycopg.conninfo import make_conninfo
 
-    if settings.persistence_backend == "postgres":
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        from langgraph.store.postgres.aio import AsyncPostgresStore
-
-        if not settings.postgres_dsn:
-            await exit_stack.aclose()
-            raise RuntimeError("PostgreSQL 持久化缺少 META_AGENT__POSTGRES_DSN")
-        checkpointer = await exit_stack.enter_async_context(
-            AsyncPostgresSaver.from_conn_string(settings.postgres_dsn)
+            if not settings.postgres_dsn:
+                raise RuntimeError("PostgreSQL 持久化缺少 META_AGENT__POSTGRES_DSN")
+            dsn = make_conninfo(settings.postgres_dsn, connect_timeout=5)
+            lease = await stack.enter_async_context(
+                await AsyncConnection.connect(dsn, autocommit=True)
+            )
+            cursor = await lease.execute("SELECT pg_try_advisory_lock(%s)", (INSTANCE_LOCK,))
+            if not (await cursor.fetchone())[0]:
+                raise RuntimeError("v1数据库已有运行实例；尚不支持多worker或多副本")
+            checkpointer = await stack.enter_async_context(AsyncPostgresSaver.from_conn_string(dsn))
+            store = await stack.enter_async_context(AsyncPostgresStore.from_conn_string(dsn))
+            if settings.auto_setup_persistence:
+                await checkpointer.setup()
+                await store.setup()
+            persistence = "postgres"
+        else:
+            checkpointer, store = InMemorySaver(), InMemoryStore()
+            persistence = "memory"
+        client = AIWebApiClient(settings)
+        stack.push_async_callback(client.close)
+        repository = Repository(store, settings, checkpointer)
+        await repository.ready()
+        await checkpointer.aget_tuple({"configurable": {"thread_id": "metaagent-startup-probe"}})
+        agent_runtime = None
+        model = None
+        if settings.orchestration_mode == "agent":
+            agent_model = create_planner_model(
+                settings.model_copy(
+                    update={
+                        "planner_model": settings.agent_model or settings.planner_model,
+                        "planner_timeout_seconds": settings.agent_model_timeout_seconds,
+                        "planner_max_retries": 0,
+                    }
+                )
+            )
+            agent_runtime = SingleAgentRuntime(agent_model, checkpointer=checkpointer, store=store)
+        elif settings.answer_mode == "llm_select":
+            model = create_planner_model(
+                settings.model_copy(
+                    update={
+                        "planner_model": settings.answer_model,
+                        "planner_timeout_seconds": settings.answer_timeout_seconds,
+                        "planner_max_retries": 0,
+                    }
+                )
+            )
+        application = ApplicationService(
+            settings=settings,
+            planner=ConservativePlanner()
+            if agent_runtime
+            else create_task_planner(settings, prompts),
+            compiler=PlanCompiler(settings),
+            scheduler=TaskScheduler(DomainDispatcher()),
+            repository=repository,
+            backend=client,
+            tool_limiter=PriorityLimiter(settings.max_concurrent_tools),
+            composer=ResponseComposer(model),
+            agent_runtime=agent_runtime,
+            prompts=prompts,
         )
-        store = await exit_stack.enter_async_context(
-            AsyncPostgresStore.from_conn_string(settings.postgres_dsn)
+        graph = (
+            agent_runtime.graph
+            if agent_runtime
+            else build_runtime_graph(application, checkpointer, store)
         )
-        if settings.auto_setup_persistence:
-            await checkpointer.setup()
-            await store.setup()
-        persistence_status = "postgres"
-    else:
-        checkpointer = InMemorySaver()
-        store = InMemoryStore()
-        persistence_status = "memory"
+        if not agent_runtime:
+            application.graph = graph
+        container = ServiceContainer(
+            settings,
+            graph,
+            repository,
+            application,
+            client,
+            stack,
+            persistence,
+            prompts,
+            output_adapter,
+            lease_connection=lease,
+        )
+        if lease:
+            async def guard():
+                try:
+                    async with asyncio.timeout(2):
+                        await lease.execute("SELECT 1")
+                except Exception as exc:
+                    raise DomainError(
+                        "instance_lease_lost", "运行实例租约不可用，已停止新操作。"
+                    ) from exc
 
-    client = AIWebApiClient(settings)
-    exit_stack.push_async_callback(client.close)
-    evidence_repository = EvidenceRepository(store, settings.evidence_ttl_seconds)
-    workflow = IReGoWorkflow(client, settings)
-    maxkb_workflow = None
-    if settings.maxkb_enabled:
-        from meta_agent.domains.maxkb import MaxKBWorkflow
-
-        maxkb_workflow = MaxKBWorkflow(settings)
-        exit_stack.push_async_callback(maxkb_workflow.close)
-    planner = create_task_planner(settings)
-
-    graph = build_agent_graph(
-        checkpointer=checkpointer,
-        planner=planner,
-        plan_validator=PlanValidator(),
-        workflow=workflow,
-        evidence_repository=evidence_repository,
-        context_compiler=ContextCompiler(),
-        claim_validator=ClaimValidator(),
-        maxkb_workflow=maxkb_workflow,
-    )
-    return ServiceContainer(
-        settings=settings,
-        graph=graph,
-        evidence_repository=evidence_repository,
-        ai_webapi_client=client,
-        exit_stack=exit_stack,
-        persistence_status=persistence_status,
-        request_limiter=asyncio.Semaphore(settings.max_concurrent_requests),
-        thread_locks=ThreadLockRegistry(),
-        maxkb_workflow=maxkb_workflow,
-    )
+            application.runtime_guard = guard
+        await repository.cleanup()
+        container.cleanup_task = asyncio.create_task(
+            cleanup_loop(container), name="metaagent:ttl-cleanup"
+        )
+        return container
+    except BaseException:
+        await stack.aclose()
+        raise

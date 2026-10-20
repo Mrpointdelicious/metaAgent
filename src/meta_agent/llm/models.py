@@ -17,10 +17,7 @@ def create_planner_model(
     api_key = settings.deepseek_api_key.get_secret_value()
 
     if not api_key:
-        raise RuntimeError(
-            "启用 LLM Planner 时必须配置 "
-            "META_AGENT__DEEPSEEK_API_KEY"
-        )
+        raise RuntimeError("启用 LLM Planner 时必须配置 META_AGENT__DEEPSEEK_API_KEY")
 
     try:
         model = init_chat_model(
@@ -34,8 +31,7 @@ def create_planner_model(
         )
     except ImportError as exc:
         raise RuntimeError(
-            "缺少 DeepSeek LangChain integration，"
-            "请执行：uv sync --extra llm-deepseek --extra dev"
+            "缺少 DeepSeek LangChain integration，请执行：uv sync --extra llm-deepseek --extra dev"
         ) from exc
 
     return model
