@@ -12,7 +12,7 @@
     python interactive.py -v                 # 额外显示工具/证据等指标
     python interactive.py -k 4985b6d... --apikey ... --apitoken ...   # 企业知识库检索
     python interactive.py --pos "问诊 房间"                          # 走 consultation_room 分支
-    python interactive.py --patientphone 15932910402 --requestphone 15932910402   # 病历填写分支用
+    python interactive.py --patientphone 15932910402 --requesterphone 15932910402   # 病历填写分支用
 
 对话中的命令：
     exit / quit / q / 退出    退出
@@ -20,7 +20,7 @@
     id / 患者                 重新设置患者标识
     kb / 知识库               设置企业知识库 richId
     phone / 患者手机          设置患者手机号（inputs.patientphone）
-    rphone / 请求手机         设置请求手机号（inputs.requestphone）
+    rphone / 请求手机         设置请求手机号（inputs.requesterphone）
 """
 
 import argparse
@@ -105,13 +105,13 @@ def with_kb(inputs: dict, apikey: str, apitoken: str, companykb: str) -> dict:
     return inputs
 
 
-def with_phones(inputs: dict, patientphone: str, requestphone: str) -> dict:
-    if patientphone or requestphone:
+def with_phones(inputs: dict, patientphone: str, requesterphone: str) -> dict:
+    if patientphone or requesterphone:
         inputs = dict(inputs or {})
         if patientphone:
             inputs["patientphone"] = patientphone
-        if requestphone:
-            inputs["requestphone"] = requestphone
+        if requesterphone:
+            inputs["requesterphone"] = requesterphone
     return inputs
 
 
@@ -120,7 +120,7 @@ def build_inputs(identity_raw: str, args) -> dict:
         classify_identity(identity_raw) if identity_raw is not None else None, args.space
     )
     inputs = with_pos(inputs, args.pos)
-    inputs = with_phones(inputs, args.patientphone, args.requestphone)
+    inputs = with_phones(inputs, args.patientphone, args.requesterphone)
     return with_kb(inputs, args.apikey, args.apitoken, args.companykb)
 
 
@@ -213,7 +213,7 @@ def main():
     ap.add_argument("--apikey", help="知识库接口 apikey 头，塞进 inputs.apikey")
     ap.add_argument("--apitoken", help="知识库接口 apitoken 头，塞进 inputs.apitoken")
     ap.add_argument("--patientphone", help="患者手机号，塞进 inputs.patientphone（病历填写/角色查询用）")
-    ap.add_argument("--requestphone", help="请求手机号，塞进 inputs.requestphone（对话记录查询用）")
+    ap.add_argument("--requesterphone", help="请求手机号，塞进 inputs.requesterphone（对话记录查询用）")
     ap.add_argument("-t", "--token",
                     help="服务 Bearer Token（默认读 .env 的 META_AGENT__SERVICE_BEARER_TOKEN）")
     ap.add_argument("-v", "--verbose", action="store_true", help="额外显示工具/证据指标")
@@ -259,12 +259,12 @@ def main():
         if low in ("phone", "患者手机"):
             phone = input("请输入患者手机号: ").strip()
             args.patientphone = phone
-            inputs = with_phones(inputs, phone, args.requestphone)
+            inputs = with_phones(inputs, phone, args.requesterphone)
             print(f"患者手机号已设为: {phone or '（未设置）'}")
             continue
         if low in ("rphone", "请求手机"):
             phone = input("请输入请求手机号: ").strip()
-            args.requestphone = phone
+            args.requesterphone = phone
             inputs = with_phones(inputs, args.patientphone, phone)
             print(f"请求手机号已设为: {phone or '（未设置）'}")
             continue
