@@ -21,11 +21,26 @@ from meta_agent.application.context import RunContext
 from meta_agent.application.frontend_context import conversational_only, validate_natural_answer
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.contracts import DomainError, fingerprint, utcnow
+from meta_agent.domains.space_context import current_space_context
 from meta_agent.events.publisher import AnswerContent
-from meta_agent.prompts.contracts import AgentPromptInputs, FrontendPromptInputs
+from meta_agent.prompts.contracts import AgentPromptInputs, FrontendPromptInputs, SpacePromptInputs
 
 
 class PatientContextMiddleware(AgentMiddleware):
+    async def awrap_tool_call(self, request, handler):
+        ctx = request.runtime.context
+        if (
+            ctx.settings.knowledge_sources
+            and request.tool is not None
+            and request.tool.name == "search_knowledge"
+        ):
+            # Execute with the same contract shown to the model. The legacy registered
+            # schema otherwise injects health/subqueries defaults into new requests.
+            selected = available_tools(ctx, [request.tool])
+            if selected:
+                request = request.override(tool=selected[0])
+        return await handler(request)
+
     async def awrap_model_call(self, request, handler):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
@@ -46,6 +61,13 @@ class PatientContextMiddleware(AgentMiddleware):
             ),
         )
         prompt = rendered.system_message.content
+        location = current_space_context(ctx.scope.space_id, ctx.scope.scene_id)
+        location_prompt = None
+        if location:
+            location_prompt = ctx.prompts.render(
+                ctx.prompt_binding, "space.context", SpacePromptInputs(current_space=location)
+            )
+            prompt += "\n" + "\n".join(text for _, text in location_prompt.messages)
         messages = bounded_history(request.messages, ctx.settings.agent_history_tokens)
         frontend = None
         if ctx.frontend_context:
@@ -66,7 +88,12 @@ class PatientContextMiddleware(AgentMiddleware):
             {
                 "prompt": prompt,
                 "messages": messages_to_dict(messages),
-                "tools": [t.args_schema.model_json_schema() for t in tools],
+                "tools": [
+                    t.args_schema
+                    if isinstance(t.args_schema, dict)
+                    else t.args_schema.model_json_schema()
+                    for t in tools
+                ],
             }
         )
         if token_estimate + ctx.settings.planner_max_tokens > ctx.settings.model_context_tokens:
@@ -79,6 +106,8 @@ class PatientContextMiddleware(AgentMiddleware):
         )
         if frontend:
             ctx.record.metrics["prompt_usages"].append(frontend.usage(ctx.llm_budget.calls))
+        if location_prompt:
+            ctx.record.metrics["prompt_usages"].append(location_prompt.usage(ctx.llm_budget.calls))
         ctx.record.metrics.setdefault("agent_tool_sets", []).append(
             {
                 "call": ctx.llm_budget.calls,
@@ -88,7 +117,9 @@ class PatientContextMiddleware(AgentMiddleware):
                         {
                             "name": tool.name,
                             "description": tool.description,
-                            "schema": tool.args_schema.model_json_schema(),
+                            "schema": tool.args_schema
+                            if isinstance(tool.args_schema, dict)
+                            else tool.args_schema.model_json_schema(),
                         }
                         for tool in tools
                     ]

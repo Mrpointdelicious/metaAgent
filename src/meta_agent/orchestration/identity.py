@@ -35,6 +35,7 @@ class TrustedScope:
     scene_version: int | None = None
     iretour_patient_id: str | None = None
     project_patient_id: str | None = None
+    scene_id: str | None = None
 
     @property
     def principal_hash(self) -> str:
@@ -48,6 +49,8 @@ class TrustedScope:
             parts.append(self.iretour_patient_id)
         if self.project_patient_id is not None:
             parts.append(["project", self.project_patient_id])
+        if self.space_id is not None:
+            parts.append(["space", self.space_id])
         material = json.dumps(
             parts,
             ensure_ascii=False,
@@ -97,6 +100,17 @@ def trusted_scope_from_inputs(
     if role not in {"patient", "clinician", "operator"}:
         raise ValueError("role无效")
     space = _first_value(inputs, ("space_id", "spaceId"))
+    scene = _first_value(inputs, ("sceneId", "scene_id"))
+    for name, value in (("spaceId", space), ("sceneId", scene)):
+        if value is not None and (
+            not isinstance(value, str) or not value.strip() or len(value.strip()) > 160
+        ):
+            raise ValueError(f"{name} 必须是 1–160 字符的字符串")
+    space = space.strip() if space is not None else None
+    scene = scene.strip() if scene is not None else None
+    from meta_agent.domains.space_context import current_space_context
+
+    current_space_context(space, scene)
     version = _first_value(inputs, ("scene_version", "sceneVersion"))
     if version is not None and (isinstance(version, bool) or not str(version).isdigit()):
         raise ValueError("scene_version必须是非负整数")
@@ -111,4 +125,5 @@ def trusted_scope_from_inputs(
         scene_version=int(version) if version is not None else None,
         iretour_patient_id=tour_id,
         project_patient_id=project_id,
+        scene_id=scene,
     )

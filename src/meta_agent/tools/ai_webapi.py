@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -218,10 +219,31 @@ class AIWebApiClient:
         allowed = {urlsplit(self.patient_base).hostname, *self.settings.artifact_allowed_hosts}
         if (
             parts.scheme not in {"http", "https"}
-            or parts.hostname not in allowed
             or parts.username
             or parts.password
         ):
+            return False
+        public = urlsplit(self.settings.artifact_public_base_url.rstrip("/"))
+        if (
+            public.scheme in {"http", "https"}
+            and not public.username
+            and not public.password
+            and not public.path
+            and (parts.scheme, parts.netloc) == (public.scheme, public.netloc)
+        ):
+            # The browser's localhost is not the container's localhost. Only map known
+            # artifact routes from the explicitly configured public origin to the backend.
+            match = re.fullmatch(
+                r"/api/ai/(patients|hospital-operations)/report-artifacts/[^/]+/content",
+                parts.path,
+            )
+            if not match:
+                return False
+            backend = urlsplit(
+                self.hospital_base if match[1] == "hospital-operations" else self.patient_base
+            )
+            url = urlunsplit((backend.scheme, backend.netloc, parts.path, parts.query, ""))
+        elif parts.hostname not in allowed:
             return False
         try:
             async with self.client.stream("HEAD", url) as response:

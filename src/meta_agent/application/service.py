@@ -111,6 +111,8 @@ class ApplicationService:
         self.active: dict[str, ApplicationRun] = {}
         self.graph: Any = None
         self.runtime_guard: Any = None
+        self.draining = False
+        self.starting_runs = 0
 
     async def start(self, request: ApplicationRequest) -> ApplicationRun:
         started = time.monotonic()
@@ -123,6 +125,7 @@ class ApplicationService:
                 "scope": scope,
                 "conversation_id": request.conversation_id,
                 "space": request.scope.space_id,
+                "scene_id": request.scope.scene_id,
                 "scene_version": request.scope.scene_version,
                 **({"context": request.context} if request.owner_key else {}),
             }
@@ -166,6 +169,15 @@ class ApplicationService:
             return await self._start_new(request, digest, started)
 
     async def _start_new(self, request: ApplicationRequest, digest: str, started: float):
+        if self.draining:
+            raise DomainError("service_draining", "服务正在切换版本，请稍后重试。", retryable=True)
+        self.starting_runs += 1
+        try:
+            return await self._admit_run(request, digest, started)
+        finally:
+            self.starting_runs -= 1
+
+    async def _admit_run(self, request: ApplicationRequest, digest: str, started: float):
         admitted = request.owner_key is not None
         if admitted:
             if self.admission_limiter.locked():

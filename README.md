@@ -1,5 +1,55 @@
 # MetaAgent
 
+## Dify 空间知识与当前场景（2026-10-22）
+
+应用 `747e56ab-5f99-45ac-b511-a2b960f249c5` 的当前 MetaAgent 容器源码来自
+`D:\Project\metaAgent`，分支 `codex/dify-demo`。`D:\Project\metaAgent-dify-demo\metaAgent`
+是较早的独立检出。Docker Compose 标签及容器内四个关键文件的 SHA-256 均核对一致。
+
+沿用 main 的 `/v1/chat` 六个顶层字段：`request_id`、`conversation_id`、`user`、`inputs`、
+`query`、`response_mode`。Dify 从系统会话和可信环境变量生成请求，保持 `blocking` 模式；
+开始节点提供 `spaceId` 下拉输入和 `sceneId` 文本输入。
+
+- `spaceId` 测试值为 `上海中医药大学附属岳阳医院`，决定检索哪家医院的知识。
+- `sceneId`（兼容 `scene_id`）表示当前位置，使用 RAG 原文中的房间或场景名称；可省略。
+  它独立于 `sceneVersion`，不用于缩小知识检索范围，也不表示已经执行场景切换。
+- 启用 `PORTFOLIO_SCENE_CATALOG_ENABLED` 后，场景来自 RAG 当前已发布的结构化目录，
+  每 30 秒刷新；来源版本、场景快照和医院知识发布绑定，审核并发布后才生效。
+  `domains/space_catalog.json` 仅用于未启用远程目录的离线测试。
+  例如 `接待大厅`、`物理治疗诊疗室`、`智能步道康复室1号`、`运动评估室`、`数据中心`。
+  原生入口校验当前场景归属；Dify 不再复制静态房间枚举。目录不可用时带场景请求明确失败。
+- `META_AGENT__PORTFOLIO_SPACE_KB_IDS` 是可信的 `spaceId → domain → kb_ids` 映射。
+  仅 `help` / `product` 使用医院使用说明库，缺失或未知空间不退回其他医院。
+  `health` 始终使用全局 `META_AGENT__PORTFOLIO_KB_IDS`，不依赖 `spaceId`。
+- 医院使用说明沿用已审核文档和原有患者读取身份，配置于
+  `META_AGENT__PORTFOLIO_HELP_TOKEN`；医学文献沿用 `PORTFOLIO_TOKEN` 的既有读取身份。
+  患者编号、场景编号及知识库编号不会作为模型可填写的工具参数暴露。
+- 空间进入会话隔离键；同院换房间保留会话，换医院隔离历史。`sceneId` 进入请求内容指纹，
+  相同 `request_id` 换场景时返回 409。
+
+可审查的 Dify 请求节点源码为 `workflows/dify/prepare_request.py`，图更新器为
+`tools/integrate_space_dify.py`。更新时备份原图并检查图哈希，原服务令牌、患者绑定和回答节点沿用。
+
+```powershell
+uv run python -m tools.prepare_yueyang_knowledge inspect
+uv run python -m tools.prepare_yueyang_knowledge publish
+uv run python -m tools.integrate_space_dify update
+uv run python -m tools.integrate_space_dify test-draft
+uv run python -m tools.integrate_space_dify publish
+uv run python -m tools.check_space_runtime
+uv run python -m tools.test_space_dify
+uv run python -m tools.test_space_dify --context
+```
+
+医院资料发布工具只选择已有的最新已审核版本，验证 34 个名称确实出现在原文，
+通过现有 RAG 发布、索引校验和激活服务接入检索，不修改文档或审核状态。
+备份与联调响应保存于忽略目录 `.local/space-scene/`。
+
+本轮验证：全量 pytest 通过（15 项因 PostgreSQL 测试环境未配置或旧 MaxKB 停用而跳过），
+本轮涉及文件的 Ruff 检查通过。已发布 Dify 入口验证了跨房间医院知识查询、当前位置识别、
+医学文献来源、同一会话切换房间及省略场景时的默认空间。原生入口拒绝无效/跨医院场景，
+未知空间不会退回默认知识库。运行容器内 114 个源码和资源文件与工作目录一致。
+
 ## 单 Agent 与三层患者工具（2026-10）
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
@@ -76,6 +126,20 @@ blocking 请求无需消费队列。`NativeOutputAdapter` 统一 SSE 编码以�
 事件保存失败时停止交付并结束等待。当前仍要求单 worker、单副本。
 
 模块职责、版本维护方法及兼容边界见 [Prompt 与出站报文统一管理方案](docs/prompt-and-outbound-management-design.md)。
+
+Prompt 快速切换工具已提供。目标镜像同时包含 `builtin-v1`（当前线上基线）与
+`builtin-v2`（仅迭代当前位置更新与房间未知规则），默认仍为 `builtin-v1`。
+
+```powershell
+.\tools\switch-prompt.ps1 -List
+.\tools\switch-prompt.ps1 -Bundle builtin-v2
+.\tools\switch-prompt.ps1 -Bundle builtin-v1
+```
+
+脚本从运行容器标签发现 Compose 文件，核验目标镜像内的发布清单，暂停新运行并等待已有运行结束，
+只更新运行 env_file 的 `META_AGENT__PROMPT_BUNDLE`，重建 MetaAgent 容器后检查实际版本与 hash。
+失败时恢复原配置及镜像；可用版本间切换不构建镜像、不修改 Dify 工作流。
+完整操作及新增版本步骤见 [Prompt 部署与回滚](docs/prompt-deployment.md)。
 
 ## 前端 Run API v0.1
 
@@ -250,7 +314,9 @@ docker compose --project-name metaagent-runtime up -d --wait meta_agent
 ### 持久化行为
 
 Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；完整工具 JSON 存在按作用域隔离的证据库。
-会话按患者和可信身份隔离，保留最近六轮，另受 `AGENT_HISTORY_TOKENS=8000` 限制，闲置24小时失效。
+会话按患者和可信身份隔离，保留最近六轮，另受 `AGENT_HISTORY_TOKENS=24000` 限制，闲置24小时失效。
+单项工具结果默认预算为 `AGENT_TOOL_OUTPUT_TOKENS=16000`，模型上下文保护上限为
+`MODEL_CONTEXT_TOKENS=65536`；在预算内保留完整工具结果，超出后才逐级裁剪并标记。
 工具消息关联的证据过期时会标记为需要重新查询，基本档案缓存5分钟。
 证据和运行默认30分钟，匿名运行审计7天。到期读拒绝并删除，每小时物理清理，运行删除同时删除 Checkpoint。
 重启后重复请求返回保守的中断快照，不自动重发动作或制品。
@@ -258,8 +324,23 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 
 ## 知识语料
 
-当前 `search_knowledge` 使用 `KnowledgeAdapter → 本地 approved JSON corpus → BM25`，
-仍是简化实现。Dify RAG、独立 RAG Service、Hybrid Retrieval 和 Reranker 均未接入。
+2026-10-23 医疗知识已从 8 份扩充至 17 份：新增 6 篇用户已审核正文、2 份 NICE 指南和 WHO 神经康复干预包 Module 3 正文。
+医疗文献保持全局检索，不绑定 spaceId；WHO 正文按用户确认的当前非商业用途发布。
+版次、发布记录与质量限制见 [医疗知识发布记录](docs/medical-publication-20261023.md)。
+
+当前已发布 Dify 应用通过原生 `/v1/chat` 调用 MetaAgent，health 文献检索使用
+`KnowledgeAdapter → rag-portfolio API`，由独立 RAG 服务完成混合召回、PostgreSQL
+资格核验、重排及证据组装。医院说明库（help/product）按 `spaceId` 选择，
+医学文献（health）全局检索；未启用 portfolio 的部署仍可配置本地 approved JSON corpus。
+
+2026-10-23 新增 `builtin-v3` Prompt：每轮最多 4 个检索子问题、同领域最多 2 次调用、
+总计 4000 上下文 token。RAG 按知识库及固定重排模型的校准阈值拒绝低相关性资料；
+重排故障不使用融合分数回退。检索记录保留策略版本、分数和子问题覆盖情况。
+
+旧 MaxKB 在当前运行链路明确禁用，不参与检索、回答或故障回退。Compose 固定
+`META_AGENT__MAXKB_ENABLED=false`；即使历史配置传入 true，也不会装配 MaxKB 工作流。
+旧 `/v1/knowledge/retrieve` 和 `/v1/knowledge/sources/{code}` 接口保留鉴权，
+对合法的已认证请求返回 `503 / maxkb_disabled`。`/compat/dify/...` 仍返回 501。
 
 `KNOWLEDGE_CORPUS_PATH` 指向本地 JSON。格式由
 [domains/knowledge.py](src/meta_agent/domains/knowledge.py) 中的
@@ -273,10 +354,10 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 ## 已知限制
 
 - 当前只支持单 worker、单副本；跨实例租约与事件回放不在 v1 范围内。
-- Knowledge backend 仍为本地 approved JSON corpus + BM25，尚不是生产级知识服务。
+- 当前配置了岳阳医院一个空间；其他医院需先配置知识库映射和经来源核对的场景目录。
 - 自动测试不验收临床诊断或康复建议的医学正确性。
 - 受历史上下文预算及证据时效影响，部分结构化训练结果可能在后续轮重新查询。
-- Dify 展示已通过原生 API 接入，兼容入口未启用；正式 Dify RAG 留给独立 `feature/knowledge-dify`。
+- Dify 展示已通过原生 API 接入，旧 Dify 兼容入口与旧 MaxKB 链路未启用。
 
 详见 [Runtime Cutover Known Issues](docs/runtime-cutover-known-issues.md)。
 
@@ -293,6 +374,10 @@ docker run --rm metaagent-test
 PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接受名为 `metaagent_test` 的独立测试库。
 未提供时属于 environment-dependent skip，不视为 failure。Docker 内运行该测试时还需连接测试数据库所在网络。
 
+`tests/test_maxkb.py` 中 14 项历史运行链路用例明确跳过，不计为功能通过；其中包含先前失败的
+12 项及此前因同样返回 503 而碰巧通过的 2 项。独立的目录完整性和准备工具测试继续运行。
+`tests/test_maxkb_disabled.py` 验证旧接口的鉴权及禁用状态，包括历史开关为 true 的情况。
+
 2026-10-08 本机 Docker 迁移验证结果：
 
 - 完整 Python 回归：152 passed / 0 failed / 0 skipped，包含独立 `metaagent_test` 数据库的 PostgreSQL 集成测试。
@@ -305,3 +390,71 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 
 测试资产位于已忽略的 `outputs/20261008-docker-cutover/`。Runtime Cutover 的历史收口验证见
 [Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
+
+## 多知识源接入（首选）
+
+`META_AGENT__KNOWLEDGE_SOURCES` 配置多个独立知识服务，每项包含逻辑 `id`、`description`、
+完整 `url`、支持的 `domains`、可选 `scoped_domains` 和只读凭据。同领域可以接入多个知识源。
+`search_knowledge` 的模型参数为 `query/domain/source`；省略 `source` 时选配置中第一个支持该领域的
+知识源。模型只能看到逻辑名称、用途和领域，看不到地址、凭据、患者身份或内部 KB ID。
+
+```json
+[
+  {"id":"medical","description":"医学文献","url":"http://rag-portfolio-api:8000/v1/knowledge/search","domains":["health"],"token_env":"MEDICAL_KNOWLEDGE_TOKEN"},
+  {"id":"hospital","description":"医院说明","url":"http://rag-portfolio-api:8000/v1/knowledge/search","domains":["help","product"],"scoped_domains":["help","product"],"token_env":"HOSPITAL_KNOWLEDGE_TOKEN"}
+]
+```
+
+环境变量中的配置需写成一行 JSON。`token_env` 引用进程环境变量（Compose 的 `env_file` 会注入）；
+本地启动可用 `uv run --env-file .env ...` 注入，或在各项中直接配置受 `SecretStr` 保护的 `token`。
+`scoped_domains` 对应的 `scope.space_id` 仅由可信运行上下文注入，知识服务仍须独立鉴权。
+
+各服务实现固定的 `knowledge-search-v1` 协议：请求携带问题、领域、可信作用域与单次上下文上限；
+响应为 `status/context/sources/gaps/trace_id`。Agent 使用打包的 OpenAPI 契约校验收发数据，
+统一执行超时、响应大小限制、整轮工具次数及并发控制、证据存储和引用传递。
+`KNOWLEDGE_CONTEXT_TOKENS` 为**每次调用**上限，整轮资源限制继续由 Agent 总工具预算与上下文预算控制；
+新协议不沿用旧 portfolio 的每领域次数/子问题计数。
+
+检索策略、KB 映射、版本资格和重排归服务端。新增符合协议的知识源只需添加配置；
+原生 API 格式不同的服务需在其服务侧转换为该协议。调用失败、权限拒绝或无证据均不会自动换源，
+也不会回退本地 corpus。来源保留在证据与 `knowledge_retrieval` 指标中，Dify 继续展示引用；跨轮重新检索。
+
+契约源位于 rag-portfolio。更新后执行：
+
+```powershell
+# 在 rag-portfolio 仓库执行；同时导出服务契约与 Agent 消费快照。
+uv run python tools/export_knowledge_contract.py --agent-root D:/Project/metaAgent
+```
+
+`KNOWLEDGE_SOURCES` 非空时优先使用该接入方式。留空则沿用以下 portfolio / 本地 corpus 兼容路径；
+场景目录与导航仍使用独立接口。
+
+## Dify 与现有 RAG 知识库（兼容配置）
+
+应用 `747e56ab-5f99-45ac-b511-a2b960f249c5` 已接入现有 rag-portfolio，沿用五节点的
+`准备请求 → MetaAgent → 回答展示` 工作流。MetaAgent 的 `search_knowledge` 只传问题和配置的 KB ID，
+由 RAG API 完成 Hybrid、PG 资格核验、重排和证据打包。返回的标题、物理页码、版本、chunk hash
+保存在证据 Store，并由 Dify 确定性展示“本次检索资料”。跨轮知识结果会标记过期，要求重新检索当前发布。
+
+配置见 `.env.example` 中的 `META_AGENT__PORTFOLIO_*`。首次接入发布 health 文献，
+2026-10-22 增加按 `spaceId` 选择的医院说明库及 help/product 工具领域。
+RAG 凭据为范围受限的只读身份；查询请求不附带患者编号。
+已有本地语料路径保留；旧 MaxKB 配置仅供历史实验工具读取，当前链路禁用。
+RAG 服务失败会明确返回不可用，不回退到 MaxKB 或本地语料。
+
+兼容构建入口 `Dockerfile.portfolio` 基于原运行镜像更新锁定依赖和应用，包含新契约校验依赖。
+Compose 的实际 image 选择和服务配置仍由已有 `outputs/20261020-docker-cutover/` 管理。
+rag-portfolio 的 `compose.integration.yaml` 将 API 接入现有 MetaAgent 网络，并挂载已有 `data/`；
+数据库地址使用完整容器名，避免两张网络都有 `postgres` 服务名导致串库。
+
+```powershell
+uv run python tools/integrate_portfolio_dify.py update
+uv run python tools/integrate_portfolio_dify.py test-draft
+uv run python tools/integrate_portfolio_dify.py publish
+uv run python tools/test_portfolio_dify.py --fault
+```
+
+前两步使用 Dify 自身的工作流服务保存草稿、执行真实 Sandbox/HTTP 节点。发布保留 Dify 版本历史。
+最终测试使用已发布 WebApp 的正常 passport/聊天接口，验证中文文献、跨轮新 trace、英文来源及故障提示。
+`--fault` 会短暂停止新 RAG API，并在 finally 中恢复。草稿备份和测试记录只保存在忽略目录
+`.local/portfolio-dify/`，不包含持久凭据。此验证证明联调与来源展示有效，不代表医学答案正确性验收。

@@ -67,6 +67,7 @@ class AgentRoute(APIRoute):
                     "ack_conflict": 409,
                     "action_not_found": 404,
                     "service_busy": 429,
+                    "service_draining": 503,
                 }.get(exc.code, 422)
                 return error(status, exc.code, exc.message, exc.retryable)
             except Exception:

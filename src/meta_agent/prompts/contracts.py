@@ -26,6 +26,10 @@ class FrontendPromptInputs(StrictModel):
     current_record: dict[str, Any] | None
 
 
+class SpacePromptInputs(StrictModel):
+    current_space: dict[str, Any]
+
+
 class IntentPromptInputs(StrictModel):
     query: str
     recent_turns: list[dict[str, str]]
@@ -68,6 +72,12 @@ class PromptDefinition:
 class PromptBinding:
     bundle: str
     definitions: tuple[PromptDefinition, ...]
+
+    @property
+    def bundle_hash(self) -> str:
+        from meta_agent.contracts import fingerprint
+
+        return fingerprint([[d.prompt_id, d.version, d.template_hash] for d in self.definitions])
 
     def definition(self, prompt_id: str) -> PromptDefinition:
         for definition in self.definitions:

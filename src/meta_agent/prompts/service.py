@@ -4,6 +4,7 @@
 """
 
 import json
+from importlib.resources import files
 
 from pydantic import BaseModel
 
@@ -20,6 +21,30 @@ class PromptService:
             return self._catalog[bundle]
         except KeyError as exc:
             raise ValueError(f"Unknown prompt bundle: {bundle}") from exc
+
+    def releases(self) -> list[dict]:
+        """Verify the published lock before deployment; never log rendered dynamic data."""
+        locked = json.loads(
+            files("meta_agent.prompts").joinpath("releases.json").read_text(encoding="utf-8")
+        )
+        if set(locked) != set(self._catalog):
+            raise ValueError("Prompt releases and registered bundles differ")
+        result = []
+        for name, binding in self._catalog.items():
+            release = locked[name]
+            if binding.bundle_hash != release["bundle_hash"]:
+                raise ValueError(f"Published prompt bundle changed: {name}; create a new version")
+            result.append(
+                {
+                    "bundle": name,
+                    **release,
+                    "prompts": [
+                        {"id": d.prompt_id, "version": d.version, "hash": d.template_hash}
+                        for d in binding.definitions
+                    ],
+                }
+            )
+        return result
 
     def render(
         self, binding: PromptBinding, prompt_id: str, variables: BaseModel

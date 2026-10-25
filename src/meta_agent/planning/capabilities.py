@@ -173,7 +173,13 @@ def capability_specs(settings: Settings) -> dict[str, CapabilitySpec]:
             "doctors.search", EmptyArgs, requires_space=True, enabled=settings.doctors_enabled
         ),
         CapabilitySpec(
-            "knowledge.search", KnowledgeArgs, enabled=bool(settings.knowledge_corpus_path)
+            "knowledge.search",
+            KnowledgeArgs,
+            enabled=bool(
+                settings.knowledge_sources
+                or settings.knowledge_corpus_path
+                or settings.portfolio_enabled
+            ),
         ),
         CapabilitySpec("answer.compose", EmptyArgs),
     ]

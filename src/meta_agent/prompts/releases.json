@@ -1,0 +1,20 @@
+{
+  "builtin-v1": {
+    "bundle_hash": "a6ec735d80f1ff6cd8e3cb842e6c9aae8dd3156a829223ca146a5748db0d69f7",
+    "released_on": "2026-10-22",
+    "change": "Freeze the current deployed baseline",
+    "validation": "tests/test_prompt_management.py; tests/test_space_knowledge.py; tests/test_prompt_switch.py"
+  },
+  "builtin-v2": {
+    "bundle_hash": "da377361f3522e557284acbf2756fde0ff762dd4bd6bac04dfce130690bec2a0",
+    "released_on": "2026-10-22",
+    "change": "Use current-turn room data and distinguish room changes from historical errors",
+    "validation": "tests/test_prompt_management.py; tests/test_space_knowledge.py; tests/test_prompt_switch.py"
+  },
+  "builtin-v3": {
+    "bundle_hash": "8b81b156cc0103f3d9416f3c44f2458af43eec5e698ada50a1979e2c6f1be725",
+    "released_on": "2026-10-23",
+    "change": "Global medical knowledge, published scene registry and bounded evidence retrieval",
+    "validation": "tests/test_rag_hardening.py; tests/test_prompt_management.py; tests/test_space_knowledge.py"
+  }
+}

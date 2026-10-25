@@ -22,6 +22,16 @@ router = APIRouter()
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
         inputs = dict(payload.inputs)
+        settings = request.app.state.container.settings
+        if settings.portfolio_scene_catalog_enabled:
+            from meta_agent.domains.space_context import refresh_scene_catalog
+
+            try:
+                await refresh_scene_catalog(
+                    settings, required=bool(inputs.get("sceneId") or inputs.get("scene_id"))
+                )
+            except RuntimeError as exc:
+                raise HTTPException(503, "scene_catalog_unavailable") from exc
         project_id = inputs.get("projectPatientId")
         if project_id is None:
             project_id = inputs.get("project_patient_id")
@@ -69,7 +79,11 @@ async def chat(payload: NativeChatRequest, request: Request):
         )
     except DomainError as exc:
         raise HTTPException(
-            409 if exc.code == "idempotency_conflict" else 422,
+            409
+            if exc.code == "idempotency_conflict"
+            else 503
+            if exc.code == "service_draining"
+            else 422,
             {"code": exc.code, "message": exc.message},
         ) from exc
     if run.reused:

@@ -275,9 +275,10 @@ class PlanCompiler:
                 else:
                     add([gid], "doctors.search")
             elif g.kind == "knowledge_query":
-                if (
-                    g.domain not in {"health", "product", "help"}
-                    or not self.settings.knowledge_corpus_path
+                if g.domain not in {"health", "product", "help"} or not (
+                    self.settings.knowledge_sources
+                    or self.settings.knowledge_corpus_path
+                    or self.settings.portfolio_enabled
                 ):
                     result.dispositions[gid] = ("unavailable", "尚无已批准的对应知识语料。")
                 else:
@@ -496,7 +497,8 @@ class PlanCompiler:
                 spec.requires_patient
                 and not (
                     scope.iretour_patient_id or scope.project_patient_id
-                    if task.capability in {"iretour.execute", "irecog.execute", "assessment.execute"}
+                    if task.capability
+                    in {"iretour.execute", "irecog.execute", "assessment.execute"}
                     else scope.patient_id
                 )
                 or spec.requires_space

@@ -154,6 +154,7 @@ def test_disabled_tour_report_never_reaches_http(endpoint):
     [
         ("generate_irego_single_session_report", "iretour_s_v1_fixture"),
         ("get_iretour_session_analysis", "irego_s_v1_fixture"),
+        ("get_iretour_session_analysis", "irego_s_v2_fixture"),
     ],
 )
 def test_cross_device_ref_is_rejected_before_identity_mapping_or_backend_call(endpoint, ref):

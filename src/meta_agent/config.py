@@ -7,8 +7,10 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from meta_agent.integrations.knowledge import KnowledgeSourceConfig
 
 
 class Settings(BaseSettings):
@@ -37,8 +39,8 @@ class Settings(BaseSettings):
     agent_model: str = ""
     agent_max_model_calls: int = Field(default=8, ge=2, le=20)
     agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
-    agent_tool_output_tokens: int = Field(default=3000, ge=512, le=8000)
-    agent_history_tokens: int = Field(default=8000, ge=1024, le=20000)
+    agent_tool_output_tokens: int = Field(default=16000, ge=512, le=32000)
+    agent_history_tokens: int = Field(default=24000, ge=1024, le=64000)
 
     persistence_backend: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str = ""
@@ -97,7 +99,7 @@ class Settings(BaseSettings):
     answer_timeout_seconds: float = Field(default=8, gt=0, le=30)
     planner_input_tokens: int = Field(default=6000, ge=512, le=16000)
     answer_input_tokens: int = Field(default=12000, ge=512, le=32000)
-    model_context_tokens: int = Field(default=32768, ge=4096)
+    model_context_tokens: int = Field(default=65536, ge=4096)
     answer_mode: Literal["template", "llm_select"] = "template"
     answer_model: str = "deepseek:deepseek-chat"
     conversation_ttl_seconds: int = Field(default=86400, ge=60, le=86400)
@@ -114,6 +116,22 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
+    knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
+    portfolio_enabled: bool = False
+    portfolio_base_url: str = "http://rag-portfolio-api:8000"
+    portfolio_token: SecretStr = SecretStr("")
+    # Global medical literature; never selected by spaceId.
+    portfolio_kb_ids: list[str] = Field(default_factory=list)
+    # Trusted space -> hospital help/product -> existing RAG knowledge-base IDs.
+    portfolio_space_kb_ids: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    portfolio_help_token: SecretStr = SecretStr("")
+    portfolio_timeout_seconds: float = Field(default=20, gt=0, le=40)
+    portfolio_top_k: int = Field(default=5, ge=1, le=20)
+    portfolio_context_tokens: int = Field(default=4000, ge=128, le=16000)
+    portfolio_scene_catalog_enabled: bool = False
+    portfolio_scene_catalog_ttl_seconds: float = Field(default=30, ge=1, le=300)
+    # Historical lab settings only; the current API/runtime never enables MaxKB.
     maxkb_enabled: bool = False
     maxkb_url: str = "http://host.docker.internal:18081/admin/api"
     maxkb_config_path: str = ""
@@ -126,6 +144,8 @@ class Settings(BaseSettings):
     maxkb_answer_timeout_seconds: float = Field(default=30, gt=0, le=60)
     maxkb_answer_max_tokens: int = Field(default=768, ge=128, le=2048)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
+    # Browser origin for local reports; check these artifacts over the internal backend network.
+    artifact_public_base_url: str = ""
     # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
     patient_brief_include_name: bool = False
@@ -134,6 +154,13 @@ class Settings(BaseSettings):
     irecog_reports_enabled: bool = False
     assessment_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
+
+    @field_validator("knowledge_sources")
+    @classmethod
+    def unique_knowledge_sources(cls, sources):
+        if len({source.id for source in sources}) != len(sources):
+            raise ValueError("knowledge source IDs must be unique")
+        return sources
 
     def runtime_issues(self) -> list[str]:
         issues = []

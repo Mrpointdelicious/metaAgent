@@ -1,6 +1,6 @@
 """
 创建日期：2026-10-18
-文件功能：用少量原生 API 夹具验证无 bridge 的检索、回答与权限边界。
+文件功能：保留旧 MaxKB 实验测试；已禁用的运行链路用例明确跳过。
 """
 
 import hashlib
@@ -20,6 +20,9 @@ from meta_agent.domains.maxkb_policy import STRATEGIES
 from tests.helpers.settings import TestSettings as IsolatedSettings
 
 HEADERS = {"Authorization": "Bearer service-test"}
+legacy_runtime = pytest.mark.skip(
+    reason="旧 MaxKB 运行链路已禁用；当前链路使用原生 /v1/chat + rag-portfolio。"
+)
 
 
 def load_tool(name):
@@ -259,6 +262,7 @@ def query():
     return {"query": "电脑端如何跳跃？", "tenant_id": "maxkb-pilot", "space_id": "A"}
 
 
+@legacy_runtime
 def test_native_dify_answer_and_stream_smoke(sample, monkeypatch):
     install(monkeypatch, sample)
     with TestClient(create_app(sample["settings"])) as client:
@@ -277,6 +281,7 @@ def test_native_dify_answer_and_stream_smoke(sample, monkeypatch):
 
 
 @pytest.mark.parametrize("space,status", [(None, 422), ("B", 403)])
+@legacy_runtime
 def test_scope_rejected_before_any_outbound(sample, monkeypatch, space, status):
     install(monkeypatch, sample)
     with TestClient(create_app(sample["settings"])) as client:
@@ -285,6 +290,7 @@ def test_scope_rejected_before_any_outbound(sample, monkeypatch, space, status):
     assert not sample["calls"]
 
 
+@legacy_runtime
 def test_retrieval_only_and_authenticated_source(sample, monkeypatch):
     sample["settings"].maxkb_answer_mode = "disabled"
     sample["settings"].deepseek_api_key = ""
@@ -313,6 +319,7 @@ def test_retrieval_only_and_authenticated_source(sample, monkeypatch):
     assert not any("completions" in c for c in sample["calls"])
 
 
+@legacy_runtime
 def test_changed_evidence_cannot_reach_answer_model(sample, monkeypatch):
     install(monkeypatch, sample, tamper=True)
     with TestClient(create_app(sample["settings"])) as client:
@@ -321,6 +328,7 @@ def test_changed_evidence_cannot_reach_answer_model(sample, monkeypatch):
     assert not any("completions" in c for c in sample["calls"])
 
 
+@legacy_runtime
 def test_disabled_document_not_recalled_or_downloadable(sample, monkeypatch):
     install(monkeypatch, sample, disabled=True)
     with TestClient(create_app(sample["settings"])) as client:
@@ -330,6 +338,7 @@ def test_disabled_document_not_recalled_or_downloadable(sample, monkeypatch):
         assert client.get(source, headers=HEADERS).status_code == 404
 
 
+@legacy_runtime
 def test_expired_native_session_recovers_once(sample, monkeypatch):
     install(monkeypatch, sample, expired=True)
     with TestClient(create_app(sample["settings"])) as client:
@@ -346,6 +355,7 @@ def clinical(sample):
     publish(sample)
 
 
+@legacy_runtime
 def test_required_rerank_needs_native_configuration(sample, monkeypatch):
     clinical(sample)
     install(monkeypatch, sample)
@@ -358,6 +368,7 @@ def test_required_rerank_needs_native_configuration(sample, monkeypatch):
     assert not any(c.startswith("/chat/") for c in sample["calls"])
 
 
+@legacy_runtime
 def test_native_workflow_rerank_and_new_sessions(sample, monkeypatch):
     clinical(sample)
     install(monkeypatch, sample, rerank=True)
@@ -376,6 +387,7 @@ def test_native_workflow_rerank_and_new_sessions(sample, monkeypatch):
     assert len(set(sessions)) == 2
 
 
+@legacy_runtime
 def test_document_disabled_during_rerank_is_not_returned(sample, monkeypatch):
     clinical(sample)
     install(monkeypatch, sample, rerank=True, disable_during_rerank=True)
@@ -390,6 +402,7 @@ def test_document_disabled_during_rerank_is_not_returned(sample, monkeypatch):
 
 
 @pytest.mark.parametrize("failure,status", [("identity", 502), ("request", 502), ("provider", 503)])
+@legacy_runtime
 def test_native_rerank_rejects_failed_or_foreign_results(sample, monkeypatch, failure, status):
     clinical(sample)
     install(monkeypatch, sample, rerank=True, bad_rerank=failure)
@@ -402,6 +415,7 @@ def test_native_rerank_rejects_failed_or_foreign_results(sample, monkeypatch, fa
     assert not any("completions" in c for c in sample["calls"])
 
 
+@legacy_runtime
 def test_provider_failure_is_not_empty_retrieval_or_leaked(sample, monkeypatch):
     install(monkeypatch, sample, fail=True)
     with TestClient(create_app(sample["settings"])) as client:

@@ -15,13 +15,13 @@ def compact_result(body: dict, budget: int) -> dict:
     """Keep an explicit truncation marker; full data remains in the evidence store."""
     omitted = False
 
-    def shrink(value: Any, text_limit: int, list_limit: int):
+    def shrink(value: Any, text_limit: int | None, list_limit: int | None):
         nonlocal omitted
-        if isinstance(value, str) and len(value) > text_limit:
+        if isinstance(value, str) and text_limit is not None and len(value) > text_limit:
             omitted = True
             return value[:text_limit] + "（摘要截断，可缩小查询范围获取更多内容）"
         if isinstance(value, list):
-            if len(value) > list_limit:
+            if list_limit is not None and len(value) > list_limit:
                 omitted = True
             return [shrink(x, text_limit, list_limit) for x in value[:list_limit]]
         if isinstance(value, dict):
@@ -32,7 +32,14 @@ def compact_result(body: dict, budget: int) -> dict:
             }
         return value
 
-    for text_limit, list_limit in [(1600, 10), (800, 5), (400, 3), (200, 2), (100, 1)]:
+    for text_limit, list_limit in [
+        (None, None),
+        (1600, 10),
+        (800, 5),
+        (400, 3),
+        (200, 2),
+        (100, 1),
+    ]:
         result = shrink(body, text_limit, list_limit)
         if omitted:
             result["context_truncated"] = True
@@ -73,6 +80,22 @@ async def fresh_history(messages: list[BaseMessage], ctx) -> list[BaseMessage]:
         try:
             payload = json.loads(message.content)
         except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("tool_name") == "search_knowledge"
+            and (payload.get("data") or {}).get("retrieval_trace_id")
+        ):
+            # Publication or qualification can change before the next conversational turn.
+            # A live Store TTL is not proof that the source remains published.
+            message.content = json.dumps(
+                {
+                    "tool_name": "search_knowledge",
+                    "status": "expired",
+                    "patient_message": "旧知识结果须按当前发布重新检索，不能直接作为本轮证据。",
+                },
+                ensure_ascii=False,
+            )
             continue
         eid = payload.get("evidence_id") if isinstance(payload, dict) else None
         if eid and await ctx.repository.evidence(ctx.scope.scope_hash, eid) is None:

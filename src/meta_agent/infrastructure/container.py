@@ -80,10 +80,27 @@ async def create_container(settings: Settings) -> ServiceContainer:
     if issues:
         raise RuntimeError("；".join(issues))
     prompts = PromptService()
+    prompts.releases()
     prompts.bind(settings.prompt_bundle)
     output_adapter = NativeOutputAdapter()
     stack = AsyncExitStack()
     await stack.__aenter__()
+    from meta_agent.domains.space_context import (
+        configure_scene_catalog,
+        refresh_scene_catalog,
+        scene_catalog_loop,
+    )
+
+    configure_scene_catalog(settings.portfolio_scene_catalog_enabled)
+    if settings.portfolio_scene_catalog_enabled:
+        await refresh_scene_catalog(settings)
+        catalog_task = asyncio.create_task(scene_catalog_loop(settings))
+
+        async def close_catalog():
+            catalog_task.cancel()
+            await asyncio.gather(catalog_task, return_exceptions=True)
+
+        stack.push_async_callback(close_catalog)
     lease = None
     try:
         if settings.persistence_backend == "postgres":
@@ -172,6 +189,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
             lease_connection=lease,
         )
         if lease:
+
             async def guard():
                 try:
                     async with asyncio.timeout(2):

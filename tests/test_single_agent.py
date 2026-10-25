@@ -197,6 +197,27 @@ def test_patient_result_from_other_identity_is_rejected_and_never_enters_context
 # 测试压缩和截断效果
 
 
+def test_compaction_preserves_all_metrics_when_result_fits_budget():
+    metrics = [
+        {"metric_code": f"metric_{index}", "normalized_value": index, "value_status": "valid"}
+        for index in range(19)
+    ]
+    body = {
+        "status": "success",
+        "data": {
+            "overview": {"valid_metric_count": len(metrics)},
+            "report_blocks": [{"metrics": metrics, "phone": "private", "password": "private"}],
+        },
+    }
+
+    compact = compact_result(body, 16000)
+
+    assert compact["data"]["report_blocks"][0]["metrics"] == metrics
+    assert "context_truncated" not in compact
+    assert "phone" not in compact["data"]["report_blocks"][0]
+    assert "password" not in compact["data"]["report_blocks"][0]
+
+
 def test_compaction_keeps_explicit_truncation_and_prescription_name():
     body = {
         "status": "success",

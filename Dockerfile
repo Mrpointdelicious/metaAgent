@@ -9,6 +9,8 @@ RUN uv sync --locked --no-dev --extra postgres --extra llm-deepseek --no-editabl
 FROM builder AS test
 COPY main.py ./main.py
 COPY tests ./tests
+COPY tools ./tools
+COPY workflows ./workflows
 RUN uv sync --locked --extra dev --extra postgres --extra llm-deepseek --no-editable
 CMD ["/opt/venv/bin/pytest"]
 
