@@ -139,6 +139,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
                 settings.model_copy(
                     update={
                         "planner_model": settings.agent_model or settings.planner_model,
+                        "planner_max_tokens": settings.effective_agent_max_output_tokens,
                         "planner_timeout_seconds": settings.agent_model_timeout_seconds,
                         "planner_max_retries": 0,
                     }

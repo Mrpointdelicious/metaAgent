@@ -96,7 +96,10 @@ class PatientContextMiddleware(AgentMiddleware):
                 ],
             }
         )
-        if token_estimate + ctx.settings.planner_max_tokens > ctx.settings.model_context_tokens:
+        if (
+            token_estimate + ctx.settings.effective_agent_max_output_tokens
+            > ctx.settings.model_context_tokens
+        ):
             raise DomainError(
                 "agent_context_overflow", "本轮上下文过大，请缩小查询范围。", outcome="unavailable"
             )
@@ -136,6 +139,7 @@ class PatientContextMiddleware(AgentMiddleware):
                 ctx.record.metrics.setdefault("agent_model_steps", []).append(
                     {
                         "call": ctx.llm_budget.calls,
+                        "finish_reason": message.response_metadata.get("finish_reason"),
                         "tools": [
                             {"name": c["name"], "args": c["args"]} for c in message.tool_calls
                         ],
@@ -166,6 +170,9 @@ class SingleAgentRuntime:
         # 获取上下文等运行时属性，并进行绑定
         token = CURRENT_RUN.set(ctx)
         ctx.record.metrics["orchestration_mode"] = "agent"
+        ctx.record.metrics["agent_max_output_tokens"] = (
+            ctx.settings.effective_agent_max_output_tokens
+        )
         try:
             # 更新历史信息，message装填；fresh_history 检查历史工具消息中的 Evidence 是否仍然可用。
             # 如果证据过期，则修改模型可见的旧工具消息，标记需要重新查询。
@@ -205,6 +212,10 @@ class SingleAgentRuntime:
             # 错误兜底
             if final is None:
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
+            finish_reason = final.response_metadata.get("finish_reason")
+            truncated = finish_reason == "length"
+            ctx.record.metrics["agent_answer_finish_reason"] = finish_reason
+            ctx.record.metrics["agent_answer_truncated"] = truncated
             answer = final.content
             if isinstance(answer, list):
                 answer = "\n".join(
@@ -220,6 +231,12 @@ class SingleAgentRuntime:
             await ctx.events.answer(
                 AnswerContent(text=answer, fact_ids=[], doc_refs=[]), goal_id="agent"
             )
+            if truncated:
+                await ctx.events.progress(
+                    "agent",
+                    "本次回答因输出长度限制未能完整生成，可继续追问未完成的部分。",
+                    goal_id="agent",
+                )
             # The natural answer is retained alongside complete tool-call pairs, not a fixed plan.
             # 记忆更新
             ctx.memory.agent_messages = messages_to_dict(
@@ -233,6 +250,8 @@ class SingleAgentRuntime:
             bad = any(s not in {"succeeded", "partial"} for s in latest.values())
             ctx.record.status = "partial" if good and bad else "unavailable" if bad else "succeeded"
             if any(s == "partial" for s in latest.values()):
+                ctx.record.status = "partial"
+            if truncated and ctx.record.status == "succeeded":
                 ctx.record.status = "partial"
             ctx.record.goal_statuses["agent"] = ctx.record.status
         finally:

@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     orchestration_mode: Literal["agent", "legacy"] = "agent"
     prompt_bundle: str = "builtin-v1"
     agent_model: str = ""
+    agent_max_output_tokens: int | None = Field(default=None, ge=128, le=8192)
     agent_max_model_calls: int = Field(default=8, ge=2, le=20)
     agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
     agent_tool_output_tokens: int = Field(default=16000, ge=512, le=32000)
@@ -161,6 +162,15 @@ class Settings(BaseSettings):
         if len({source.id for source in sources}) != len(sources):
             raise ValueError("knowledge source IDs must be unique")
         return sources
+
+    @property
+    def effective_agent_max_output_tokens(self) -> int:
+        """Keep existing deployments unchanged until the Agent output limit is configured."""
+        return (
+            self.agent_max_output_tokens
+            if self.agent_max_output_tokens is not None
+            else self.planner_max_tokens
+        )
 
     def runtime_issues(self) -> list[str]:
         issues = []
