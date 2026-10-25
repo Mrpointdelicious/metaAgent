@@ -84,6 +84,7 @@ def test_ops_requires_loopback_and_service_identity(client, settings, auth_heade
             "builtin-v1",
             "builtin-v2",
             "builtin-v3",
+            "builtin-v4",
         }
 
 

@@ -122,9 +122,23 @@ def test_scene_cache_tracks_the_published_registry_instead_of_the_bundled_snapsh
 
 def test_rag_prompt_release_preserves_the_frozen_baselines():
     service = PromptService()
-    assert len(service.releases()) == 3
+    assert len(service.releases()) == 4
     assert (
         service.bind("builtin-v1").bundle_hash
         == "a6ec735d80f1ff6cd8e3cb842e6c9aae8dd3156a829223ca146a5748db0d69f7"
     )
     assert service.bind("builtin-v3").definition("space.context").version == "v3"
+
+
+def test_contract_prompt_does_not_request_legacy_retrieval_fields():
+    service = PromptService()
+    previous = service.bind("builtin-v3")
+    current = service.bind("builtin-v4")
+    assert previous.bundle_hash == (
+        "8b81b156cc0103f3d9416f3c44f2458af43eec5e698ada50a1979e2c6f1be725"
+    )
+    for old, new in zip(previous.definitions, current.definitions, strict=True):
+        assert (old.template_hash != new.template_hash) == (old.prompt_id == "rehab.agent")
+    instructions = current.definition("rehab.agent").text("agent_system")
+    assert "source" in instructions
+    assert "subqueries" not in instructions and "query_decisions" not in instructions

@@ -429,6 +429,9 @@ uv run python tools/export_knowledge_contract.py --agent-root D:/Project/metaAge
 `KNOWLEDGE_SOURCES` 非空时优先使用该接入方式。留空则沿用以下 portfolio / 本地 corpus 兼容路径；
 场景目录与导航仍使用独立接口。
 
+新契约部署使用 `META_AGENT__PROMPT_BUNDLE=builtin-v4`，其知识检索规则对应 `query/domain/source`
+及证据缺口语义。历史 `builtin-v1/v2/v3` 的模板与发布 hash 保持冻结，可用于旧接入回滚。
+
 ## Dify 与现有 RAG 知识库（兼容配置）
 
 应用 `747e56ab-5f99-45ac-b511-a2b960f249c5` 已接入现有 rag-portfolio，沿用五节点的

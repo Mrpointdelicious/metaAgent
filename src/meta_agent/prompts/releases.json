@@ -16,5 +16,11 @@
     "released_on": "2026-10-23",
     "change": "Global medical knowledge, published scene registry and bounded evidence retrieval",
     "validation": "tests/test_rag_hardening.py; tests/test_prompt_management.py; tests/test_space_knowledge.py"
+  },
+  "builtin-v4": {
+    "bundle_hash": "53445ccba509709621e8e8df6a527c5f737160bf75c975f16eff1a7ca9a8157b",
+    "released_on": "2026-10-25",
+    "change": "Contract-based knowledge sources and evidence gaps without legacy retrieval fields",
+    "validation": "tests/test_remote_knowledge.py; tests/test_rag_hardening.py; tests/test_prompt_switch.py"
   }
 }

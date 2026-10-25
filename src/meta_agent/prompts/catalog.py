@@ -41,6 +41,16 @@ MANIFEST = MappingProxyType(
                 ("budget_exhausted", "v1"),
             ),
         ),
+        ("rehab.agent", "v3"): (
+            AgentPromptInputs,
+            None,
+            (
+                ("agent_system", "v3"),
+                ("agent_time", "v1"),
+                ("patient_profile", "v1"),
+                ("budget_exhausted", "v1"),
+            ),
+        ),
         ("intent.parse", "v1"): (IntentPromptInputs, IntentDecision, (("intent_system", "v1"),)),
         ("intent.repair", "v1"): (EmptyPromptInputs, None, (("intent_repair", "v1"),)),
         ("frontend.context", "v1"): (FrontendPromptInputs, None, (("frontend_context", "v1"),)),
@@ -75,6 +85,14 @@ BUNDLES = MappingProxyType(
         ),
         "builtin-v3": (
             ("rehab.agent", "v2"),
+            ("intent.parse", "v1"),
+            ("intent.repair", "v1"),
+            ("answer.fact_select", "v1"),
+            ("frontend.context", "v1"),
+            ("space.context", "v3"),
+        ),
+        "builtin-v4": (
+            ("rehab.agent", "v3"),
             ("intent.parse", "v1"),
             ("intent.repair", "v1"),
             ("answer.fact_select", "v1"),
