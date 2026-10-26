@@ -5,6 +5,7 @@
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,7 +17,11 @@ from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.orchestration.identity import TrustedScope
-from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
+from meta_agent.tools.ai_webapi import (
+    ASSESSMENT_REPORT_ENDPOINTS,
+    IRECOG_REPORT_ENDPOINTS,
+    IRETOUR_REPORT_ENDPOINTS,
+)
 
 
 @dataclass
@@ -50,6 +55,10 @@ class RunContext:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
+            raise DomainError("capability_disabled", "IReCog报表暂未启用。", outcome="unsupported")
+        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
+            raise DomainError("capability_disabled", "量表报表暂未启用。", outcome="unsupported")
         if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
             raise DomainError(
                 "capability_disabled",
@@ -63,18 +72,24 @@ class RunContext:
             raise DomainError(
                 "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
             )
+        priority = (
+            0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
+        )
+        async with self.tool_slot(priority):
+            return await self.backend.post(endpoint, payload)
+
+    @asynccontextmanager
+    async def tool_slot(self, priority: int = 1):
+        """Share admission, call budget and concurrency with external knowledge services."""
         if self.runtime_guard:
             await self.runtime_guard()
         if self.tool_calls >= self.settings.max_tool_calls:
             raise DomainError("tool_budget", "本轮工具调用预算已用完。", outcome="unavailable")
         self.tool_calls += 1
-        priority = (
-            0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
-        )
         lease = (
             self.tool_limiter.hold(priority)
             if isinstance(self.tool_limiter, PriorityLimiter)
             else self.tool_limiter
         )
         async with lease:
-            return await self.backend.post(endpoint, payload)
+            yield

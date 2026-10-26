@@ -30,12 +30,30 @@ PATIENT_ENDPOINTS = frozenset(
         "get_patient_profile",
         "get_patient_consultation",
         "get_patient_rehab",
+        "get_irecog_patient_context",
+        "get_irecog_patient_history",
+        "get_irecog_session_analysis",
+        "get_irecog_longitudinal_analysis",
+        "generate_irecog_single_session_report",
+        "generate_irecog_longitudinal_report",
+        "get_assessment_patient_context",
+        "get_assessment_patient_history",
+        "get_assessment_result_analysis",
+        "get_assessment_longitudinal_analysis",
+        "generate_assessment_single_report",
+        "generate_assessment_longitudinal_report",
     }
 )
 REHAB_ENDPOINTS = frozenset({"navigate_scene", "search_doctors"})
 HOSPITAL_ENDPOINTS = frozenset({"query_hospital_operations"})
 IRETOUR_REPORT_ENDPOINTS = frozenset(
     {"generate_iretour_single_session_report", "generate_iretour_longitudinal_report"}
+)
+IRECOG_REPORT_ENDPOINTS = frozenset(
+    {"generate_irecog_single_session_report", "generate_irecog_longitudinal_report"}
+)
+ASSESSMENT_REPORT_ENDPOINTS = frozenset(
+    {"generate_assessment_single_report", "generate_assessment_longitudinal_report"}
 )
 # 三层患者接口使用 project 患者编号，独立于已停用的多源端点。
 PATIENT_ENDPOINTS_V17 = frozenset(
@@ -138,6 +156,18 @@ class AIWebApiClient:
             raise BackendCallError(
                 "capability_disabled",
                 "IReTour报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
+        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "IReCog报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
+        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "量表报表暂未启用，仍可查询历史和分析结果。",
                 outcome="unsupported",
             )
         if self.settings.dry_run:

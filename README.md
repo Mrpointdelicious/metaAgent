@@ -280,3 +280,14 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 
 测试资产位于已忽略的 `outputs/20261008-docker-cutover/`。Runtime Cutover 的历史收口验证见
 [Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)。
+
+## 工具与轻量知识库接入
+
+在 master `0620db1` 基础上新增 IReCog、线上量表各 6 个工具；两类工具使用可信 project 患者身份，
+报表分别由 `META_AGENT__IRECOG_REPORTS_ENABLED`、`META_AGENT__ASSESSMENT_REPORTS_ENABLED` 显式开启。
+
+知识检索支持最新 `knowledge-search-v1` 统一接口，通过 `.env` 的
+`META_AGENT__KNOWLEDGE_SOURCES` 配置多个服务、领域和凭据，不在 MetaAgent 中运行索引、重排或厂商检索代码。
+配置示例、接口边界和迁移范围见 [工具与知识库迁移说明](docs/tool-and-knowledge-migration.md)。
+
+此迁移保持既有聊天协议；`interactive.py` 与原生 `/v1/chat` 的请求及响应格式差异仍需后续兼容补丁。
