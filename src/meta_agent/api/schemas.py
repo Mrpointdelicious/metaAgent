@@ -3,11 +3,11 @@
 文件功能：定义 Dify 兼容请求、健康检查和运行输出的数据结构。
 """
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, field_validator
 
-from meta_agent.contracts import StrictModel
+from meta_agent.contracts import StrictModel, identifier
 
 
 class RunAccessRequest(StrictModel):
@@ -36,30 +36,29 @@ class NativeChatRequest(RunAccessRequest):
         return value.strip()
 
 
-class DifyChatRequest(BaseModel):
-    """兼容 Dify Chatflow 的最小请求结构。"""
+class DifyChatRequest(NativeChatRequest):
+    """Text chat compatibility; omitted request IDs are unique for each call."""
 
-    inputs: dict[str, Any] = Field(default_factory=dict)
-    query: str
-    response_mode: Literal["streaming", "blocking"] = "streaming"
-    conversation_id: str = ""
-    user: str
+    model_config = ConfigDict(extra="ignore")
+    request_id: str = Field(
+        default_factory=lambda: identifier("request"), min_length=1, max_length=160
+    )
+    files: list[dict[str, Any]] = Field(default_factory=list, max_length=0)
+    auto_generate_name: bool = True
 
-    @field_validator("query")
-    @classmethod
-    def validate_query(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("query 不能为空")
-        return normalized
 
-    @field_validator("user")
-    @classmethod
-    def validate_user(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("user 必须是可信接入方提供的稳定用户标识")
-        return normalized
+def chat_protocol(value: Any) -> str:
+    if isinstance(value, DifyChatRequest):
+        return "dify"
+    if isinstance(value, NativeChatRequest) or isinstance(value, dict) and "request_id" in value:
+        return "native"
+    return "dify"
+
+
+ChatRequest = Annotated[
+    Annotated[NativeChatRequest, Tag("native")] | Annotated[DifyChatRequest, Tag("dify")],
+    Discriminator(chat_protocol),
+]
 
 
 class DifyWorkflowRequest(BaseModel):

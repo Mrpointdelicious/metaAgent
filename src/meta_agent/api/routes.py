@@ -1,6 +1,6 @@
 """
 创建日期：2026-08-29
-文件功能：原生阻塞/SSE、作用域限定状态与取消接口；Dify仅保留未启用入口。
+文件功能：原生与交互聊天阻塞/SSE入口，以及作用域限定的状态与取消接口。
 """
 
 import asyncio
@@ -9,10 +9,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from meta_agent.api.schemas import HealthResponse, NativeChatRequest, RunAccessRequest
+from meta_agent.api.schemas import (
+    ChatRequest,
+    DifyChatRequest,
+    HealthResponse,
+    NativeChatRequest,
+    RunAccessRequest,
+)
 from meta_agent.api.security import require_service_identity
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord, fingerprint
+from meta_agent.events.dify import DifyEventAdapter
 from meta_agent.events.stream import NativeEventAdapter
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
 
@@ -25,7 +32,14 @@ async def scope_for(payload: RunAccessRequest, request: Request):
         project_id = inputs.get("projectPatientId")
         if project_id is None:
             project_id = inputs.get("project_patient_id")
-        phone = inputs.get("patientPhone")
+        phones = [
+            inputs[name]
+            for name in ("patientPhone", "patientphone", "patient_phone")
+            if inputs.get(name) not in (None, "")
+        ]
+        if phones and any(value != phones[0] for value in phones[1:]):
+            raise ValueError("患者手机号别名不一致")
+        phone = phones[0] if phones else None
         if project_id is not None or phone is not None:
             if any(
                 inputs.get(k) not in (None, "")
@@ -70,8 +84,7 @@ def snapshot(record: RunRecord, reused: bool = True) -> dict[str, Any]:
     }
 
 
-@router.post("/v1/chat", dependencies=[Depends(require_service_identity)])
-async def chat(payload: NativeChatRequest, request: Request):
+async def start_chat(payload: NativeChatRequest, request: Request):
     container = request.app.state.container
     if len(payload.query) > container.settings.max_query_length:
         raise HTTPException(422, "query 超过本轮长度限制")
@@ -89,6 +102,14 @@ async def chat(payload: NativeChatRequest, request: Request):
             409 if exc.code == "idempotency_conflict" else 422,
             {"code": exc.code, "message": exc.message},
         ) from exc
+    return run, scope
+
+
+@router.post("/v1/chat", dependencies=[Depends(require_service_identity)])
+async def chat(payload: ChatRequest, request: Request):
+    if isinstance(payload, DifyChatRequest):
+        return await dify_chat(payload, request)
+    run, scope = await start_chat(payload, request)
     if run.reused:
         return JSONResponse(
             snapshot(run.record), status_code=202 if run.record.status == "running" else 200
@@ -106,12 +127,69 @@ async def chat(payload: NativeChatRequest, request: Request):
     try:
         await asyncio.shield(run.task)
     except asyncio.CancelledError:
-        await container.application.cancel(scope.scope_hash, run.record.run_id)
+        await request.app.state.container.application.cancel(scope.scope_hash, run.record.run_id)
         raise
     body = snapshot(run.record, False)
     body["events"] = [e.model_dump(mode="json") for e in run.record.events]
     # Blocking delivery has no transport acknowledgement; keep delivery_unknown.
     return JSONResponse(body)
+
+
+@router.post("/v1/chat-messages", dependencies=[Depends(require_service_identity)])
+@router.post("/compat/dify/v1/chat-messages", dependencies=[Depends(require_service_identity)])
+async def dify_chat(payload: DifyChatRequest, request: Request):
+    run, scope = await start_chat(payload, request)
+    adapter = DifyEventAdapter()
+    if run.reused:
+        return JSONResponse(
+            adapter.message(run.record, reused=True),
+            status_code=202 if run.record.status == "running" else 200,
+        )
+    if payload.response_mode == "streaming":
+        return StreamingResponse(
+            dify_stream(run, request),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "X-Run-ID": run.record.run_id,
+            },
+        )
+    try:
+        await asyncio.shield(run.task)
+    except asyncio.CancelledError:
+        await request.app.state.container.application.cancel(scope.scope_hash, run.record.run_id)
+        raise
+    return JSONResponse(adapter.message(run.record))
+
+
+async def dify_stream(run: ApplicationRun, request: Request):
+    adapter = DifyEventAdapter()
+    exhausted = False
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(run.emitter.queue.get(), timeout=15)
+            except TimeoutError:
+                yield "event: ping\n\n"
+                continue
+            if event is None:
+                exhausted = True
+                break
+        # Native answer revisions replace prior text; Dify messages append text.
+        # Publish the settled answer once, after draining progress and tool events.
+        for frame in adapter.frames(run.record):
+            yield adapter.encode(frame)
+    finally:
+        if not exhausted:
+
+            async def terminate():
+                await request.app.state.container.application.cancel(
+                    run.record.scope_key, run.record.run_id
+                )
+                await run.emitter.disconnect()
+
+            await asyncio.shield(terminate())
 
 
 async def stream(run: ApplicationRun, request: Request):
@@ -155,11 +233,11 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     return snapshot(record)
 
 
-@router.post("/compat/dify/v1/chat-messages", dependencies=[Depends(require_service_identity)])
 @router.post("/compat/dify/v1/workflows/run", dependencies=[Depends(require_service_identity)])
-async def dify_placeholder():
+async def dify_workflow_placeholder():
     raise HTTPException(
-        501, {"code": "adapter_not_enabled", "message": "Dify适配尚未启用，请使用原生/v1/chat。"}
+        501,
+        {"code": "adapter_not_enabled", "message": "Dify Workflow适配尚未启用，请使用聊天接口。"},
     )
 
 

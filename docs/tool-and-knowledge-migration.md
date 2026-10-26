@@ -83,9 +83,10 @@ HOSPITAL_KNOWLEDGE_TOKEN=replace-with-hospital-service-token
 跨轮重新检索已发布知识，不将仍在 TTL 内的上轮知识结果当作本轮有效证据。
 
 本次只迁移统一接口客户端，不迁移 MaxKB、旧 Portfolio `/v1/retrieve` 实现、索引、重排、场景目录同步或提示词/事件框架重构。
-`main.py`、`interactive.py`、Dockerfile、`.env`、`.env.local` 和现有 API 保持原样；原有依赖锁定版本及阿里云镜像保留。
+`main.py`、`interactive.py`、`.env`、`.env.local` 保持原样；原有依赖锁定版本及阿里云镜像保留。
+Dockerfile 测试阶段追加复制交互脚本，供真实 HTTP 客户端回归使用，运行阶段及镜像源配置保持不变。
 `uv.lock` 只增加契约校验所需依赖，`.env.example` 与 README 增补配置说明。
-交互客户端与原生 `/v1/chat` 的协议兼容问题属于后续独立修改。
+交互客户端的服务端兼容已独立实现，详见 [交互聊天接口兼容](interactive-chat-compat.md)。
 
 ## 验证
 

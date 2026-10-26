@@ -290,4 +290,6 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 `META_AGENT__KNOWLEDGE_SOURCES` 配置多个服务、领域和凭据，不在 MetaAgent 中运行索引、重排或厂商检索代码。
 配置示例、接口边界和迁移范围见 [工具与知识库迁移说明](docs/tool-and-knowledge-migration.md)。
 
-此迁移保持既有聊天协议；`interactive.py` 与原生 `/v1/chat` 的请求及响应格式差异仍需后续兼容补丁。
+原生请求继续使用必填 `request_id` 及原生运行快照；`interactive.py` 不带编号的请求已由服务端兼容，
+返回 `answer`、`task_id` 和会话 ID，支持项目患者编号、手机号及 `-v` 状态查询。
+协议分流、流式响应与范围见 [交互聊天接口兼容](docs/interactive-chat-compat.md)。
