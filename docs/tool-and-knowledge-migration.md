@@ -23,6 +23,9 @@ META_AGENT__ASSESSMENT_REPORTS_ENABLED=false
 
 ## 在 .env 配置知识源
 
+需要直接使用现有 MaxKB 时，可配置 `protocol=maxkb`，详见
+[MaxKB 原生 API 直连](maxkb-direct.md)。该模式在 Agent 内直接调用 MaxKB，不需要额外桥接容器。
+
 将以下配置加入部署使用的 `.env`，替换真实地址和凭据；`KNOWLEDGE_SOURCES` 的 JSON 必须写在一行：
 
 ```dotenv

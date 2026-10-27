@@ -151,6 +151,18 @@ class Settings(BaseSettings):
                                 token = file_values.get(name, file_values.get(name.lower()))
                                 if token:
                                     item = {**item, "token_env": "", "token": token}
+                            native = item.get("maxkb")
+                            if isinstance(native, dict):
+                                native = dict(native)
+                                for field in ("username", "password"):
+                                    name = native.get(field + "_env", "")
+                                    if name and name not in os.environ and not native.get(field):
+                                        secret = file_values.get(
+                                            name, file_values.get(name.lower())
+                                        )
+                                        if secret:
+                                            native.update({field + "_env": "", field: secret})
+                                item = {**item, "maxkb": native}
                         resolved.append(item)
                     values = {**values, "knowledge_sources": resolved}
                 return values
