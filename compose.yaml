@@ -24,6 +24,8 @@ services:
         required: false
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    volumes:
+      - ./maxkb/catalog.json:/run/metaagent/maxkb/catalog.json:ro
     depends_on:
       postgres:
         condition: service_healthy
