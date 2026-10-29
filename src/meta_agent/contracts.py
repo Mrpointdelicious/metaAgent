@@ -37,6 +37,8 @@ Domain = Literal[
     "irego",
     "iremo",
     "iretour",
+    "irecog",
+    "assessment",
     "scene",
     "doctors",
     "health",
@@ -47,6 +49,8 @@ Domain = Literal[
 GoalKind = Literal[
     "chat",
     "iretour",
+    "irecog",
+    "assessment",
     "hospital_query",
     "irego",
     "rehab_overview",
@@ -90,6 +94,8 @@ ActionDeliveryStatus = Literal[
 Effect = Literal["read", "prepare_artifact", "emit_frontend_action"]
 Capability = Literal[
     "iretour.execute",
+    "irecog.execute",
+    "assessment.execute",
     "hospital.query",
     "irego.execute",
     "rehab.overview",
@@ -160,6 +166,16 @@ class IReTourRequest(IReGoRequest):
     activity_scope: ActivityScope = "straight_primary"
 
 
+class IReCogRequest(IReGoRequest):
+    """IReCog 认知测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+
+class AssessmentRequest(IReGoRequest):
+    """线上量表测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+    scale_type: int | None = Field(default=None, ge=1, le=99)
+
+
 class HospitalRequest(StrictModel):
     scope: Literal["institution", "comparison", "platform"] = "institution"
     hospital_id: int | None = Field(default=None, gt=0)
@@ -191,6 +207,8 @@ class Goal(StrictModel):
     condition: Condition | None = None
     irego: IReGoRequest | None = None
     iretour: IReTourRequest | None = None
+    irecog: IReCogRequest | None = None
+    assessment: AssessmentRequest | None = None
     hospital: HospitalRequest | None = None
 
 
@@ -391,7 +409,7 @@ class TaskResult(StrictModel):
 
 
 class RecordAnchor(StrictModel):
-    domain: Literal["irego", "iretour"] = "irego"
+    domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     session_ref: str
     evidence_id: str
     observed_at: datetime = Field(default_factory=utcnow)
@@ -405,7 +423,7 @@ class ConversationState(StrictModel):
     current_record: RecordAnchor | None = None
     history_page: int = 1
     history_seen: bool = False
-    history_domain: Literal["irego", "iretour"] = "irego"
+    history_domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     pending_goals: list[Goal] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utcnow)
 

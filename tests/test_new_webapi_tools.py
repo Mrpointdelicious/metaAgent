@@ -10,7 +10,13 @@ import pytest
 
 from meta_agent.contracts import DomainError, Goal, IReTourRequest, Selector
 from meta_agent.orchestration.identity import TrustedScope, trusted_scope_from_inputs
-from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS, PATIENT_ENDPOINTS, AIWebApiClient
+from meta_agent.tools.ai_webapi import (
+    ASSESSMENT_REPORT_ENDPOINTS,
+    IRECOG_REPORT_ENDPOINTS,
+    IRETOUR_REPORT_ENDPOINTS,
+    PATIENT_ENDPOINTS,
+    AIWebApiClient,
+)
 from meta_agent.tools.demo import demo_response
 from tests.helpers.runtime import SeedPlanner, answers, runtime
 from tests.helpers.runtime import request as base_request
@@ -46,7 +52,10 @@ def test_patient_endpoint_uses_patient_base(endpoint):
 
         client = AIWebApiClient(
             AppTestSettings(
-                dry_run=False, iretour_reports_enabled=endpoint in IRETOUR_REPORT_ENDPOINTS
+                dry_run=False,
+                iretour_reports_enabled=endpoint in IRETOUR_REPORT_ENDPOINTS,
+                irecog_reports_enabled=endpoint in IRECOG_REPORT_ENDPOINTS,
+                assessment_reports_enabled=endpoint in ASSESSMENT_REPORT_ENDPOINTS,
             ),
             transport=httpx.MockTransport(respond),
         )

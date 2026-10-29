@@ -1,6 +1,6 @@
 """
 创建日期：2026-09-12
-文件功能：验证原生事件、请求幂等、鉴权隔离以及未启用的 Dify 框架。
+文件功能：验证原生事件、请求幂等、鉴权隔离以及未启用的 Workflow 接口。
 """
 
 import json
@@ -76,17 +76,25 @@ def test_scope_protects_status_and_cancel(client, auth_headers):
 
 
 @pytest.mark.parametrize(
-    "endpoint", ["/v1/chat", "/compat/dify/v1/chat-messages", "/compat/dify/v1/workflows/run"]
+    "endpoint",
+    [
+        "/v1/chat",
+        "/v1/chat-messages",
+        "/compat/dify/v1/chat-messages",
+        "/compat/dify/v1/workflows/run",
+    ],
 )
 def test_authentication(client, endpoint):
     assert client.post(endpoint, json=payload()).status_code == 401
 
 
-@pytest.mark.parametrize(
-    "endpoint", ["/compat/dify/v1/chat-messages", "/compat/dify/v1/workflows/run"]
-)
-def test_dify_is_explicitly_deferred(client, auth_headers, endpoint):
-    assert client.post(endpoint, headers=auth_headers, json=payload()).status_code == 501
+def test_dify_workflow_is_explicitly_deferred(client, auth_headers):
+    assert (
+        client.post(
+            "/compat/dify/v1/workflows/run", headers=auth_headers, json=payload()
+        ).status_code
+        == 501
+    )
 
 
 def test_optional_patient_and_mixed_identity(client, auth_headers):

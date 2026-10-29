@@ -24,6 +24,18 @@ from meta_agent.contracts import DomainError, utcnow
 
 
 class PatientContextMiddleware(AgentMiddleware):
+    async def awrap_tool_call(self, request, handler):
+        ctx = request.runtime.context
+        if (
+            ctx.settings.knowledge_sources
+            and request.tool is not None
+            and request.tool.name == "search_knowledge"
+        ):
+            selected = available_tools(ctx, [request.tool])
+            if selected:
+                request = request.override(tool=selected[0])
+        return await handler(request)
+
     async def awrap_model_call(self, request, handler):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
@@ -45,7 +57,12 @@ class PatientContextMiddleware(AgentMiddleware):
             {
                 "prompt": prompt,
                 "messages": messages_to_dict(messages),
-                "tools": [t.args_schema.model_json_schema() for t in tools],
+                "tools": [
+                    t.args_schema
+                    if isinstance(t.args_schema, dict)
+                    else t.args_schema.model_json_schema()
+                    for t in tools
+                ],
             }
         )
         if token_estimate + ctx.settings.planner_max_tokens > ctx.settings.model_context_tokens:

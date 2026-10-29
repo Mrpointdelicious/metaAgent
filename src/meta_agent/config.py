@@ -7,8 +7,10 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from meta_agent.integrations.knowledge import KnowledgeSourceConfig
 
 
 class Settings(BaseSettings):
@@ -113,13 +115,73 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
+    knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
     # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
     patient_brief_include_name: bool = False
     multisource_patient_context_enabled: bool = False
     iretour_reports_enabled: bool = False
+    irecog_reports_enabled: bool = False
+    assessment_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        file_values = dotenv_settings()
+
+        def with_file_tokens(source):
+            def read():
+                values = source()
+                configured = values.get("knowledge_sources")
+                if isinstance(configured, list):
+                    resolved = []
+                    for item in configured:
+                        if isinstance(item, dict):
+                            name = item.get("token_env", "")
+                            if (
+                                isinstance(name, str)
+                                and name
+                                and name not in os.environ
+                                and not item.get("token")
+                            ):
+                                token = file_values.get(name, file_values.get(name.lower()))
+                                if token:
+                                    item = {**item, "token_env": "", "token": token}
+                            native = item.get("maxkb")
+                            if isinstance(native, dict):
+                                native = dict(native)
+                                for field in ("username", "password"):
+                                    name = native.get(field + "_env", "")
+                                    if name and name not in os.environ and not native.get(field):
+                                        secret = file_values.get(
+                                            name, file_values.get(name.lower())
+                                        )
+                                        if secret:
+                                            native.update({field + "_env": "", field: secret})
+                                item = {**item, "maxkb": native}
+                        resolved.append(item)
+                    values = {**values, "knowledge_sources": resolved}
+                return values
+
+            return read
+
+        return (
+            with_file_tokens(init_settings),
+            with_file_tokens(env_settings),
+            with_file_tokens(lambda: file_values),
+            file_secret_settings,
+        )
+
+    @field_validator("knowledge_sources")
+    @classmethod
+    def unique_knowledge_sources(cls, sources):
+        if len({source.id for source in sources}) != len(sources):
+            raise ValueError("knowledge source IDs must be unique")
+        return sources
 
     def runtime_issues(self) -> list[str]:
         issues = []
