@@ -28,39 +28,16 @@ router = APIRouter()
 
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
-        inputs = dict(payload.inputs)
-        project_id = inputs.get("projectPatientId")
-        if project_id is None:
-            project_id = inputs.get("project_patient_id")
-        phones = [
-            inputs[name]
-            for name in ("patientPhone", "patientphone", "patient_phone")
-            if inputs.get(name) not in (None, "")
-        ]
-        if phones and any(value != phones[0] for value in phones[1:]):
-            raise ValueError("患者手机号别名不一致")
-        phone = phones[0] if phones else None
-        if project_id is not None or phone is not None:
-            if any(
-                inputs.get(k) not in (None, "")
-                for k in ("patientId", "patient_id", "robotDbUserId")
-            ):
-                raise ValueError("原始患者编号与身份映射输入不可同时提供")
-            if (
-                phone is not None
-                or request.app.state.container.settings.orchestration_mode == "legacy"
-            ):
-                identity = (
-                    await request.app.state.container.ai_webapi_client.resolve_patient_identity(
-                        project_patient_id=project_id, phone=phone
-                    )
-                )
-                inputs["patientId"] = str(identity["robot_patient_id"])
-                inputs["projectPatientId"] = str(identity["project_patient_id"])
-                inputs["iretourPatientId"] = str(identity["project_patient_id"])
-        return trusted_scope_from_inputs(
-            inputs, payload.user, request.app.state.container.settings.default_tenant_id
+        scope = trusted_scope_from_inputs(
+            dict(payload.inputs),
+            payload.user,
+            request.app.state.container.settings.default_tenant_id,
         )
+        if scope.patient_identity is not None:
+            scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
+                scope
+            )
+        return scope
     except DomainError as exc:
         raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     except ValueError as exc:

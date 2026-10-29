@@ -16,7 +16,7 @@ from meta_agent.agent.runtime import SingleAgentRuntime
 from meta_agent.agent.tools import build_tools
 from meta_agent.app import create_app
 from meta_agent.contracts import DomainError
-from meta_agent.orchestration.identity import TrustedScope
+from tests.helpers.identity import patient_inputs, patient_scope
 from tests.helpers.runtime import answers, request, runtime
 
 
@@ -37,7 +37,7 @@ def activate(container, messages):
     )
 
 
-SCOPE = TrustedScope("tenant", "actor", project_patient_id="3799", iretour_patient_id="3799")
+SCOPE = patient_scope("tenant", "actor", "3799")
 
 
 def test_three_layers_are_agent_tools_without_model_visible_identity():
@@ -73,7 +73,9 @@ def test_agent_calls_clinical_and_rehab_tools_and_writes_natural_answer():
                 "get_patient_consultation",
                 "get_patient_rehab",
             ]
-            assert all(p["system_context"]["user"] == "3799" for _, p in backend.calls)
+            assert all(
+                p["system_context"]["patient_identity"]["value"] == "3799" for _, p in backend.calls
+            )
             assert run.record.metrics["llm_calls"] == 3
 
     asyncio.run(check())
@@ -138,9 +140,7 @@ def test_agent_history_keeps_tool_refs_for_followup_and_is_patient_scoped():
             first = await c.application.execute(request("这次训练是什么", scope=SCOPE))
             memory = await c.repository.conversation(SCOPE.thread_id("c1"))
             assert any("synthetic-tour-1" in json.dumps(m) for m in memory.agent_messages)
-            other = TrustedScope(
-                "tenant", "actor", project_patient_id="3780", iretour_patient_id="3780"
-            )
+            other = patient_scope("tenant", "actor", "3780")
             assert not (await c.repository.conversation(other.thread_id("c1"))).agent_messages
             activate(c, [AIMessage("刚才这次是平衡训练。")])
             second = await c.application.execute(request("刚才是什么训练", "r2", scope=SCOPE))
@@ -160,6 +160,7 @@ def test_patient_result_from_other_identity_is_rejected_and_never_enters_context
             from meta_agent.tools.demo import demo_response
 
             bad = demo_response("get_patient_consultation", {"system_context": {"user": "999"}})
+            bad["data"]["patient_ref"] = "patient_scope_v2_other"
             backend.overrides["get_patient_consultation"] = bad
             activate(
                 c,
@@ -183,9 +184,9 @@ def test_compaction_keeps_explicit_truncation_and_prescription_name():
     assert compact["data"]["prescriptions"][0]["name"] == "已记录的处方名称"
 
 
-@pytest.mark.parametrize("project_key", ["projectPatientId", "project_patient_id"])
+@pytest.mark.parametrize("identity_type", ["project_user_id", "login_name"])
 def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
-    monkeypatch, project_key
+    monkeypatch, identity_type
 ):
     async def check():
         monkeypatch.setattr(
@@ -201,7 +202,7 @@ def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
                 "query": "查我的病历",
                 "request_id": "native-agent",
                 "user": "actor",
-                "inputs": {project_key: "3799"},
+                "inputs": patient_inputs("3799", identity_type),
                 "response_mode": "blocking",
             }
             async with httpx.AsyncClient(
@@ -221,15 +222,15 @@ def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
                 events = body["events"]
                 assert events[0]["type"] == "accepted" and events[-1]["type"] == "completed"
                 assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
-                access = {"user": "actor", "inputs": {"projectPatientId": "3799"}}
+                access = {"user": "actor", "inputs": patient_inputs("3799", identity_type)}
                 path = f"/v1/runs/{body['run_id']}/status"
                 assert (await client.post(path, json=access)).status_code == 200
-                access["inputs"]["projectPatientId"] = "3780"
+                access["inputs"]["patient_identity"]["value"] = "3780"
                 assert (await client.post(path, json=access)).status_code == 404
                 mixed = {
                     **payload,
                     "request_id": "mixed",
-                    "inputs": {project_key: "3799", "patientId": "999"},
+                    "inputs": {**patient_inputs("3799", identity_type), "patientId": "999"},
                 }
                 assert (await client.post("/v1/chat", json=mixed)).status_code == 422
                 assert len(backend.calls) == count

@@ -267,6 +267,8 @@ class ValidatedPlan(StrictModel):
 
 
 class Fact(StrictModel):
+    record_tenant: dict[str, Any] | None = None
+    scope_fingerprint: str | None = None
     contract_type: Literal["Fact"] = "Fact"
     schema_version: Literal["1.0"] = "1.0"
     fact_id: str
@@ -409,6 +411,8 @@ class TaskResult(StrictModel):
 
 
 class RecordAnchor(StrictModel):
+    record_tenant: dict[str, Any] | None = None
+    scope_fingerprint: str | None = None
     domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     session_ref: str
     evidence_id: str

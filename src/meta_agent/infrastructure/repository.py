@@ -116,6 +116,8 @@ class Repository:
         evidence = await self.evidence(scope, fact.evidence_id)
         if evidence is None or fact.source_version != evidence.source_version:
             return False
+        if not self._fact_metadata_matches(evidence, fact):
+            return False
         exists, value = resolve_pointer(evidence.payload, fact.path)
         if not exists:
             return fact.value is None and fact.value_status == "missing"
@@ -134,6 +136,8 @@ class Repository:
             evidence = sources[fact.evidence_id]
             if evidence is None or evidence.source_version != fact.source_version:
                 return False
+            if not self._fact_metadata_matches(evidence, fact):
+                return False
             exists, value = resolve_pointer(evidence.payload, fact.path)
             if not exists:
                 if fact.value is not None or fact.value_status != "missing":
@@ -141,6 +145,15 @@ class Repository:
             elif type(value) is not type(fact.value) or value != fact.value:
                 return False
         return True
+
+    @staticmethod
+    def _fact_metadata_matches(evidence, fact):
+        from meta_agent.domains.facts import record_tenant_for
+
+        scope = (evidence.payload.get("query_scope") or {}).get("scope_fingerprint")
+        return fact.scope_fingerprint == scope and fact.record_tenant == record_tenant_for(
+            evidence.payload, fact.path, fact.record_ref
+        )
 
     async def save_conversation(self, thread_id: str, memory: ConversationState) -> None:
         memory.updated_at = utcnow()

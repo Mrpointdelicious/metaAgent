@@ -14,14 +14,14 @@
 - `get_patient_consultation`：`dbmedical` 病历、诊断、医嘱、关联处方及 `dbconsultationinfo` 就诊记录，支持分页。
 - `get_patient_rehab`：`dbrehaplan` 康复计划，以及 IReTour/IReGo 训练历史。保留各设备的可用状态，区分计划与实际结果。
 
-缺少 IReGo 身份映射或某一设备查询失败时，其他层仍可读取。工具失败作为结果返回模型，
+某一设备查询失败时，其他层仍可读取已确认身份下的可用数据。工具失败作为结果返回模型，
 模型可调整查询或回答已有信息；真实失败仍保留在运行记录中。
 `AGENT_MAX_MODEL_CALLS=8` 限制模型调用，`MAX_TOOL_CALLS=16` 限制后端调用，
 最后一次模型调用只要求形成回答。本地 Knowledge 查询另受模型调用预算和总执行时限约束。
 `ORCHESTRATION_MODE=legacy` 可回退到原有 Planner/Compiler/Scheduler 和领域工作流。
 
 已接入 IReTour 的概览、分页历史、单次分析和连续趋势，
-以及医院运营查询/报表、可信患者身份映射。IReGo、医生、场景和知识工具保留。
+以及医院运营查询/报表和统一患者身份解析。IReGo、医生、场景和知识工具保留。
 IReTour 历史与 IReGo 一样通过可信患者身份、分页查询、Evidence 和多轮工具上下文接入，
 使用独立的 `record_scope=all/with_result/without_result`、项目、训练状态和结果状态筛选。
 `IRETOUR_REPORTS_ENABLED=false` 默认关闭 IReTour 单次及趋势报表：模型工具列表不暴露，
@@ -29,17 +29,15 @@ Agent、legacy 和底层客户端均禁止调用。报表实现保留，IReGo �
 `MULTISOURCE_PATIENT_CONTEXT_ENABLED=false` 默认禁用多源患者上下文，
 同时阻止每轮链首装填、显式患者概况和底层端点调用。旧实现保留，可由配置重新启用。
 
-可信网关输入中的 `patientId` 为 IReGo 的 robotdb 患者编号，
-`iretourPatientId` 为 IReTour 的 `project.dbuser.Id`，两个编号不能互相替代。
-新 Agent 推荐只传 `projectPatientId`，三层信息和 IReTour 直接使用该身份，
-实际查询 IReGo 时才尝试唯一映射。兼容旧的 `iretourPatientId` 输入。
-传 `patientPhone` 或使用 legacy 模式时，网关仍先调用 `resolve_patient_identity`，
-该路径需要唯一的 robotdb 映射。映射输入不得同时传原始 `patientId`。
-患者编号由可信网关注入，不在模型可填写的工具参数中；互相矛盾的 project/IReTour 编号会被拒绝。
-医院运营查询需要可信网关注入 `role=operator`；模型只能提供业务查询参数。
+患者工具统一使用 `2.0.0`，所有设备共用 `patient_identity`、业务签发的短期
+`identity_context_token` 和 `data_scope`。登录名保留前导零；旧 patientId、projectPatientId、
+iretourPatientId 和手机号别名均被拒绝。请求先经 AI_WebApi 确认匿名 patient_ref 和
+scope_fingerprint，再进入模型运行；运行中凭证仅用于工具调用，不进入模型或历史。
+患者康复默认 all_tenants，可选 current_tenant。事实、记录锚点和报告保留实际记录的
+医院/卫生中心，账号或查询范围改变时隔离历史。业务凭证刷新不改变同一授权范围的会话。
+医院运营仍要求可信角色 operator。详细请求、签发边界和验证见
+[患者康复 v2 适配及联调](docs/patient-rehab-v2-adaptation-and-integration-20261029.md)。
 
-IReTour 读接口兼容独立 `iretour-1.0.0` 版本，以及外层 `1.6.0` 且
-`meta.registry_versions.contract=iretour-1.0.0` 的早期封套。
 趋势分析支持 2–20 次，生成图片支持 3–20 次，可用连续序号或最多180天的日期范围。
 “这次/上一次/下一页”保留设备来源；报表失败保留已经获取的事实。
 IReTour 单位未知时原样标为未知，数值变化不转换为临床疗效结论。
@@ -51,10 +49,9 @@ IReTour 单位未知时原样标为未知，数值变化不转换为临床疗效
 `outputs/` 已由 `.gitignore` 排除。Runtime Cutover 的历史验收记录见
 [Runtime Cutover Merge Readiness](docs/runtime-cutover-merge-readiness.md)，最新 Docker 部署验证见本文“验证”。
 
-配套 AI_WebApi 修复包括 IReTour 三个解析依赖注册、project 汇总字段别名和
-IReGo 实体的 `robotdb_main` 连接标识。双库配置需启用 `MutiDBEnabled`，
-主库连接 project，额外配置 robotdb_main 和 project_identity_temp。
-当前本机新版 AI_WebApi 使用独立 Docker 容器和 15043 端口，保留原有 5043 服务。
+配套 AI_WebApi 使用当前 project 数据库，身份与机构关系读取现有 dbbuniessuser；
+不迁移用户、计划或报告数据。工具基地址保持 `/api/ai/patients/tools`。
+本次联调使用独立的本地 25043 后端实例，现有 Dify 与演示服务未切换到此版本。
 
 ## Dify 展示入口
 
@@ -70,8 +67,8 @@ Dify RAG 尚未接入。服务对外采用 Dify chat-messages 契约：`POST /v1
 `/v1/chat`、`/compat/dify/v1/chat-messages`）接收 Dify 请求、返回 `message`/`message_end` 事件；
 `/compat/dify/v1/workflows/run` 仍返回 HTTP 501。
 
-旧 `orchestration/planner.py`、`workflows/irego.py`、`graph/builder.py` 和旧标签代码保留供历史对照，
-不由当前容器装配。执行目标和动作是数组，没有五个固定输出槽位。
+`workflows/irego.py` 和 `graph/builder.py` 的保留路径同样使用 v2；运行凭证通过
+LangGraph runtime context 注入，不进入可序列化状态。默认容器使用单 Agent 入口。执行目标和动作是数组，没有五个固定输出槽位。
 
 ## legacy 模式的 IReGo 工作流
 
@@ -81,7 +78,7 @@ Scheduler 只看到一个 `irego.execute` 任务，内部固定链由 `domains/i
 
 - `overview`：患者概览 → Evidence → Fact/FactView（带缓存）
 - `history`：训练历史 → Evidence → Fact/FactView
-- `session`：定位 session_ref（复用新鲜锚点/最新可用/历史发现）→ 会话分析 → Evidence → Fact/FactView → 更新记录锚点 → `need_artifact=true` 时以同一 session_ref 生成报告
+- `session`：定位 session_ref（复用新鲜锚点/最新可用/历史发现）→ 会话分析 → Evidence → Fact/FactView → 更新记录锚点 → `need_artifact=true` 时重读同一 session_ref 的分析并绑定新快照生成报告
 - `trend`：连续窗口趋势 → Evidence → Fact/FactView → `need_artifact=true` 时生成趋势报告
 
 只要进入 IReGo 就必然执行对应 operation 的基础数据查询并建立事实层（"LLM 不需要读"不等于"不获取"）；

@@ -10,8 +10,8 @@ from copy import deepcopy
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import IntentDecision
 from meta_agent.infrastructure.container import create_container
-from meta_agent.orchestration.identity import TrustedScope
-from meta_agent.tools.demo import demo_response
+from meta_agent.tools.demo import attach_synthetic_scope, demo_response
+from tests.helpers.identity import patient_scope
 from tests.helpers.settings import AppTestSettings
 
 
@@ -67,8 +67,10 @@ class Backend:
                 value = self.overrides[endpoint]
                 if isinstance(value, Exception):
                     raise value
-                return deepcopy(value(payload) if callable(value) else value)
-            return demo_response(endpoint, payload)
+                return attach_synthetic_scope(
+                    deepcopy(value(payload) if callable(value) else value), payload
+                )
+            return attach_synthetic_scope(demo_response(endpoint, payload), payload)
         except asyncio.CancelledError:
             self.cancelled.append(endpoint)
             raise
@@ -80,7 +82,7 @@ class Backend:
 def request(query, rid="r1", *, scope=None, conversation="c1"):
     return ApplicationRequest(
         query,
-        scope or TrustedScope("tenant", "actor", "461", space_id="space", scene_version=7),
+        scope or patient_scope("tenant", "actor", "461", space_id="space", scene_version=7),
         conversation,
         rid,
     )
@@ -131,7 +133,7 @@ def scene_response(payload):
 def report_response(payload):
     return {
         "tool_name": "generate_irego_single_session_report",
-        "contract_version": "1.6.0",
+        "contract_version": "2.0.0",
         "request_id": "synthetic",
         "status": "success",
         "meta": {},

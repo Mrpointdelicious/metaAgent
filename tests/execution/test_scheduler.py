@@ -24,7 +24,7 @@ from meta_agent.contracts import (
     TaskSpec,
 )
 from meta_agent.execution.scheduler import TaskScheduler
-from meta_agent.orchestration.identity import TrustedScope
+from tests.helpers.identity import patient_scope
 
 
 class FakeRepository:
@@ -148,11 +148,7 @@ def make_context() -> RunContext:
         max_llm_calls=4,
     )
 
-    scope = TrustedScope(
-        tenant_id="test",
-        end_user_id="user-1",
-        patient_id="10001",
-    )
+    scope = patient_scope(tenant_id="test", end_user_id="user-1", patient_id="10001")
 
     record = RunRecord(
         run_id="run-test",

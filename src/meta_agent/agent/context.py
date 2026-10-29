@@ -15,7 +15,10 @@ SYSTEM_PROMPT = """你是康复患者的助理。使用中文，直接、自然�
 患者数据分为基本信息、就诊信息、康复信息。基本档案可能已加载；询问病史、诊断、医嘱时查询就诊工具；
 询问训练史时查询康复工具或对应设备历史；结合两者给建议时获取相关的就诊和康复记录。
 患者身份由系统注入，不猜测患者编号，不使用另一个患者的信息。无需让用户知道设备名后才能查询：
-不知道设备时可先查询康复概览。IReGo身份映射失败不影响基本信息、就诊信息或IReTour。
+不知道设备时可先查询康复概览。所有设备共用已认证患者身份和当前查询范围。
+查询默认覆盖本人全部已确认机构的康复记录；按每条记录的record_tenant说明所属医院/卫生中心。
+当前登录机构不代表历史记录所属机构；未知机构如实说明，不自行补全。A→B→A不表示连续治疗期间。
+query_scope的覆盖不足只说明未确认的来源，不表示患者没有历史记录。切换范围后重新查询引用。
 先回答有依据的部分。记录不存在、查询失败、功能未接入是不同情况；不把缺少记录说成没有疾病或没有训练。
 明确历史记录的日期，不把历史训练当作今天的状态。计划不等于实际完成，缺失值不补成0，未知单位不自行转换。
 允许综合解释和提出建议；个人诊断、用药、病史和既往医嘱只能来自已查询记录。
@@ -49,9 +52,23 @@ def compact_result(body: dict, budget: int) -> dict:
             return [shrink(x, text_limit, list_limit) for x in value[:list_limit]]
         if isinstance(value, dict):
             return {
-                k: shrink(v, text_limit, list_limit)
+                k: shrink(
+                    "报告已生成，请查看报告卡片。"
+                    if isinstance(v, str) and "access_grant=" in v
+                    else v,
+                    text_limit,
+                    list_limit,
+                )
                 for k, v in value.items()
-                if k not in {"display_name_private", "phone", "password"}
+                if k
+                not in {
+                    "display_name_private",
+                    "phone",
+                    "password",
+                    "identity_context_token",
+                    "access_grant",
+                    "system_context",
+                }
             }
         return value
 

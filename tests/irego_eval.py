@@ -11,7 +11,7 @@ import time
 
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import IReGoRequest
-from meta_agent.orchestration.identity import TrustedScope
+from tests.helpers.identity import patient_scope
 from tests.helpers.runtime import report_response, runtime
 
 CASES = [
@@ -72,7 +72,7 @@ async def run_case(application, backend, query, expected, request_id, patient="4
     run = await application.execute(
         ApplicationRequest(
             query,
-            TrustedScope("tenant", "actor", patient, space_id="space", scene_version=7),
+            patient_scope("tenant", "actor", patient, space_id="space", scene_version=7),
             f"c-{request_id}",
             request_id,
         )

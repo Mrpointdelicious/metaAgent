@@ -46,11 +46,7 @@ class DomainDispatcher:
             raise DomainError("capability_disabled", "能力未启用或执行类型不匹配。")
         if (
             spec.requires_patient
-            and not (
-                ctx.scope.iretour_patient_id or ctx.scope.project_patient_id
-                if capability in {"iretour.execute", "irecog.execute", "assessment.execute"}
-                else ctx.scope.patient_id
-            )
+            and not ctx.scope.has_patient
             or spec.requires_space
             and not ctx.scope.space_id
         ):

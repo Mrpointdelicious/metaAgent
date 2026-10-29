@@ -24,6 +24,28 @@ def aware_date(value: Any) -> datetime | None:
         return None
 
 
+def record_tenant_for(payload: dict, path: str, record_ref: str | None = None) -> dict | None:
+    """Resolve metadata from the same source object, retaining unknown attribution."""
+    parts = path.split("/")
+    for length in range(len(parts) - 1, 0, -1):
+        exists, item = resolve_pointer(payload, "/".join(parts[:length]))
+        if exists and isinstance(item, dict) and isinstance(item.get("record_tenant"), dict):
+            return item["record_tenant"]
+    data = payload.get("data") or {}
+    session = data.get("session") or {}
+    if isinstance(session, dict) and isinstance(session.get("record_tenant"), dict):
+        return session["record_tenant"]
+    if record_ref:
+        for item in data.get("reports") or data.get("sessions") or data.get("records") or []:
+            if isinstance(item, dict) and record_ref in {
+                item.get("session_ref"),
+                item.get("assessment_ref"),
+                item.get("record_ref"),
+            }:
+                return item.get("record_tenant")
+    return None
+
+
 class FactBuilder:
     def __init__(
         self, evidence: EvidenceEnvelope, record_ref: str | None = None, observed_at: Any = None
@@ -31,6 +53,24 @@ class FactBuilder:
         self.evidence, self.record_ref = evidence, record_ref
         self.observed_at = aware_date(observed_at)
         self.views: list[FactView] = []
+
+        def visit(value, path=""):
+            if isinstance(value, dict):
+                if isinstance(value.get("record_tenant"), dict):
+                    self.add(
+                        path + "/record_tenant/display_name",
+                        "record_institution",
+                        "所属机构",
+                        required=True,
+                        topic="source",
+                    )
+                for key, child in value.items():
+                    visit(child, path + "/" + pointer_part(key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    visit(child, path + "/" + str(index))
+
+        visit(evidence.payload.get("data"), "/data")
 
     def add(
         self,
@@ -53,6 +93,10 @@ class FactBuilder:
         if status not in {"valid", "missing", "invalid", "unknown", "not_comparable"}:
             status = "unknown"
         fact = Fact(
+            record_tenant=record_tenant_for(self.evidence.payload, path, self.record_ref),
+            scope_fingerprint=(self.evidence.payload.get("query_scope") or {}).get(
+                "scope_fingerprint"
+            ),
             fact_id="fact_" + fingerprint([self.evidence.evidence_id, path])[:24],
             evidence_id=self.evidence.evidence_id,
             path=path,

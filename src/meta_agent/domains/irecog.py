@@ -35,6 +35,7 @@ class IReCogAdapter(RehabAdapter):
             result.facts = builder.views
             return result
         data = object_field(body, "data")
+        result.outputs["source_snapshot"] = data.get("source_snapshot")
         endpoint = evidence.tool_name
         if endpoint == "get_irecog_patient_context":
             for key, label in {

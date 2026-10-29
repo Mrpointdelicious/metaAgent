@@ -39,6 +39,7 @@ class AssessmentAdapter(RehabAdapter):
             result.facts = builder.views
             return result
         data = object_field(body, "data")
+        result.outputs["source_snapshot"] = data.get("source_snapshot")
         snapshot = data.get("source_snapshot")
         if isinstance(snapshot, str) and len(snapshot) == 64:
             result.outputs["source_snapshot"] = snapshot

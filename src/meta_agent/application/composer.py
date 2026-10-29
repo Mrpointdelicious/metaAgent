@@ -60,6 +60,12 @@ def render_fact(view: FactView) -> str:
         value += " " + safe_text(fact.unit)
     if fact.value_status not in {"valid", "missing"}:
         value += "（" + STATUS_TEXT[fact.value_status] + "）"
+    if fact.record_tenant and fact.semantic_key != "record_institution":
+        value += (
+            "（所属机构："
+            + safe_text(fact.record_tenant.get("display_name") or "所属机构未确认")
+            + "）"
+        )
     return f"{label}：{value}"
 
 
@@ -96,11 +102,11 @@ class ResponseComposer:
                 goal_id=task.goal_ids[0] if len(task.goal_ids) == 1 else None,
             )
         artifact = result.outputs.get("artifact")
-        if artifact and artifact["artifact_ref"] not in ctx.artifact_refs:
+        if artifact and (artifact["artifact_ref"], artifact["url"]) not in ctx.artifact_refs:
             await ctx.emitter.emit(
                 "artifact_ready", artifact, task_id=task.task_id, goal_id=task.goal_ids[0]
             )
-            ctx.artifact_refs.add(artifact["artifact_ref"])
+            ctx.artifact_refs.add((artifact["artifact_ref"], artifact["url"]))
         if task.capability.startswith("scene."):
             return
         for gid in task.goal_ids:

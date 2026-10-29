@@ -12,7 +12,6 @@ class AgentState(TypedDict):
     query: str
     tenant_id: str
     end_user_id: str
-    patient_id: str
     scope_hash: str
     conversation_id: str
     run_id: str

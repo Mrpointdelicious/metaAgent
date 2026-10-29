@@ -184,7 +184,7 @@ class PlanCompiler:
                     task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
                 continue
             if g.kind == "iretour" and g.domain == "iretour":
-                if not scope.iretour_patient_id:
+                if not scope.has_patient:
                     result.dispositions[gid] = ("clarification", "请先绑定患者身份。")
                     continue
                 if g.iretour is None:
@@ -200,7 +200,7 @@ class PlanCompiler:
                     task.priority_class = "artifact"
                 continue
             if g.kind in {"irecog", "assessment"} and g.domain == g.kind:
-                if not (scope.iretour_patient_id or scope.project_patient_id):
+                if not (scope.has_patient):
                     result.dispositions[gid] = ("clarification", "请先绑定患者身份。")
                     continue
                 payload = g.irecog if g.kind == "irecog" else g.assessment
@@ -220,7 +220,7 @@ class PlanCompiler:
                     task.priority_class = "artifact"
                 continue
             is_rehab = g.kind.startswith("rehab_") or g.kind in {"report", "irego"}
-            if is_rehab and (g.domain != "irego" or not scope.patient_id):
+            if is_rehab and (g.domain != "irego" or not scope.has_patient):
                 result.dispositions[gid] = ("clarification", "请先通过患者端绑定有效患者身份。")
                 continue
             if g.kind in {"scene_action", "doctor_query"} and not scope.space_id:
@@ -493,12 +493,7 @@ class PlanCompiler:
                 )
             if (
                 spec.requires_patient
-                and not (
-                    scope.iretour_patient_id or scope.project_patient_id
-                    if task.capability
-                    in {"iretour.execute", "irecog.execute", "assessment.execute"}
-                    else scope.patient_id
-                )
+                and not scope.has_patient
                 or spec.requires_space
                 and not scope.space_id
             ):

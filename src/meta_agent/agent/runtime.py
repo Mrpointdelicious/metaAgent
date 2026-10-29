@@ -16,7 +16,6 @@ from meta_agent.agent.tools import (
     available_tools,
     build_tools,
     invoke_tool,
-    project_id,
 )
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
@@ -107,7 +106,7 @@ class SingleAgentRuntime:
         ctx.record.metrics["orchestration_mode"] = "agent"
         try:
             messages = await fresh_history(messages_from_dict(ctx.memory.agent_messages), ctx)
-            if project_id(ctx):
+            if ctx.scope.has_patient:
                 profile = await invoke_tool(ctx, "get_patient_profile", {})
                 ctx.record.metrics["patient_profile_context"] = profile
             messages.append(HumanMessage(content=ctx.query))

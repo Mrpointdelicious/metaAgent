@@ -1,6 +1,6 @@
 """
 创建日期：2026-09-08
-文件功能：实现1.6.0患者工具封套、真实记录选择、事实投影与报表制品核验。
+文件功能：实现2.0.0患者工具封套、真实记录选择、事实投影与报表制品核验。
 """
 
 from typing import Any, Literal
@@ -50,43 +50,12 @@ class RehabAdapter:
     }
 
     async def fetch(self, ctx: RunContext, endpoint: str, args: dict[str, Any]) -> EvidenceEnvelope:
-        if "iretour" in endpoint or "irecog" in endpoint or "assessment" in endpoint:
-            # IReTour/IReCog/量表三类工具以 project 患者编号定位，不使用 robot 编号。
-            patient_id = ctx.scope.iretour_patient_id or ctx.scope.project_patient_id
-        else:
-            patient_id = ctx.scope.patient_id
-        if not patient_id:
-            raise DomainError("patient_required", "请先绑定患者身份。", outcome="clarification")
-        body = await ctx.call(
-            endpoint,
-            {
-                **args,
-                "system_context": {
-                    "user": patient_id,
-                    "conversation_id": ctx.record.conversation_id,
-                },
-            },
-        )
+        body = await ctx.call(endpoint, args)
         try:
             envelope = PatientEnvelope.model_validate(body)
         except ValidationError as exc:
             raise DomainError("invalid_contract", "工具返回不符合患者接口契约。") from exc
-        expected_version = (
-            "iretour-1.0.0"
-            if "iretour" in endpoint
-            else "irecog-1.0.0"
-            if "irecog" in endpoint
-            else "assessment-1.0.0"
-            if "assessment" in endpoint
-            else "1.6.0"
-        )
-        # 第一版 IReTour 读接口沿用 1.6.0 外层封套，但声明独立 registry contract。
-        legacy_tour = (
-            "iretour" in endpoint
-            and envelope.contract_version == "1.6.0"
-            and (envelope.meta.get("registry_versions") or {}).get("contract") == expected_version
-        )
-        if envelope.contract_version != expected_version and not legacy_tour:
+        if envelope.contract_version != "2.0.0":
             raise DomainError("unsupported_contract", "患者工具契约版本尚未支持。")
         if envelope.tool_name != endpoint:
             raise DomainError("wrong_tool_result", "工具返回与请求能力不一致。")
@@ -120,6 +89,7 @@ class RehabAdapter:
                 builder.add("/patient_message", "patient_message", "说明", required=True)
             result.facts = builder.views
             return result
+        result.outputs["source_snapshot"] = data.get("source_snapshot")
         endpoint = evidence.tool_name
         builder = FactBuilder(evidence)
         if body.get("patient_message"):
@@ -236,7 +206,7 @@ class RehabAdapter:
             builder.quality()
             for i, evaluation in enumerate(data.get("capability_evaluations") or []):
                 for field, label in [
-                    ("patient_message", "训练表现"),
+                    ("basic_evaluation", "训练表现"),
                     ("explanation_boundary", "解释范围"),
                 ]:
                     if evaluation.get(field):
@@ -314,7 +284,7 @@ class RehabAdapter:
                         return self.project(task, evidence)
             args = {**args, "detail_level": "standard", "quality_detail": "summary"}
         elif task.capability.startswith("rehab.trend"):
-            args = {**args, "selector": "latest_contiguous", "project_scope": "all"}
+            args = {**args, "project_scope": "all"}
             if task.capability == "rehab.trend":
                 args.update(detail_level="standard", quality_detail="summary")
         elif task.capability == "rehab.history":

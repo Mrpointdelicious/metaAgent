@@ -248,13 +248,12 @@ class ApplicationService:
         时保持 patient_brief=None，会话继续走无档案路径。装填响应落证据库，
         供概况类任务以事实投影引用。
         """
-        if not ctx.scope.patient_id or not ctx.settings.multisource_patient_context_enabled:
+        if not ctx.scope.has_patient or not ctx.settings.multisource_patient_context_enabled:
             return
         try:
             body = await ctx.call(
                 "get_multisource_patient_context",
                 {
-                    "system_context": {"user": ctx.scope.patient_id},
                     # purpose 标记链首装填调用，与领域工作流同端点调用区分
                     # （计量与测试隔离用）；后端忽略未知请求字段。
                     "purpose": "enrichment",
@@ -279,7 +278,7 @@ class ApplicationService:
                     "get_multisource_patient_context",
                     ctx.record.request_id,
                     body,
-                    "1.6.0",
+                    body["contract_version"],
                 )
                 brief = replace(
                     brief,
@@ -430,6 +429,15 @@ class ApplicationService:
                     evidence_id=result.evidence_ids[0],
                     session_time=result.outputs.get("session_time"),
                     source_version=result.outputs.get("source_version", "unknown"),
+                    scope_fingerprint=ctx.scope.scope_fingerprint,
+                    record_tenant=next(
+                        (
+                            view.fact.record_tenant
+                            for view in result.facts
+                            if view.fact.record_ref == ref and view.fact.record_tenant
+                        ),
+                        None,
+                    ),
                     domain=result.outputs.get("record_domain", "irego"),
                 )
             if "history_page" in result.outputs:

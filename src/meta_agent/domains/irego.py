@@ -181,7 +181,7 @@ class IReGoWorkflow:
         evidence = await self._read(
             ctx,
             "get_irego_longitudinal_analysis",
-            {**args, "selector": "latest_contiguous", "project_scope": "all", **ANALYSIS_ARGS},
+            {**args, "project_scope": "all", **ANALYSIS_ARGS},
         )
         result = self.adapter.project(task, evidence)
         return await self._finish(
@@ -215,6 +215,36 @@ class IReGoWorkflow:
                 return result
             report_payload = {"session_ref": ref}
         try:
+            domain = next(d for d in ("assessment", "irecog", "iretour", "irego") if d in endpoint)
+            longitudinal = "longitudinal" in endpoint
+            analysis_name = (
+                f"get_{domain}_longitudinal_analysis"
+                if longitudinal
+                else "get_assessment_result_analysis"
+                if domain == "assessment"
+                else f"get_{domain}_session_analysis"
+            )
+            analysis_args = dict(report_payload)
+            analysis_args.pop("expected_source_snapshot", None)
+            if not longitudinal:
+                analysis_args["selector"] = (
+                    "assessment_ref" if domain == "assessment" else "session_ref"
+                )
+            if domain == "irego":
+                analysis_args.update(ANALYSIS_ARGS)
+            fresh = await self.adapter.fetch(ctx, analysis_name, analysis_args)
+            snapshot = (fresh.payload.get("data") or {}).get("source_snapshot")
+            if (
+                fresh.payload.get("status") not in {"success", "partial", "available"}
+                or not snapshot
+            ):
+                raise DomainError(
+                    "analysis_unavailable", "当前分析不可用，暂不生成报告。", outcome="unavailable"
+                )
+            projected = self.adapter.project(task, fresh)
+            result.facts = projected.facts
+            result.evidence_ids.append(fresh.evidence_id)
+            report_payload = {**report_payload, "expected_source_snapshot": snapshot}
             report_evidence = await self.adapter.fetch(ctx, endpoint, report_payload)
             artifact = self._artifact(report_evidence)
             if (

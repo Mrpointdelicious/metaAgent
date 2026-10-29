@@ -15,6 +15,7 @@ build/
 
 # Local evaluation evidence: patient data, Excel workbooks and report artifacts.
 /outputs/
+/.local/
 
 # Private local integration runners and archived working notes.
 /manual/collect_test_results.py

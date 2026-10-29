@@ -141,7 +141,7 @@ TOOL_SPECS = {
     ),
     "get_irego_patient_history": (
         GoHistoryArgs,
-        "按页查询IReGo训练历史，返回计划、训练状态及session_ref。身份映射由系统处理。",
+        "按页查询IReGo训练历史，返回计划、训练状态及session_ref。统一患者身份由系统注入。",
     ),
     "get_irego_session_analysis": (
         SessionArgs,
@@ -169,10 +169,6 @@ TOOL_SPECS = {
 }
 
 
-def project_id(ctx):
-    return ctx.scope.project_patient_id or ctx.scope.iretour_patient_id
-
-
 def tool_allowed(ctx, name):
     if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
         return False
@@ -181,9 +177,9 @@ def tool_allowed(ctx, name):
     if name in ASSESSMENT_REPORT_ENDPOINTS and not ctx.settings.assessment_reports_enabled:
         return False
     if name in LAYER_TOOLS or "iretour" in name or "irecog" in name or "assessment" in name:
-        return project_id(ctx) is not None
+        return ctx.scope.has_patient
     if "irego" in name:
-        return ctx.scope.patient_id is not None or project_id(ctx) is not None
+        return ctx.scope.has_patient
     if name == "query_hospital_operations":
         return ctx.scope.role == "operator"
     if name == "navigate_scene":
@@ -248,40 +244,11 @@ def spec(ctx, name, tid, capability, args, goal_ids=None):
     )
 
 
-async def _robot_id(ctx):
-    if ctx.scope.patient_id:
-        return ctx.scope.patient_id
-    if ctx.agent_robot_id:
-        return ctx.agent_robot_id
-    pid = project_id(ctx)
-    if not pid:
-        raise DomainError("patient_required", "当前没有可信患者身份。", outcome="unavailable")
-    async with asyncio.timeout(min(ctx.remaining, ctx.settings.tool_timeout_seconds)):
-        body = await ctx.call("resolve_patient_identity", {"project_patient_id": int(pid)})
-    evidence = await ctx.repository.save_evidence(
-        ctx.scope.scope_hash,
-        "resolve_patient_identity",
-        ctx.record.request_id,
-        body,
-        str(body.get("contract_version", "unknown")),
+def _record_tenant(data):
+    session = data.get("session") or next(
+        iter(data.get("sessions") or data.get("records") or []), {}
     )
-    data = body.get("data")
-    if (
-        body.get("status") != "success"
-        or not isinstance(data, dict)
-        or data.get("binding_status") != "resolved"
-        or data.get("project_patient_id") != int(pid)
-        or type(data.get("robot_patient_id")) is not int
-        or data["robot_patient_id"] <= 0
-    ):
-        raise DomainError(
-            "identity_unresolved",
-            "IReGo身份映射未能唯一确认，仍可查询其他患者信息。",
-            outcome="unavailable",
-        )
-    ctx.agent_robot_id = str(data["robot_patient_id"])
-    ctx.record.metrics["robot_identity_evidence"] = evidence.evidence_id
-    return ctx.agent_robot_id
+    return session.get("record_tenant") if isinstance(session, dict) else None
 
 
 def _analysis_record_ref(name, data):
@@ -314,18 +281,9 @@ async def _read(ctx, name, args):
             raise DomainError(
                 "record_domain_mismatch", "记录引用属于另一类设备或测评。", outcome="unsupported"
             )
-    if name in LAYER_TOOLS or "iretour" in name or "irecog" in name or "assessment" in name:
-        user = project_id(ctx)
-    else:
-        user = await _robot_id(ctx)
-    if not user:
-        raise DomainError(
-            "patient_required", "当前没有可信的project患者身份。", outcome="unavailable"
-        )
-    payload = {
-        **args,
-        "system_context": {"user": user, "conversation_id": ctx.record.conversation_id},
-    }
+    if not ctx.scope.has_patient:
+        raise DomainError("patient_required", "当前没有可信患者身份。", outcome="unavailable")
+    payload = args
     key = "agent:profile"
     cached = (
         await ctx.repository.get("cache", ctx.scope.scope_hash, key)
@@ -347,32 +305,9 @@ async def _read(ctx, name, args):
     async with asyncio.timeout(min(ctx.remaining, timeout)):
         body = await ctx.call(name, payload)
     version = body.get("contract_version")
-    valid_version = (
-        version == "patient-layers-1.0.0"
-        if name in LAYER_TOOLS
-        else version == "iretour-1.0.0"
-        or (
-            version == "1.6.0"
-            and body.get("meta", {}).get("registry_versions", {}).get("contract") == "iretour-1.0.0"
-        )
-        if "iretour" in name
-        else version == "irecog-1.0.0"
-        if "irecog" in name
-        else version == "assessment-1.0.0"
-        if "assessment" in name
-        else version == "1.6.0"
-    )
-    if body.get("tool_name") != name or not valid_version:
+    if body.get("tool_name") != name or version != "2.0.0":
         raise DomainError("invalid_contract", "工具名称或契约版本不匹配。")
-    if body.get("status") not in {"success", "available", "partial", "unavailable", "failed"}:
-        raise DomainError("invalid_contract", "工具返回了未知状态。")
     data = body.get("data")
-    if (
-        name in LAYER_TOOLS
-        and isinstance(data, dict)
-        and data.get("patient_ref") != f"project:{user}"
-    ):
-        raise DomainError("patient_scope_mismatch", "工具返回了其他患者的信息，已停止使用。")
     expected_ref = args.get("session_ref") or args.get("assessment_ref")
     if (
         expected_ref
@@ -426,22 +361,29 @@ async def _adapter(ctx, name, args, tid):
     return result
 
 
-async def _read_assessment_report(ctx, name, args):
-    """先重读同参数分析，取得报表所需的同轮 expected_source_snapshot。"""
+async def _read_report(ctx, name, args):
+    """Bind every report family to a fresh analysis of the same selection."""
     longitudinal = "longitudinal" in name
-    if longitudinal:
-        analysis_name = "get_assessment_longitudinal_analysis"
-        analysis_args = {k: v for k, v in args.items() if v is not None}
-    else:
-        analysis_name = "get_assessment_result_analysis"
-        analysis_args = {"selector": "assessment_ref", "assessment_ref": args["assessment_ref"]}
+    domain = next(d for d in ("assessment", "irecog", "iretour", "irego") if d in name)
+    analysis_name = (
+        f"get_{domain}_longitudinal_analysis"
+        if longitudinal
+        else "get_assessment_result_analysis"
+        if domain == "assessment"
+        else f"get_{domain}_session_analysis"
+    )
+    analysis_args = {k: v for k, v in args.items() if v is not None}
+    if not longitudinal:
+        analysis_args["selector"] = "assessment_ref" if domain == "assessment" else "session_ref"
+    if domain == "irego":
+        analysis_args.update(detail_level="standard", quality_detail="summary")
     analysis_body, evidence, cache_hit = await _read(ctx, analysis_name, analysis_args)
     if analysis_body.get("status") not in {"success", "available", "partial"}:
         return analysis_body, evidence, cache_hit
     snapshot = (analysis_body.get("data") or {}).get("source_snapshot")
-    if not isinstance(snapshot, str) or len(snapshot) != 64:
-        raise DomainError("invalid_contract", "量表分析未返回有效的来源快照，无法生成报表。")
-    return await _read(ctx, name, {**analysis_args, "expected_source_snapshot": snapshot})
+    if not isinstance(snapshot, str) or not snapshot:
+        raise DomainError("invalid_contract", "分析未返回有效来源快照，无法生成报告。")
+    return await _read(ctx, name, {**args, "expected_source_snapshot": snapshot})
 
 
 async def invoke_tool(ctx, name, args):
@@ -483,8 +425,8 @@ async def invoke_tool(ctx, name, args):
                 "evidence_id": next(iter(result.evidence_ids), None),
             }
         else:
-            if name in ASSESSMENT_REPORT_ENDPOINTS:
-                body, evidence, cache_hit = await _read_assessment_report(ctx, name, args)
+            if name.startswith("generate_"):
+                body, evidence, cache_hit = await _read_report(ctx, name, args)
             else:
                 body, evidence, cache_hit = await _read(ctx, name, args)
             result.status = {"success": "succeeded", "available": "succeeded"}.get(
@@ -511,6 +453,8 @@ async def invoke_tool(ctx, name, args):
                             session_ref=ref,
                             evidence_id=evidence.evidence_id,
                             source_version=evidence.source_version,
+                            scope_fingerprint=ctx.scope.scope_fingerprint,
+                            record_tenant=_record_tenant(data),
                         )
                 if "patient_history" in name and domain:
                     ctx.memory.history_seen = True
@@ -532,9 +476,9 @@ async def invoke_tool(ctx, name, args):
                 result.code = "tool_" + result.status
                 result.message = body.get("patient_message") or "该项数据暂不可用。"
         artifact = result.outputs.get("artifact")
-        if artifact and artifact["artifact_ref"] not in ctx.artifact_refs:
+        if artifact and (artifact["artifact_ref"], artifact["url"]) not in ctx.artifact_refs:
             await ctx.emitter.emit("artifact_ready", artifact, task_id=tid)
-            ctx.artifact_refs.add(artifact["artifact_ref"])
+            ctx.artifact_refs.add((artifact["artifact_ref"], artifact["url"]))
         ctx.record.results[tid] = result
     except asyncio.CancelledError:
         result.status, result.code = "cancelled", "request_cancelled"

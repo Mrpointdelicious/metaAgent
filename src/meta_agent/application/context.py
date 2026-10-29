@@ -16,11 +16,12 @@ from meta_agent.domains.patient_identity import PatientBrief
 from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
-from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
 from meta_agent.tools.ai_webapi import (
     ASSESSMENT_REPORT_ENDPOINTS,
     IRECOG_REPORT_ENDPOINTS,
     IRETOUR_REPORT_ENDPOINTS,
+    PATIENT_ENDPOINTS,
 )
 
 
@@ -44,11 +45,10 @@ class RunContext:
     goals: dict[str, Goal] = field(default_factory=dict)
     answer_fingerprints: dict[str, str] = field(default_factory=dict)
     answer_events: dict[str, Any] = field(default_factory=dict)
-    artifact_refs: set[str] = field(default_factory=set)
+    artifact_refs: set[tuple[str, str]] = field(default_factory=set)
     interrupted: bool = False
     on_result: Any = None
     runtime_guard: Any = None
-    agent_robot_id: str | None = None
 
     @property
     def remaining(self) -> float:
@@ -75,8 +75,13 @@ class RunContext:
         priority = (
             0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
         )
+        if endpoint in PATIENT_ENDPOINTS:
+            payload = self.scope.patient_payload(payload, self.record.conversation_id)
         async with self.tool_slot(priority):
-            return await self.backend.post(endpoint, payload)
+            body = await self.backend.post(endpoint, payload)
+        if endpoint in PATIENT_ENDPOINTS:
+            validate_patient_envelope(self.scope, endpoint, body)
+        return body
 
     @asynccontextmanager
     async def tool_slot(self, priority: int = 1):

@@ -8,6 +8,7 @@ import json
 import pytest
 
 from meta_agent.contracts import OutboundEvent
+from tests.helpers.identity import patient_inputs
 
 
 def payload(query="解读最近训练", request_id="req-1", **kwargs):
@@ -16,7 +17,7 @@ def payload(query="解读最近训练", request_id="req-1", **kwargs):
         "request_id": request_id,
         "user": "actor",
         "conversation_id": "conversation",
-        "inputs": {"patientId": "461"},
+        "inputs": patient_inputs("461"),
         "response_mode": "blocking",
         **kwargs,
     }
@@ -54,13 +55,13 @@ def test_streaming_native_sequence(client, auth_headers):
 
 def test_scope_protects_status_and_cancel(client, auth_headers):
     own = client.post("/v1/chat", headers=auth_headers, json=payload()).json()
-    access = {"user": "actor", "inputs": {"patientId": "461"}}
+    access = {"user": "actor", "inputs": patient_inputs("461")}
     path = f"/v1/runs/{own['run_id']}"
     assert client.post(path + "/status", headers=auth_headers, json=access).status_code == 200
     for changed in (
-        {"patientId": "462"},
-        {"patientId": "461", "role": "clinician"},
-        {"patientId": "461", "tenantId": "another"},
+        patient_inputs("462"),
+        {"role": "clinician"},
+        patient_inputs("461", tenantId="another"),
     ):
         for endpoint in ("/status", "/cancel"):
             assert (
@@ -70,7 +71,7 @@ def test_scope_protects_status_and_cancel(client, auth_headers):
                 == 404
             )
     other = client.post(
-        "/v1/chat", headers=auth_headers, json=payload(inputs={"patientId": "462"})
+        "/v1/chat", headers=auth_headers, json=payload(inputs=patient_inputs("462"))
     ).json()
     assert other["run_id"] != own["run_id"]
 
@@ -112,5 +113,4 @@ def test_optional_patient_and_mixed_identity(client, auth_headers):
             "查一下患者信息", "req-2", inputs={"patientId": {"type": "mixed", "value": "461"}}
         ),
     )
-    assert response.json()["status"] == "unsupported"
-    assert response.json()["metrics"]["tool_calls"] == 0
+    assert response.status_code == 422

@@ -8,19 +8,17 @@
 用法：
     python interactive.py                    # 启动后按提示输入患者标识
     python interactive.py -i 5718            # 直接用项目患者 ID 5718
-    python interactive.py -i phone:15932910402   # 用手机号（网关会解析成项目患者ID）
+    python interactive.py -i login_name:000007  # 另需业务后端签发的短期凭证
     python interactive.py -v                 # 额外显示工具/证据等指标
     python interactive.py -k 4985b6d... --apikey ... --apitoken ...   # 企业知识库检索
     python interactive.py --pos "问诊 房间"                          # 走 consultation_room 分支
-    python interactive.py --patientphone 15932910402 --requestphone 15932910402   # 病历填写分支用
+    # 凭证由 META_AGENT_IDENTITY_CONTEXT_TOKEN 或 --identity-token-file 注入
 
 对话中的命令：
     exit / quit / q / 退出    退出
     new / reset / 新会话       清空会话，开始新对话
     id / 患者                 重新设置患者标识
     kb / 知识库               设置企业知识库 richId
-    phone / 患者手机          设置患者手机号（inputs.patientphone）
-    rphone / 请求手机         设置请求手机号（inputs.requestphone）
 """
 
 import argparse
@@ -29,13 +27,13 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from contextlib import suppress
 
 # Windows 控制台默认 GBK，统一成 UTF-8 并容错，避免中文乱码与代理字符报错。
 for _stream in (sys.stdin, sys.stdout, sys.stderr):
-    try:
+    with suppress(AttributeError, ValueError, OSError):
         _stream.reconfigure(encoding="utf-8", errors="replace")
-    except (AttributeError, ValueError, OSError):
-        pass
+
 
 DEFAULT_URL = "http://localhost:8080"
 FALLBACK_TOKEN = "dev-service-token-2026"
@@ -67,16 +65,12 @@ def classify_identity(raw: str) -> dict:
     raw = (raw or "").strip()
     if not raw:
         return {}
-    if ":" in raw:
-        kind, _, val = raw.partition(":")
-        kind, val = kind.strip().lower(), val.strip()
-        if kind in ("phone", "p", "手机"):
-            return {"patientphone": val}
-        if kind in ("id", "pid", "project", "项目"):
-            return {"projectPatientId": val}
-    if raw.isdigit():
-        return {"patientphone": raw} if len(raw) == 11 else {"projectPatientId": raw}
-    return {"patientphone": raw}
+    kind, sep, value = raw.partition(":")
+    if not sep:
+        kind, value = "project_user_id", raw
+    if kind not in {"project_user_id", "login_name"} or not value:
+        raise ValueError("请使用 project_user_id:编号 或 login_name:登录名")
+    return {"patient_identity": {"type": kind, "value": value}}
 
 
 def with_space(inputs: dict, space_id: str) -> dict:
@@ -105,23 +99,35 @@ def with_kb(inputs: dict, apikey: str, apitoken: str, companykb: str) -> dict:
     return inputs
 
 
-def with_phones(inputs: dict, patientphone: str, requestphone: str) -> dict:
-    if patientphone or requestphone:
-        inputs = dict(inputs or {})
-        if patientphone:
-            inputs["patientphone"] = patientphone
-        if requestphone:
-            inputs["requestphone"] = requestphone
-    return inputs
-
-
 def build_inputs(identity_raw: str, args) -> dict:
     inputs = with_space(
         classify_identity(identity_raw) if identity_raw is not None else None, args.space
     )
     inputs = with_pos(inputs, args.pos)
-    inputs = with_phones(inputs, args.patientphone, args.requestphone)
+    if inputs and "patient_identity" in inputs:
+        proof = os.environ.get("META_AGENT_IDENTITY_CONTEXT_TOKEN", "")
+        if args.identity_token_file:
+            with open(args.identity_token_file, encoding="utf-8") as source:
+                proof = source.read().strip()
+        if not proof:
+            raise ValueError("患者查询需要业务后端签发的短期凭证")
+        inputs.update(
+            identity_context_token=proof,
+            data_scope=args.data_scope,
+            current_business_id=args.current_business_id,
+        )
     return with_kb(inputs, args.apikey, args.apitoken, args.companykb)
+
+
+def safe_inputs(inputs):
+    return json.dumps(
+        {
+            k: v
+            for k, v in (inputs or {}).items()
+            if k not in {"identity_context_token", "apikey", "apitoken"}
+        },
+        ensure_ascii=False,
+    )
 
 
 def _error_text(body: str) -> str:
@@ -189,33 +195,44 @@ def render_metrics(snapshot):
     m = snapshot.get("metrics") or {}
     lines = [
         f"  状态: {snapshot.get('status')}",
-        f"  模式: {m.get('orchestration_mode') or m.get('branch')}  工具调用: {m.get('tool_calls')}  LLM调用: {m.get('llm_calls')}",
+        f"  模式: {m.get('orchestration_mode') or m.get('branch')}  "
+        f"工具调用: {m.get('tool_calls')}  LLM调用: {m.get('llm_calls')}",
     ]
     for step in m.get("agent_model_steps") or []:
         names = [t.get("name") for t in step.get("tools", [])] or ["(无工具)"]
         lines.append(f"  第{step.get('call')}轮LLM工具: {', '.join(names)}")
     pc = m.get("patient_profile_context")
     if pc:
-        lines.append(
-            f"  患者档案: {pc.get('status')}  {pc.get('data', {}).get('patient_ref')}"
-        )
+        lines.append(f"  患者档案: {pc.get('status')}  {pc.get('data', {}).get('patient_ref')}")
     return "\n".join(lines)
 
 
 def main():
     ap = argparse.ArgumentParser(description="MetaAgent 交互式命令行客户端")
-    ap.add_argument("url", nargs="?", default=DEFAULT_URL,
-                    help="服务地址，默认 http://localhost:8080（Docker 版用 http://localhost:5080）")
-    ap.add_argument("-i", "--identity", help="患者标识：5718 或 phone:15932910402")
+    ap.add_argument(
+        "url",
+        nargs="?",
+        default=DEFAULT_URL,
+        help="服务地址，默认 http://localhost:8080（Docker 版用 http://localhost:5080）",
+    )
+    ap.add_argument("-i", "--identity", help="患者标识：project_user_id:5718 或 login_name:000007")
     ap.add_argument("-s", "--space", help="场景 space_id，塞进 inputs.space_id（用于指令解析工具）")
-    ap.add_argument("--pos", help="前端透传的 pos 字段；含「问诊」+「房间」时走 consultation_room 分支")
-    ap.add_argument("-k", "--companykb", help="企业知识库 richId，塞进 inputs.companykb（用于知识库检索工具）")
+    ap.add_argument(
+        "--pos", help="前端透传的 pos 字段；含「问诊」+「房间」时走 consultation_room 分支"
+    )
+    ap.add_argument(
+        "-k", "--companykb", help="企业知识库 richId，塞进 inputs.companykb（用于知识库检索工具）"
+    )
     ap.add_argument("--apikey", help="知识库接口 apikey 头，塞进 inputs.apikey")
     ap.add_argument("--apitoken", help="知识库接口 apitoken 头，塞进 inputs.apitoken")
-    ap.add_argument("--patientphone", help="患者手机号，塞进 inputs.patientphone（病历填写/角色查询用）")
-    ap.add_argument("--requestphone", help="请求手机号，塞进 inputs.requestphone（对话记录查询用）")
-    ap.add_argument("-t", "--token",
-                    help="服务 Bearer Token（默认读 .env 的 META_AGENT__SERVICE_BEARER_TOKEN）")
+    ap.add_argument("--identity-token-file", help="业务凭证文件，内容不输出")
+    ap.add_argument(
+        "--data-scope", choices=["all_tenants", "current_tenant"], default="all_tenants"
+    )
+    ap.add_argument("--current-business-id", type=int, help="当前登录机构")
+    ap.add_argument(
+        "-t", "--token", help="服务 Bearer Token（默认读 .env 的 META_AGENT__SERVICE_BEARER_TOKEN）"
+    )
     ap.add_argument("-v", "--verbose", action="store_true", help="额外显示工具/证据指标")
     args = ap.parse_args()
 
@@ -224,11 +241,11 @@ def main():
 
     print("MetaAgent 交互式客户端")
     print(f"  服务: {args.url}")
-    print(f"  患者: {json.dumps(inputs, ensure_ascii=False) or '（未设置）'}")
-    print("  输入问题后回车；exit 退出，new 开新会话，id 改患者，phone/rphone 改手机号。\n")
+    print(f"  患者: {safe_inputs(inputs) or '（未设置）'}")
+    print("  输入问题后回车；exit 退出，new 开新会话，id 改患者。\n")
 
     if inputs is None:
-        raw = input("请输入患者标识（项目ID 如 5718，或手机号如 15932910402，直接回车跳过）: ")
+        raw = input("请输入 project_user_id:编号 或 login_name:登录名，直接回车跳过: ")
         inputs = build_inputs(raw, args)
 
     conversation_id = ""
@@ -248,31 +265,25 @@ def main():
         if low in ("id", "患者"):
             raw = input("请输入患者标识: ").strip()
             inputs = build_inputs(raw, args)
-            print(f"患者已设为: {json.dumps(inputs, ensure_ascii=False) or '（未设置）'}")
+            print(f"患者已设为: {safe_inputs(inputs) or '（未设置）'}")
             continue
         if low in ("kb", "知识库"):
             kb = input("请输入企业知识库 richId: ").strip()
             args.companykb = kb
             inputs = with_kb(inputs, args.apikey, args.apitoken, kb)
-            print(f"知识库已设为: {json.dumps(inputs, ensure_ascii=False) or '（未设置）'}")
-            continue
-        if low in ("phone", "患者手机"):
-            phone = input("请输入患者手机号: ").strip()
-            args.patientphone = phone
-            inputs = with_phones(inputs, phone, args.requestphone)
-            print(f"患者手机号已设为: {phone or '（未设置）'}")
-            continue
-        if low in ("rphone", "请求手机"):
-            phone = input("请输入请求手机号: ").strip()
-            args.requestphone = phone
-            inputs = with_phones(inputs, args.patientphone, phone)
-            print(f"请求手机号已设为: {phone or '（未设置）'}")
+            print(f"知识库已设为: {safe_inputs(inputs) or '（未设置）'}")
             continue
         if not query:
             continue
+        if args.identity_token_file and inputs and "patient_identity" in inputs:
+            with open(args.identity_token_file, encoding="utf-8") as source:
+                inputs["identity_context_token"] = source.read().strip()
         print("思考中…", flush=True)
         status, resp = post_chat(
-            url=args.url, token=token, query=query, inputs=inputs,
+            url=args.url,
+            token=token,
+            query=query,
+            inputs=inputs,
             conversation_id=conversation_id,
         )
         if status != 200 or "error" in resp:

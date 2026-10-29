@@ -6,6 +6,7 @@
 from typing import Any
 
 from meta_agent.config import Settings
+from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
 from meta_agent.orchestration.planner import TaskName
 from meta_agent.tools.ai_webapi import AIWebApiClient
 from meta_agent.tools.contracts import WorkflowOutcome
@@ -20,14 +21,18 @@ class IReGoWorkflow:
 
     async def execute(
         self,
-        patient_id: str,
+        scope: TrustedScope,
         tasks: tuple[TaskName, ...],
     ) -> WorkflowOutcome:
         """执行最小必要接口并复用分析返回的稳定 session_ref。"""
         if self._settings.dry_run:
             return self._dry_run_outcome(tasks)
 
-        system_context = {"user": patient_id}
+        async def post(endpoint, arguments):
+            body = await self._client.post(endpoint, scope.patient_payload(arguments))
+            validate_patient_envelope(scope, endpoint, body)
+            return body
+
         raw: dict[str, Any] = {}
         facts: dict[str, Any] = {"status": "success"}
         patient_message = ""
@@ -35,11 +40,10 @@ class IReGoWorkflow:
         mode_commands: list[str] = []
 
         if "patient_context" in tasks:
-            context_body = await self._client.post(
+            context_body = await post(
                 "get_multisource_patient_context",
                 {
-                    "system_context": system_context,
-                    "projection_level": "brief",
+                    "projection_level": "compact",
                     "force_refresh": False,
                 },
             )
@@ -48,10 +52,9 @@ class IReGoWorkflow:
             patient_message = self._patient_message(context_body)
 
         if "session_analysis" in tasks:
-            analysis_body = await self._client.post(
+            analysis_body = await post(
                 "get_irego_session_analysis",
                 {
-                    "system_context": system_context,
                     "selector": "latest_usable",
                     "session_ref": None,
                     "detail_level": "standard",
@@ -65,9 +68,14 @@ class IReGoWorkflow:
         if "single_report" in tasks:
             session_ref = str(facts.get("session_ref") or "")
             if session_ref:
-                report_body = await self._client.post(
+                report_body = await post(
                     "generate_irego_single_session_report",
-                    {"system_context": system_context, "session_ref": session_ref},
+                    {
+                        "session_ref": session_ref,
+                        "expected_source_snapshot": (
+                            raw.get("session_analysis", {}).get("data") or {}
+                        ).get("source_snapshot"),
+                    },
                 )
                 raw["single_report"] = report_body
                 report_data = report_body.get("data") or {}
@@ -111,7 +119,7 @@ class IReGoWorkflow:
     @staticmethod
     def _context_facts(body: dict[str, Any]) -> dict[str, Any]:
         data = body.get("data") or {}
-        summary = data.get("summary") or data.get("overview") or {}
+        summary = (data.get("data_domains") or {}).get("irego") or {}
         return {
             "status": str(body.get("status") or "unknown"),
             "training_items": summary.get("training_items") or [],
@@ -124,10 +132,11 @@ class IReGoWorkflow:
         session = data.get("session") or {}
         return {
             "status": str(body.get("status") or "unknown"),
-            "training_date": session.get("training_date") or session.get("date"),
-            "completion": session.get("completion") or session.get("status"),
-            "training_items": session.get("training_items") or [],
+            "training_date": (data.get("time") or {}).get("report_recorded_at"),
+            "completion": (data.get("time") or {}).get("training_state"),
+            "training_items": data.get("report_blocks") or [],
             "session_ref": session.get("session_ref"),
-            "ability_evaluations": data.get("ability_evaluations") or [],
+            "capability_evaluations": data.get("capability_evaluations") or [],
+            "record_tenant": session.get("record_tenant"),
             "available_actions": data.get("available_actions") or [],
         }

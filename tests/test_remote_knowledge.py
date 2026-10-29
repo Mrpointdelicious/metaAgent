@@ -231,7 +231,7 @@ def test_real_agent_loop_uses_dynamic_schema_and_shared_call_budget(monkeypatch)
 
         mock_http(monkeypatch, handle)
         monkeypatch.setenv("OTHER_KNOWLEDGE_TOKEN", "other-token")
-        async with runtime(knowledge_sources=SOURCES, max_tool_calls=1) as (container, _):
+        async with runtime(knowledge_sources=SOURCES, max_tool_calls=2) as (container, _):
             activate(
                 container,
                 [

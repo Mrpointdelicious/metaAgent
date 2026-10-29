@@ -7,7 +7,7 @@
 def iretour_demo_response(endpoint, payload):
     body = {
         "tool_name": endpoint,
-        "contract_version": "iretour-1.0.0",
+        "contract_version": "2.0.0",
         "request_id": "demo",
         "status": "success",
         "reason_codes": [],

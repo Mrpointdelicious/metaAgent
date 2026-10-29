@@ -18,20 +18,21 @@ from meta_agent.tools.ai_webapi import (
     AIWebApiClient,
 )
 from meta_agent.tools.demo import demo_response
+from tests.helpers.identity import patient_scope
 from tests.helpers.runtime import SeedPlanner, answers, runtime
 from tests.helpers.runtime import request as base_request
 from tests.helpers.settings import AppTestSettings
 
 
 def request(query, rid="r1", **kwargs):
-    kwargs.setdefault("scope", TrustedScope("tenant", "actor", "461", iretour_patient_id="3799"))
+    kwargs.setdefault("scope", patient_scope("tenant", "actor", "3799"))
     return base_request(query, rid, **kwargs)
 
 
 def tour_report(payload):
     return {
         "tool_name": "generate_iretour_single_session_report",
-        "contract_version": "iretour-1.0.0",
+        "contract_version": "2.0.0",
         "request_id": "fixture",
         "status": "success",
         "meta": {},
@@ -115,7 +116,10 @@ def test_tour_followups_keep_record_and_history_domain():
             backend.calls.clear()
             run = await c.application.execute(request("为这次训练生成报告图片", "r2"))
             assert run.record.status == "succeeded"
-            assert [name for name, _ in backend.calls] == ["generate_iretour_single_session_report"]
+            assert [name for name, _ in backend.calls] == [
+                "get_iretour_session_analysis",
+                "generate_iretour_single_session_report",
+            ]
             assert backend.calls[0][1]["session_ref"] == "synthetic-tour-1"
             await c.application.execute(request("那上一次呢", "r3"))
             assert backend.calls[-1][1]["session_ref"] == "synthetic-tour-2"
@@ -139,43 +143,39 @@ def test_cross_device_reference_is_not_sent_to_backend():
     asyncio.run(check())
 
 
-def test_tour_identity_namespace_is_separate():
+def test_all_patient_tools_share_one_typed_identity():
     async def check():
         async with runtime() as (c, backend):
-            scope = TrustedScope("t", "a", "3892", iretour_patient_id="3799")
+            scope = patient_scope("t", "a", "3799")
             await c.application.execute(request("查看IReTour训练历史", scope=scope))
-            assert backend.calls[-1][1]["system_context"]["user"] == "3799"
             await c.application.execute(request("查看IReGo训练历史", "r2", scope=scope))
-            assert backend.calls[-1][1]["system_context"]["user"] == "3892"
-        a = trusted_scope_from_inputs({"iretourPatientId": "3799"}, "a", "t")
-        b = trusted_scope_from_inputs({"iretourPatientId": "3780"}, "a", "t")
-        assert a.scope_hash != b.scope_hash
-
-    asyncio.run(check())
-
-
-def test_tour_does_not_treat_robot_identity_as_project_identity():
-    async def check():
-        async with runtime() as (c, backend):
-            scope = TrustedScope("tenant", "actor", "3799")
-            run = await c.application.execute(request("查看IReTour训练历史", scope=scope))
-            assert run.record.status == "clarification"
-            assert not backend.calls
+            assert {p["system_context"]["user"] for _, p in backend.calls} == {"a"}
+            assert all(
+                p["system_context"]["patient_identity"]
+                == {"type": "project_user_id", "value": "3799"}
+                for _, p in backend.calls
+            )
+        a = trusted_scope_from_inputs(
+            {
+                "patient_identity": {"type": "login_name", "value": "000007"},
+                "identity_context_token": "proof",
+            },
+            "a",
+            "t",
+        )
+        assert a.patient_identity.value == "000007"
 
     asyncio.run(check())
 
 
 @pytest.mark.parametrize(
-    "legacy,registry,expected",
-    [(False, None, "succeeded"), (True, "iretour-1.0.0", "succeeded"), (True, "1.6.0", "failed")],
+    "version,expected", [("2.0.0", "succeeded"), ("1.6.0", "failed"), ("iretour-1.0.0", "failed")]
 )
-def test_tour_contract_compatibility_is_explicit(legacy, registry, expected):
+def test_patient_contract_is_v2_only(version, expected):
     async def check():
         async with runtime() as (c, backend):
             body = demo_response("get_iretour_patient_context", {})
-            if legacy:
-                body["contract_version"] = "1.6.0"
-                body["meta"]["registry_versions"] = {"contract": registry}
+            body["contract_version"] = version
             backend.overrides["get_iretour_patient_context"] = body
             run = await c.application.execute(request("查看IReTour概况"))
             assert run.record.status == expected
@@ -248,38 +248,30 @@ def test_hospital_operator_query_and_patient_rejection():
     asyncio.run(check())
 
 
-def test_identity_mapping_rejects_mismatch_and_routes_only_trusted_inputs():
+def test_identity_resolution_uses_the_signed_v2_context():
     async def check():
+        import json
+
         calls = []
 
         def respond(req):
-            calls.append(req)
-            return httpx.Response(
-                200,
-                json={
-                    "tool_name": "resolve_patient_identity",
-                    "contract_version": "1.6.0",
-                    "status": "success",
-                    "data": {
-                        "project_patient_id": 3799,
-                        "robot_patient_id": 461,
-                        "binding_status": "resolved",
-                    },
-                },
-            )
+            payload = json.loads(req.content)
+            calls.append(payload)
+            body = demo_response("resolve_patient_identity", payload)
+            return httpx.Response(200, json=body)
 
         client = AIWebApiClient(
             AppTestSettings(dry_run=False), transport=httpx.MockTransport(respond)
         )
         try:
-            assert (await client.resolve_patient_identity(project_patient_id=3799))[
-                "robot_patient_id"
-            ] == 461
-            with pytest.raises(DomainError):
-                await client.resolve_patient_identity(project_patient_id=1)
-            with pytest.raises(DomainError):
-                await client.resolve_patient_identity(project_patient_id=3799, phone="123")
-            assert len(calls) == 2
+            scope = patient_scope("t", "actor", "3799")
+            resolved = await client.resolve_patient_identity(scope)
+            assert resolved.has_patient
+            assert calls[0]["system_context"]["user"] == "actor"
+            assert calls[0]["system_context"]["patient_identity"]["value"] == "3799"
+            assert "project_patient_id" not in calls[0]
+            with pytest.raises(ValueError):
+                trusted_scope_from_inputs({"projectPatientId": "3799"}, "actor", "t")
         finally:
             await client.close()
 

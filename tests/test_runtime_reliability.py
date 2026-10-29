@@ -106,7 +106,7 @@ def test_trend_ineligible_preserves_window_and_rejects_claim():
         async with runtime() as (c, backend):
             body = {
                 "tool_name": "get_irego_longitudinal_analysis",
-                "contract_version": "1.6.0",
+                "contract_version": "2.0.0",
                 "request_id": "fixture",
                 "status": "partial",
                 "meta": {},
@@ -145,7 +145,7 @@ def test_trend_ineligible_preserves_window_and_rejects_claim():
             text = answers(run.record)
             assert "请求记录数：4" in text and "窗口记录数：2" in text
             assert "不可比较" in text and "不应输出的改善断言" not in text
-            assert tool_calls(backend)[0][1]["selector"] == "latest_contiguous"
+            assert tool_calls(backend)[0][1].get("selection_mode", "latest_count") == "latest_count"
 
     asyncio.run(check())
 

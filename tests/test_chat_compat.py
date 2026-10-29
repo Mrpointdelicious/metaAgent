@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from meta_agent.api.schemas import DifyChatRequest, NativeChatRequest
 from meta_agent.app import create_app
 from meta_agent.contracts import OutboundEvent, RunRecord
 from meta_agent.events.dify import DifyEventAdapter
+from tests.helpers.identity import patient_inputs
 from tests.helpers.runtime import request, runtime
 
 ENDPOINTS = ["/v1/chat", "/v1/chat-messages", "/compat/dify/v1/chat-messages"]
@@ -128,30 +130,11 @@ def test_alias_explicit_id_keeps_idempotency_without_replaying_a_stream(client, 
 
 
 @pytest.mark.parametrize("phone_key", ["patientphone", "patientPhone", "patient_phone"])
-def test_phone_alias_is_resolved_for_chat_and_followup_status(
-    client, auth_headers, monkeypatch, phone_key
-):
-    calls = []
-
-    async def resolve(**kwargs):
-        calls.append(kwargs)
-        return {"project_patient_id": 3799, "robot_patient_id": 461}
-
-    monkeypatch.setattr(
-        client.app.state.container.ai_webapi_client, "resolve_patient_identity", resolve
+def test_old_phone_identity_is_rejected(client, auth_headers, phone_key):
+    response = client.post(
+        "/v1/chat", headers=auth_headers, json=payload(inputs={phone_key: "13800000000"})
     )
-    inputs = {phone_key: "13800000000"}
-    response = client.post("/v1/chat", headers=auth_headers, json=payload(inputs=inputs))
-    assert response.status_code == 200
-    body = response.json()
-    assert calls == [{"project_patient_id": None, "phone": "13800000000"}]
-    status = client.post(
-        f"/v1/runs/{body['task_id']}/status",
-        headers=auth_headers,
-        json={"user": "interactive-cli", "inputs": inputs},
-    )
-    assert status.status_code == 200
-    assert len(calls) == 2
+    assert response.status_code == 422
 
 
 def test_conflicting_phone_aliases_are_rejected(client, auth_headers):
@@ -318,7 +301,7 @@ def test_blocking_request_cancellation_stops_the_application(model):
                         query="解读最近训练",
                         request_id="cancel",
                         user="actor",
-                        inputs={"patientId": "461"},
+                        inputs=patient_inputs("461"),
                         response_mode="blocking",
                     ),
                     fake_request,
@@ -336,16 +319,10 @@ def test_blocking_request_cancellation_stops_the_application(model):
     asyncio.run(check())
 
 
-@pytest.mark.parametrize("identity", ["3799", "phone:13800000000"])
-def test_unmodified_interactive_script_can_chat_and_fetch_verbose_status(
+@pytest.mark.parametrize("identity", ["project_user_id:3799", "login_name:000007"])
+def test_v2_interactive_script_can_chat_and_fetch_verbose_status(
     settings, monkeypatch, identity
 ):
-    async def resolve(self, **kwargs):
-        return {"project_patient_id": 3799, "robot_patient_id": 461}
-
-    monkeypatch.setattr(
-        "meta_agent.tools.ai_webapi.AIWebApiClient.resolve_patient_identity", resolve
-    )
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(
@@ -370,6 +347,10 @@ def test_unmodified_interactive_script_can_chat_and_fetch_verbose_status(
                 "-v",
             ],
             input="你好\n谢谢\nexit\n",
+            env={
+                **os.environ,
+                "META_AGENT_IDENTITY_CONTEXT_TOKEN": "synthetic-proof-only",
+            },
             capture_output=True,
             encoding="utf-8",
             timeout=20,

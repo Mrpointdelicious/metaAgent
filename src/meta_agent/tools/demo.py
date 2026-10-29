@@ -8,7 +8,7 @@ from typing import Any
 from meta_agent.contracts import utcnow
 
 
-def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
     if "iretour" in endpoint:
         from meta_agent.tools.demo_iretour import iretour_demo_response
 
@@ -62,7 +62,7 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
     body: dict[str, Any] = {
         "tool_name": endpoint,
-        "contract_version": "1.6.0",
+        "contract_version": "2.0.0",
         "request_id": "demo",
         "status": "success",
         "reason_codes": [],
@@ -136,7 +136,7 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     elif endpoint == "get_patient_profile":
-        body["contract_version"] = "patient-layers-1.0.0"
+        body["contract_version"] = "2.0.0"
         body["data"] = {
             "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
             "profile": {
@@ -148,7 +148,7 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
             "limitations": ["合成演示资料，不代表真实患者。"],
         }
     elif endpoint == "get_patient_consultation":
-        body["contract_version"] = "patient-layers-1.0.0"
+        body["contract_version"] = "2.0.0"
         body["data"] = {
             "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
             "medical_record_count": 1,
@@ -168,7 +168,7 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
             "limitations": ["合成演示資料，不代表真实患者。"],
         }
     elif endpoint == "get_patient_rehab":
-        body["contract_version"] = "patient-layers-1.0.0"
+        body["contract_version"] = "2.0.0"
         body["data"] = {
             "patient_ref": "project:" + str(payload.get("system_context", {}).get("user", "3799")),
             "plan_count": 0,
@@ -177,11 +177,80 @@ def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
                 "availability": "success",
                 "history": demo_response("get_iretour_patient_history", payload)["data"],
             },
-            "irego": {"availability": "unavailable", "patient_message": "合成示例没有IReGo映射。"},
+            "irego": {
+                "availability": "unavailable",
+                "patient_message": "合成示例没有IReGo训练结果。",
+            },
             "limitations": ["合成演示资料，不代表真实患者。"],
         }
     else:
         body.update(
             status="unavailable", data=None, patient_message="演示模式不提供该真实业务结果。"
         )
+    return body
+
+
+def synthetic_binding(payload):
+    """Synthetic identity used only by explicitly enabled dry-run fixtures."""
+    from meta_agent.contracts import fingerprint
+
+    system = payload.get("system_context") or {}
+    scope = payload.get("data_scope", "all_tenants")
+    digest = fingerprint(
+        [
+            system.get("user"),
+            system.get("patient_identity"),
+            scope,
+            system.get("current_business_id") if scope == "current_tenant" else None,
+        ]
+    )
+    return "patient_scope_v2_" + digest[:32], digest
+
+
+def attach_synthetic_scope(body, payload):
+    from meta_agent.contracts import fingerprint
+
+    ref, digest = synthetic_binding(payload)
+    scope = payload.get("data_scope", "all_tenants")
+    body.setdefault(
+        "query_scope",
+        {
+            "requested": scope,
+            "effective": scope,
+            "scope_fingerprint": digest,
+            "coverage": "confirmed_sources",
+            "included_account_count": 1,
+            "issues": [],
+        },
+    )
+    data = body.get("data")
+    if isinstance(data, dict):
+        data.setdefault("patient_ref", ref)
+        if isinstance(data.get("session"), dict):
+            data["session"].setdefault("patient_ref", ref)
+        data.setdefault("source_snapshot", fingerprint(data))
+    return body
+
+
+def demo_response(endpoint, payload):
+    from meta_agent.tools.ai_webapi import PATIENT_ENDPOINTS
+
+    if endpoint == "resolve_patient_identity":
+        ref, _ = synthetic_binding(payload)
+        body = {
+            "tool_name": endpoint,
+            "contract_version": "2.0.0",
+            "request_id": "demo",
+            "status": "success",
+            "meta": {},
+            "data": {"patient_ref": ref, "included_account_count": 1, "binding_status": "resolved"},
+        }
+    else:
+        body = _demo_response(endpoint, payload)
+    if endpoint in PATIENT_ENDPOINTS:
+        body["contract_version"] = "2.0.0"
+        if isinstance(body.get("data"), dict):
+            body["data"].pop("patient_ref", None)
+        if (payload.get("system_context") or {}).get("patient_identity"):
+            attach_synthetic_scope(body, payload)
     return body

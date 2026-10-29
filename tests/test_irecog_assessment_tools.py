@@ -173,7 +173,7 @@ def test_irecog_session_chain_and_facts():
         ):
             backend.overrides["get_irecog_patient_history"] = envelope(
                 "get_irecog_patient_history",
-                "irecog-1.0.0",
+                "2.0.0",
                 {
                     "sessions": [irecog_session()],
                     "page_number": 1,
@@ -183,7 +183,7 @@ def test_irecog_session_chain_and_facts():
             )
             backend.overrides["get_irecog_session_analysis"] = envelope(
                 "get_irecog_session_analysis",
-                "irecog-1.0.0",
+                "2.0.0",
                 {"sessions": [irecog_session()], "comparability": "not_requested"},
             )
             run = await c.application.execute(request("解读最近IReCog测评", scope=SCOPE))
@@ -206,7 +206,7 @@ def test_irecog_report_passes_selector_and_ref():
         ):
             backend.overrides["get_irecog_patient_history"] = envelope(
                 "get_irecog_patient_history",
-                "irecog-1.0.0",
+                "2.0.0",
                 {
                     "sessions": [irecog_session()],
                     "page_number": 1,
@@ -216,11 +216,11 @@ def test_irecog_report_passes_selector_and_ref():
             )
             backend.overrides["get_irecog_session_analysis"] = envelope(
                 "get_irecog_session_analysis",
-                "irecog-1.0.0",
+                "2.0.0",
                 {"sessions": [irecog_session()], "comparability": "not_requested"},
             )
             backend.overrides["generate_irecog_single_session_report"] = artifact_envelope(
-                "generate_irecog_single_session_report", "irecog-1.0.0"
+                "generate_irecog_single_session_report", "2.0.0"
             )
             run = await c.application.execute(request("解读最近IReCog测评并生成报告", scope=SCOPE))
             report = next(
@@ -243,7 +243,7 @@ def test_assessment_session_and_report_snapshot_chain():
         ):
             backend.overrides["get_assessment_patient_history"] = envelope(
                 "get_assessment_patient_history",
-                "assessment-1.0.0",
+                "2.0.0",
                 {
                     "records": [assessment_record()],
                     "page_number": 1,
@@ -253,7 +253,7 @@ def test_assessment_session_and_report_snapshot_chain():
             )
             backend.overrides["get_assessment_result_analysis"] = envelope(
                 "get_assessment_result_analysis",
-                "assessment-1.0.0",
+                "2.0.0",
                 {
                     "records": [assessment_record()],
                     "comparability": "not_requested",
@@ -261,12 +261,13 @@ def test_assessment_session_and_report_snapshot_chain():
                 },
             )
             backend.overrides["generate_assessment_single_report"] = artifact_envelope(
-                "generate_assessment_single_report", "assessment-1.0.0"
+                "generate_assessment_single_report", "2.0.0"
             )
             run = await c.application.execute(request("解读最近量表测评并生成报告", scope=SCOPE))
             names = [name for name, _ in backend.calls if "assessment" in name]
             assert names == [
                 "get_assessment_patient_history",
+                "get_assessment_result_analysis",
                 "get_assessment_result_analysis",
                 "generate_assessment_single_report",
             ]
@@ -294,7 +295,7 @@ def test_assessment_trend_requires_two_to_twenty():
         ):
             backend.overrides["get_assessment_longitudinal_analysis"] = envelope(
                 "get_assessment_longitudinal_analysis",
-                "assessment-1.0.0",
+                "2.0.0",
                 {
                     "records": [
                         assessment_record(f"assessment_a_v1_{i}", 20 - i) for i in range(4)
@@ -323,7 +324,7 @@ def test_irecog_uses_project_patient_identity():
         async with runtime() as (c, backend):
             backend.overrides["get_irecog_patient_history"] = envelope(
                 "get_irecog_patient_history",
-                "irecog-1.0.0",
+                "2.0.0",
                 {
                     "sessions": [irecog_session()],
                     "page_number": 1,
@@ -333,12 +334,14 @@ def test_irecog_uses_project_patient_identity():
             )
             backend.overrides["get_irecog_session_analysis"] = envelope(
                 "get_irecog_session_analysis",
-                "irecog-1.0.0",
+                "2.0.0",
                 {"sessions": [irecog_session()], "comparability": "not_requested"},
             )
             await c.application.execute(request("解读最近IReCog测评", scope=SCOPE))
             calls = [(name, body) for name, body in backend.calls if "irecog" in name]
-            assert all(body["system_context"]["user"] == "3799" for _, body in calls)
+            assert all(
+                body["system_context"]["patient_identity"]["value"] == "3799" for _, body in calls
+            )
             assert not any(name == "resolve_patient_identity" for name, _ in backend.calls)
 
     asyncio.run(check())
@@ -355,7 +358,7 @@ def test_agent_analysis_uses_domain_contract_and_saves_record_anchor(domain, exp
             else:
                 endpoint, key, rows = "get_assessment_result_analysis", "assessment_ref", "records"
                 item = assessment_record()
-            backend.overrides[endpoint] = envelope(endpoint, domain + "-1.0.0", {rows: [item]})
+            backend.overrides[endpoint] = envelope(endpoint, "2.0.0", {rows: [item]})
             args = {"selector": key, key: item[key]} if explicit else {}
             activate(container, [tool_call(endpoint, args), AIMessage("已取得源报告结果。")])
             run = await container.application.execute(request("读取测评结果", scope=SCOPE))
@@ -369,7 +372,7 @@ def test_agent_analysis_uses_domain_contract_and_saves_record_anchor(domain, exp
             assert memory.current_record.domain == domain
             assert memory.current_record.session_ref == item[key]
             calls = [payload for name, payload in backend.calls if name == endpoint]
-            assert calls[0]["system_context"]["user"] == "3799"
+            assert calls[0]["system_context"]["patient_identity"]["value"] == "3799"
 
     asyncio.run(check())
 
@@ -386,7 +389,7 @@ def test_agent_rejects_a_different_record_from_the_requested_one(domain):
                 endpoint, key, rows = "get_assessment_result_analysis", "assessment_ref", "records"
                 item = assessment_record("assessment_a_v1_other")
                 requested = "assessment_a_v1_requested"
-            backend.overrides[endpoint] = envelope(endpoint, domain + "-1.0.0", {rows: [item]})
+            backend.overrides[endpoint] = envelope(endpoint, "2.0.0", {rows: [item]})
             activate(
                 container,
                 [
@@ -411,10 +414,9 @@ def test_agent_assessment_report_requires_the_fresh_analysis_snapshot(snapshot):
             analysis = "get_assessment_result_analysis"
             report = "generate_assessment_single_report"
             data = {"records": [assessment_record()]}
-            if snapshot:
-                data["source_snapshot"] = snapshot
-            backend.overrides[analysis] = envelope(analysis, "assessment-1.0.0", data)
-            backend.overrides[report] = artifact_envelope(report, "assessment-1.0.0")
+            data["source_snapshot"] = snapshot
+            backend.overrides[analysis] = envelope(analysis, "2.0.0", data)
+            backend.overrides[report] = artifact_envelope(report, "2.0.0")
             activate(
                 container,
                 [
