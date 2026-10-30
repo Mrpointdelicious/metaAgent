@@ -44,6 +44,8 @@ class DifyChatRequest(BaseModel):
     response_mode: Literal["streaming", "blocking"] = "streaming"
     conversation_id: str = ""
     user: str
+    files: list[Any] = Field(default_factory=list)
+    auto_generate_name: bool = True
 
     @field_validator("query")
     @classmethod
