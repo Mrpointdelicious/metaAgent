@@ -20,6 +20,7 @@ from meta_agent.contracts import (
     utcnow,
 )
 from meta_agent.infrastructure.locks import ThreadLockRegistry
+from meta_agent.memory.redaction import redact_text
 
 
 class EvidenceEnvelope(StrictModel):
@@ -159,7 +160,10 @@ class Repository:
         memory.updated_at = utcnow()
         # A turn may contain a large answer; retention never stores full tool JSON.
         memory.turns = [
-            {"user": t.get("user", "")[:2000], "assistant": t.get("assistant", "")[:2000]}
+            {
+                "user": redact_text(t.get("user", ""))[:2000],
+                "assistant": redact_text(t.get("assistant", ""))[:2000],
+            }
             for t in memory.turns[-6:]
         ]
         await self.put(
@@ -179,6 +183,73 @@ class Repository:
                 record.model_dump(mode="json"),
                 self.settings.run_ttl_seconds,
             )
+
+    async def save_history(self, record: RunRecord, query: str) -> None:
+        from meta_agent.events.dify import DifyEventAdapter
+
+        message = DifyEventAdapter().message(record)
+        scope = record.scope_key
+        await self.put(
+            "history_messages",
+            scope,
+            message["id"],
+            {
+                "id": message["id"],
+                "conversation_id": record.conversation_id,
+                "query": redact_text(query)[:2000],
+                "answer": redact_text(message["answer"])[:8000],
+                "created_at": message["created_at"],
+                "status": record.status,
+            },
+            self.settings.conversation_ttl_seconds,
+        )
+        await self.put(
+            "history_conversations",
+            scope,
+            record.conversation_id,
+            {
+                "id": record.conversation_id,
+                "name": "对话",
+                "updated_at": message["created_at"],
+            },
+            self.settings.conversation_ttl_seconds,
+        )
+
+    async def _history_rows(self, kind: str, scope: str) -> list[dict]:
+        rows, offset = [], 0
+        while True:
+            items = await self.store.asearch(self.namespace(kind, scope), limit=100, offset=offset)
+            rows.extend(
+                item.value["value"]
+                for item in items
+                if item.value["expires_at"] > utcnow().timestamp()
+            )
+            if len(items) < 100:
+                return rows
+            offset += len(items)
+
+    @staticmethod
+    def _history_page(rows, cursor, limit):
+        if cursor:
+            index = next((i for i, row in enumerate(rows) if row["id"] == cursor), None)
+            if index is None:
+                return [], False
+            rows = rows[index + 1 :]
+        return rows[:limit], len(rows) > limit
+
+    async def history_conversations(self, scope: str, *, limit=20, last_id=None):
+        rows = await self._history_rows("history_conversations", scope)
+        rows.sort(key=lambda row: (row["updated_at"], row["id"]), reverse=True)
+        return self._history_page(rows, last_id, limit)
+
+    async def history_messages(self, scope: str, conversation_id: str, *, limit=20, first_id=None):
+        rows = [
+            row
+            for row in await self._history_rows("history_messages", scope)
+            if row["conversation_id"] == conversation_id
+        ]
+        rows.sort(key=lambda row: (row["created_at"], row["id"]), reverse=True)
+        return self._history_page(rows, first_id, limit)
 
     async def run(self, scope: str, run_id: str) -> RunRecord | None:
         value = await self.get("runs", scope, run_id)

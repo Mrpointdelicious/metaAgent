@@ -78,6 +78,9 @@ class Backend:
     async def artifact_available(self, url):
         return self.artifact_ok
 
+    async def directory(self):
+        return [{"hospital_id": 1, "hospital_name": "合成演示机构", "tenant_level": 1}]
+
 
 def request(query, rid="r1", *, scope=None, conversation="c1"):
     return ApplicationRequest(

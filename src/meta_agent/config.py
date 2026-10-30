@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
     service_bearer_token: str = ""
+    service_bearer_token_secondary: str = ""
+    secondary_excluded_tools: list[str] = Field(default_factory=list)
+    dify_workflow_events_enabled: bool = False
 
     ai_webapi_base_url: str = "http://host.docker.internal:5043/api/ai/patients/tools"
     ai_webapi_bearer_token: str = ""
@@ -126,6 +129,7 @@ class Settings(BaseSettings):
     irecog_reports_enabled: bool = False
     assessment_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
+    ai_webapi_hospital_bearer_token: str = ""
 
     @classmethod
     def settings_customise_sources(
@@ -185,6 +189,11 @@ class Settings(BaseSettings):
 
     def runtime_issues(self) -> list[str]:
         issues = []
+        if (
+            self.service_bearer_token_secondary
+            and self.service_bearer_token_secondary == self.service_bearer_token
+        ):
+            issues.append("两个接入方必须使用不同的服务凭证")
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
             issues.append("v1仅支持一个worker；扩容须实现跨进程租约与事件回放")
         return issues

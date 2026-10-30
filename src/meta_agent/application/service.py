@@ -460,6 +460,7 @@ class ApplicationService:
             )
         ctx.memory.turns.append({"user": ctx.query, "assistant": answers})
         await self.repository.save_conversation(thread, ctx.memory)
+        await self.repository.save_history(ctx.record, ctx.query)
 
     @staticmethod
     def completion(record: RunRecord) -> dict:

@@ -10,7 +10,9 @@ import time
 from contextvars import ContextVar
 
 from langchain_core.tools import StructuredTool
+from pydantic import ValidationError
 
+from meta_agent.agent.business_tools import BUSINESS_TOOLS, business_allowed, execute_business
 from meta_agent.agent.context import compact_result
 from meta_agent.agent.schemas import (
     AssessmentHistoryArgs,
@@ -37,7 +39,6 @@ from meta_agent.agent.schemas import (
 )
 from meta_agent.contracts import (
     DomainError,
-    Goal,
     HospitalRequest,
     RecordAnchor,
     TaskResult,
@@ -49,13 +50,15 @@ from meta_agent.domains.facts import aware_date
 from meta_agent.domains.hospital import HospitalAdapter
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
-from meta_agent.domains.scene import SceneAdapter, source_text
+from meta_agent.domains.routing import classify_business_query
+from meta_agent.domains.scene_instruction import SceneInstructionAdapter
 from meta_agent.integrations.knowledge import tool_schema as knowledge_tool_schema
 from meta_agent.tools.ai_webapi import (
     ASSESSMENT_REPORT_ENDPOINTS,
     IRECOG_REPORT_ENDPOINTS,
     IRETOUR_REPORT_ENDPOINTS,
 )
+from meta_agent.tools.policy import tool_is_excluded
 
 CURRENT_RUN: ContextVar = ContextVar("single_agent_run")
 LAYER_TOOLS = {"get_patient_profile", "get_patient_consultation", "get_patient_rehab"}
@@ -167,9 +170,17 @@ TOOL_SPECS = {
     "query_hospital_operations": (HospitalRequest, "为运营人员查询医院运营数据及按需生成报表。"),
     "search_knowledge": (KnowledgeArgs, "检索已批准的康复或产品资料，可用于解释与一般建议。"),
 }
+TOOL_SPECS.update(BUSINESS_TOOLS)
 
 
 def tool_allowed(ctx, name):
+    if not classify_business_query(getattr(ctx, "query", "")).allows(name):
+        return False
+    scope = getattr(ctx, "scope", None)
+    if tool_is_excluded(scope, name):
+        return False
+    if name in BUSINESS_TOOLS:
+        return business_allowed(ctx, name)
     if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
         return False
     if name in IRECOG_REPORT_ENDPOINTS and not ctx.settings.irecog_reports_enabled:
@@ -331,6 +342,10 @@ async def _read(ctx, name, args):
 
 
 async def _adapter(ctx, name, args, tid):
+    if name in BUSINESS_TOOLS:
+        return await execute_business(
+            spec(ctx, name, tid, "knowledge.search", args), args, ctx, name
+        )
     if name == "search_doctors":
         return await DoctorAdapter().execute(
             spec(ctx, name, tid, "doctors.search", args), args, ctx
@@ -345,20 +360,9 @@ async def _adapter(ctx, name, args, tid):
         )
     if not ctx.settings.scene_actions_enabled or not ctx.scope.space_id:
         raise DomainError("scene_actions_disabled", "当前场景动作未启用。", outcome="unsupported")
-    if source_text(args["target"]) not in source_text(ctx.query):
-        raise DomainError(
-            "scene_request_mismatch", "场景动作须来自本轮用户原话。", outcome="clarification"
-        )
-    phrases = [x.strip() for x in re.split(r"[，,；;]", args["target"]) if x.strip()]
-    ids = [f"scene_{tid}_{i}" for i in range(len(phrases))]
-    for gid, phrase in zip(ids, phrases, strict=True):
-        ctx.goals[gid] = Goal(goal_id=gid, kind="scene_action", domain="scene", query_span=phrase)
-    adapter = SceneAdapter()
-    result = await adapter.execute(spec(ctx, name, tid, "scene.resolve", args, ids), args, ctx)
-    ctx.record.results[tid] = result
-    for gid, ref in result.outputs.get("action_ref", {}).items():
-        await adapter.dispatch(spec(ctx, name, tid, "scene.dispatch", {}, [gid]), ref, ctx)
-    return result
+    return await SceneInstructionAdapter().execute(
+        spec(ctx, name, tid, "scene.resolve", args), args, ctx
+    )
 
 
 async def _read_report(ctx, name, args):
@@ -398,7 +402,9 @@ async def invoke_tool(ctx, name, args):
             raise DomainError(
                 "tool_not_allowed", "当前身份或配置未启用这项工具。", outcome="unsupported"
             )
-        if name in {
+        if name in BUSINESS_TOOLS:
+            args = TOOL_SPECS[name][0].model_validate(args).model_dump(exclude_none=True)
+        if name in BUSINESS_TOOLS or name in {
             "search_doctors",
             "search_knowledge",
             "query_hospital_operations",
@@ -473,8 +479,17 @@ async def invoke_tool(ctx, name, args):
                     )
                 result.outputs["artifact"] = artifact
             if result.status in {"failed", "unavailable"}:
-                result.code = "tool_" + result.status
+                reasons = body.get("reason_codes") or []
+                result.code = next(
+                    (
+                        reason
+                        for reason in reasons
+                        if isinstance(reason, str) and re.fullmatch(r"[a-z0-9_]{1,100}", reason)
+                    ),
+                    "tool_" + result.status,
+                )
                 result.message = body.get("patient_message") or "该项数据暂不可用。"
+                body = {**body, "code": result.code}
         artifact = result.outputs.get("artifact")
         if artifact and (artifact["artifact_ref"], artifact["url"]) not in ctx.artifact_refs:
             await ctx.emitter.emit("artifact_ready", artifact, task_id=tid)
@@ -483,6 +498,18 @@ async def invoke_tool(ctx, name, args):
     except asyncio.CancelledError:
         result.status, result.code = "cancelled", "request_cancelled"
         raise
+    except ValidationError:
+        result.status, result.code, result.message = (
+            "clarification",
+            "invalid_arguments",
+            "工具参数无效，请仅提供已声明的业务参数。",
+        )
+        body = {
+            "tool_name": name,
+            "status": result.status,
+            "code": result.code,
+            "patient_message": result.message,
+        }
     except (DomainError, TimeoutError) as exc:
         result.status = exc.outcome if isinstance(exc, DomainError) else "failed"
         result.code = exc.code if isinstance(exc, DomainError) else "tool_timeout"

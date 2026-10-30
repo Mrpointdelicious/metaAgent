@@ -245,10 +245,10 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 ## 已知限制
 
 - 当前只支持单 worker、单副本；跨实例租约与事件回放不在 v1 范围内。
-- Knowledge backend 仍为本地 approved JSON corpus + BM25，尚不是生产级知识服务。
+- Knowledge backend 支持本地 approved JSON corpus、配置化远程知识源及 MaxKB；发布及访问资格由知识服务负责。
 - 自动测试不验收临床诊断或康复建议的医学正确性。
 - 受历史上下文预算及证据时效影响，部分结构化训练结果可能在后续轮重新查询。
-- Dify 展示已通过原生 API 接入，兼容入口未启用；正式 Dify RAG 留给独立 `feature/knowledge-dify`。
+- Native 与 Dify 聊天兼容入口并存；Dify 工作流事件可按配置启用，会话历史接口另需可信业务登录适配器。
 
 详见 [Runtime Cutover Known Issues](docs/runtime-cutover-known-issues.md)。
 
@@ -288,5 +288,14 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 配置示例、接口边界和迁移范围见 [工具与知识库迁移说明](docs/tool-and-knowledge-migration.md)。
 
 原生请求继续使用必填 `request_id` 及原生运行快照；`interactive.py` 不带编号的请求已由服务端兼容，
-返回 `answer`、`task_id` 和会话 ID，支持项目患者编号、手机号及 `-v` 状态查询。
+返回 `answer`、`task_id` 和会话 ID；患者访问使用 v2 可信身份凭证，不接受旧患者 ID 或手机号自行映射。
 协议分流、流式响应与范围见 [交互聊天接口兼容](docs/interactive-chat-compat.md)。
+
+## agent 功能选择性整合
+
+知识提问、问路、场景指令和混合请求在现有 `SingleAgentRuntime` 的中间件中路由，
+不引入子 Agent 或额外 Flow。患者 v2 校验、报表来源绑定和动作交付状态保持有效。
+场景目录、分段、同义词、拼音及歧义判定由 AI_WebApi 的 `navigate_scene` 负责，
+MetaAgent 只校验原话、空间、版本和 Evidence，再按现有协议交付。
+
+配置、迁移清单、实际测试结果及外部依赖见 [整合验收报告](docs/integration-agent-features-v2.md)。

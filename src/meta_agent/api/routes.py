@@ -4,11 +4,13 @@
 """
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from meta_agent.api.history_routes import router as history_router
 from meta_agent.api.schemas import (
     ChatRequest,
     DifyChatRequest,
@@ -16,18 +18,27 @@ from meta_agent.api.schemas import (
     NativeChatRequest,
     RunAccessRequest,
 )
-from meta_agent.api.security import require_service_identity
+from meta_agent.api.security import ClientIdentity, require_service_identity
+from meta_agent.application.ingress import business_scope
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord, fingerprint
 from meta_agent.events.dify import DifyEventAdapter
 from meta_agent.events.stream import NativeEventAdapter
-from meta_agent.orchestration.identity import trusted_scope_from_inputs
+from meta_agent.orchestration.identity import LEGACY_PATIENT_KEYS, trusted_scope_from_inputs
 
 router = APIRouter()
+router.include_router(history_router)
 
 
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
+        if LEGACY_PATIENT_KEYS.intersection(payload.inputs):
+            raise ValueError("legacy patient identities are not accepted")
+        if getattr(request.app.state, "business_identity_provider", None) is not None:
+            scope = await business_scope(request)
+            if payload.user != scope.end_user_id:
+                raise HTTPException(403, {"code": "business_subject_mismatch"})
+            return scope
         scope = trusted_scope_from_inputs(
             dict(payload.inputs),
             payload.user,
@@ -37,11 +48,14 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
                 scope
             )
-        return scope
+        client = getattr(getattr(request, "state", None), "client", ClientIdentity())
+        return replace(scope, client_name=client.name, excluded_tools=client.excluded_tools)
     except DomainError as exc:
         raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        raise HTTPException(
+            422, {"code": "invalid_identity_inputs", "message": "身份或范围参数无效。"}
+        ) from exc
 
 
 def snapshot(record: RunRecord, reused: bool = True) -> dict[str, Any]:
@@ -142,8 +156,14 @@ async def dify_chat(payload: DifyChatRequest, request: Request):
 
 async def dify_stream(run: ApplicationRun, request: Request):
     adapter = DifyEventAdapter()
+    from meta_agent.adapters.dify import DifyWorkflowEvents
+
+    lifecycle = DifyWorkflowEvents(run.record)
+    enabled = request.app.state.container.settings.dify_workflow_events_enabled
     exhausted = False
     try:
+        if enabled:
+            yield adapter.encode(lifecycle.started())
         while True:
             try:
                 event = await asyncio.wait_for(run.emitter.queue.get(), timeout=15)
@@ -153,9 +173,16 @@ async def dify_stream(run: ApplicationRun, request: Request):
             if event is None:
                 exhausted = True
                 break
+            if enabled:
+                for frame in lifecycle.progress(event):
+                    yield adapter.encode(frame)
         # Native answer revisions replace prior text; Dify messages append text.
         # Publish the settled answer once, after draining progress and tool events.
-        for frame in adapter.frames(run.record):
+        frames = adapter.frames(run.record)
+        if enabled:
+            finished = lifecycle.finished(adapter.message(run.record)["answer"])
+            frames = finished[:-1] + frames[:-1] + finished[-1:] + frames[-1:]
+        for frame in frames:
             yield adapter.encode(frame)
     finally:
         if not exhausted:
