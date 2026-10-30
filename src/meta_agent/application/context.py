@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -17,6 +18,8 @@ from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,6 +47,13 @@ class RunContext:
     on_result: Any = None
     runtime_guard: Any = None
     agent_robot_id: str | None = None
+    # 分支流程可在调用 agent 前设置，用于对最终回答做后处理（如剥离 reasoning 标记）。
+    # 签名：processor(answer: str, ctx: RunContext) -> str | Awaitable[str]。
+    answer_post_processor: Any = None
+    # 子代理（如基础问答与指令）在本轮使用的系统提示词覆盖；None 时用 settings 或默认。
+    system_prompt: str | None = None
+    # 认证后的接入方身份（ClientIdentity）；决定工具可见性等按客户端差异，None 表示无客户端约束。
+    client: Any = None
 
     @property
     def remaining(self) -> float:
@@ -77,4 +87,16 @@ class RunContext:
             else self.tool_limiter
         )
         async with lease:
-            return await self.backend.post(endpoint, payload)
+            try:
+                return await self.backend.post(endpoint, payload)
+            except DomainError as exc:
+                logger.warning(
+                    "backend tool call failed",
+                    extra={
+                        "run_id": self.record.run_id,
+                        "event_type": "backend_tool_error",
+                        "dependency": "ai_webapi",
+                        "fields": {"endpoint": endpoint, "code": exc.code},
+                    },
+                )
+                raise

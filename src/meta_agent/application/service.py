@@ -6,7 +6,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from meta_agent.application.composer import ResponseComposer, safe_text
@@ -24,6 +24,7 @@ from meta_agent.contracts import (
     identifier,
 )
 from meta_agent.domains.patient_identity import brief_from_context_response
+from meta_agent.domains.routing import route_from_inputs
 from meta_agent.events.stream import EventEmitter
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.infrastructure.locks import ThreadLockRegistry
@@ -41,6 +42,8 @@ class ApplicationRequest:
     scope: TrustedScope
     conversation_id: str
     request_id: str
+    raw_inputs: dict[str, Any] = field(default_factory=dict)
+    client: Any = None
 
 
 @dataclass(slots=True)
@@ -95,6 +98,8 @@ class ApplicationService:
         self.request_limiter = asyncio.Semaphore(settings.max_concurrent_requests)
         self.locks = ThreadLockRegistry()
         self.active: dict[str, ApplicationRun] = {}
+        # 分支名 -> Flow 的注册表；容器装配时由 flows.register_flows 填充。
+        self.flows: dict[str, Any] = {}
         self.graph: Any = None
         self.runtime_guard: Any = None
 
@@ -146,6 +151,7 @@ class ApplicationService:
                 request_hash=digest,
                 scope_key=scope,
                 conversation_id=request.conversation_id,
+                raw_inputs=request.raw_inputs,
             )
             await self.repository.save_run(record)
             await self.repository.map_request(record)
@@ -169,6 +175,7 @@ class ApplicationService:
                 started=started,
                 on_result=self._on_result,
                 runtime_guard=self.runtime_guard,
+                client=request.client,
             )
             run = ApplicationRun(record, emitter, context=ctx)
             self.active[record.run_id] = run
@@ -187,19 +194,7 @@ class ApplicationService:
             async with asyncio.timeout(ctx.remaining):
                 async with self.request_limiter, self.locks.hold("conversation:" + thread):
                     ctx.memory = await self.repository.conversation(thread)
-                    if self.agent_runtime:
-                        await self.agent_runtime.execute(ctx)
-                    elif self.graph:
-                        await self._enrich_patient_brief(ctx)
-                        await self.graph.ainvoke(
-                            {"run_id": ctx.record.run_id, "stage": "accepted"},
-                            config={"configurable": {"thread_id": ctx.record.run_id}},
-                            context=ctx,
-                        )
-                    else:
-                        await self._enrich_patient_brief(ctx)
-                        await self.plan(ctx)
-                        await self.execute_plan(ctx)
+                    await self._dispatch(ctx)
                     await self._save_memory(ctx, thread)
         except asyncio.CancelledError:
             ctx.interrupted = True
@@ -240,6 +235,19 @@ class ApplicationService:
             finally:
                 await ctx.emitter.finish()
                 self.active.pop(ctx.record.run_id, None)
+
+    async def _dispatch(self, ctx: RunContext) -> None:
+        """按 inputs 路由到对应分支流程；所有分支（含 default）都注册在 self.flows。"""
+        branch = route_from_inputs(ctx.record.raw_inputs)
+        ctx.record.metrics["branch"] = branch.name
+        flow = self.flows.get(branch.name) or self.flows.get("default")
+        if flow is None:  # 装配缺失时的最后保护，正常不会发生。
+            raise DomainError(
+                "no_flow_registered",
+                f"分支 {branch.name} 未注册流程。",
+                outcome="unavailable",
+            )
+        await flow.execute(ctx)
 
     async def _enrich_patient_brief(self, ctx: RunContext) -> None:
         """链首身份识别：患者场景装填基本档案到上下文，失败仅降级不阻断。
@@ -450,8 +458,19 @@ class ApplicationService:
                 for e in ctx.record.events
                 if e.type in {"answer_part", "clarification"}
             )
-        ctx.memory.turns.append({"user": ctx.query, "assistant": answers})
+        # 每条 turn 记 unix 秒时间戳，供 /v1/messages 排序与游标分页。
+        # 不去重：用户真的连续问相同内容也忠实记录；回放导致的重复由数据侧一次性清理。
+        ctx.memory.turns.append(
+            {"user": ctx.query, "assistant": answers, "created_at": int(time.time())}
+        )
         await self.repository.save_conversation(thread, ctx.memory)
+        await self.repository.save_conversation_index(
+            user=ctx.scope.end_user_id,
+            conversation_id=ctx.record.conversation_id,
+            thread_id=thread,
+            inputs=ctx.record.raw_inputs,
+            name=ctx.query,
+        )
 
     @staticmethod
     def completion(record: RunRecord) -> dict:
