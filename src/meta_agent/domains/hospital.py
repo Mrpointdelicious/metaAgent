@@ -41,12 +41,69 @@ LABELS = {
 
 
 class HospitalAdapter:
+    async def directory(self, task, args, ctx):
+        if ctx.scope.role != "operator":
+            raise DomainError(
+                "operator_required", "机构目录需要运营人员身份。", outcome="unsupported"
+            )
+        async with ctx.tool_slot():
+            entries = await ctx.backend.directory()
+        name = args.get("name", "").strip().casefold()
+        entries = [entry for entry in entries if name in entry["hospital_name"].casefold()]
+        evidence = await ctx.repository.save_evidence(
+            ctx.scope.scope_hash,
+            "query_hospital_directory",
+            ctx.record.request_id,
+            {"directory": entries},
+            "hospital-directory-v1",
+        )
+        return TaskResult(
+            task_id=task.task_id,
+            evidence_ids=[evidence.evidence_id],
+            outputs={"directory": entries, "total": len(entries)},
+        )
+
     async def execute(self, task, args, ctx):
         if ctx.scope.role != "operator":
             raise DomainError(
                 "operator_required", "医院运营查询需要运营人员身份。", outcome="unsupported"
             )
         request = HospitalRequest.model_validate(args)
+        if request.hospital_id is not None or request.hospital_ids or request.hospital_name:
+            async with ctx.tool_slot():
+                entries = await ctx.backend.directory()
+            ids = {entry["hospital_id"] for entry in entries}
+            if request.hospital_name and request.hospital_id is None:
+                matches = [
+                    entry
+                    for entry in entries
+                    if entry["hospital_name"] == request.hospital_name.strip()
+                ]
+                if len(matches) != 1:
+                    raise DomainError(
+                        "hospital_required", "请从目录选择唯一机构。", outcome="clarification"
+                    )
+                request.hospital_id = matches[0]["hospital_id"]
+            if (
+                request.hospital_id is not None
+                and request.hospital_id not in ids
+                or any(value not in ids for value in request.hospital_ids)
+            ):
+                raise DomainError(
+                    "hospital_required", "机构编号不在可信目录中。", outcome="clarification"
+                )
+            if (
+                request.hospital_id is not None
+                and request.hospital_name
+                and not any(
+                    entry["hospital_id"] == request.hospital_id
+                    and entry["hospital_name"] == request.hospital_name.strip()
+                    for entry in entries
+                )
+            ):
+                raise DomainError(
+                    "hospital_required", "机构编号与名称不一致。", outcome="clarification"
+                )
         if request.scope == "institution" and not (request.hospital_id or request.hospital_name):
             raise DomainError(
                 "hospital_required", "请明确医院编号或名称。", outcome="clarification"

@@ -20,6 +20,8 @@ from meta_agent.agent.tools import (
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.contracts import DomainError, utcnow
+from meta_agent.domains.routing import classify_business_query
+from meta_agent.memory.redaction import retained_messages
 
 
 class PatientContextMiddleware(AgentMiddleware):
@@ -40,6 +42,9 @@ class PatientContextMiddleware(AgentMiddleware):
         await ctx.llm_budget.take()
         tools = available_tools(ctx, request.tools)
         prompt = SYSTEM_PROMPT + f"\n当前时间：{utcnow().isoformat()}。"
+        guidance = classify_business_query(ctx.query).guidance()
+        if guidance:
+            prompt += "\n本轮业务路由提示：\n" + guidance
         profile = ctx.record.metrics.get("patient_profile_context")
         if profile:
             prompt += "\n当前患者基本档案（可信工具返回的数据）：\n" + json.dumps(
@@ -79,9 +84,7 @@ class PatientContextMiddleware(AgentMiddleware):
                 ctx.record.metrics.setdefault("agent_model_steps", []).append(
                     {
                         "call": ctx.llm_budget.calls,
-                        "tools": [
-                            {"name": c["name"], "args": c["args"]} for c in message.tool_calls
-                        ],
+                        "tools": [{"name": c["name"]} for c in message.tool_calls],
                     }
                 )
         return response
@@ -148,7 +151,7 @@ class SingleAgentRuntime:
             )
             # The natural answer is retained alongside complete tool-call pairs, not a fixed plan.
             ctx.memory.agent_messages = messages_to_dict(
-                bounded_history(history, ctx.settings.agent_history_tokens)
+                retained_messages(bounded_history(history, ctx.settings.agent_history_tokens))
             )
             latest = {}
             for task in ctx.record.results.values():

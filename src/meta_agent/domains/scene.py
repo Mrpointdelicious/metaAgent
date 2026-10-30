@@ -10,6 +10,7 @@ from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec, fingerprint
 from meta_agent.domains.rehab import list_field, object_field
 from meta_agent.infrastructure.repository import resolve_pointer
+from meta_agent.tools.policy import tool_is_excluded
 
 COMMAND = re.compile(r"^\[(Telepor|ScenePoint|ClickPoint|GamePoint):\][0-9]+$")
 
@@ -34,6 +35,9 @@ class SceneAdapter:
         body = await ctx.call(
             "navigate_scene", {"target": args["target"], "spaceId": ctx.scope.space_id}
         )
+        return await self.resolve_response(task, args, ctx, body)
+
+    async def resolve_response(self, task, args, ctx, body):
         data = numeric_envelope(body)
         commands = list_field(data, "commands")
         if (
@@ -105,6 +109,8 @@ class SceneAdapter:
             await ctx.runtime_guard()
         if not ctx.settings.scene_actions_enabled:
             raise DomainError("actions_disabled", "动作输出尚未启用。", outcome="unsupported")
+        if tool_is_excluded(ctx.scope, "navigate_scene") or ctx.interrupted:
+            raise DomainError("actions_disabled", "当前调用方不可交付动作。", outcome="unsupported")
         action = next(
             (
                 result.outputs.get("actions", {}).get(action_ref)
@@ -152,9 +158,22 @@ class SceneAdapter:
         exists, raw = resolve_pointer(
             evidence.payload, f"/data/commands/{action['order'] - 1}/result"
         )
-        if not exists or raw != action["result"] or not COMMAND.fullmatch(raw):
+        data = evidence.payload.get("data") or {}
+        commands = data.get("commands") or []
+        source = commands[action["order"] - 1] if len(commands) >= action["order"] else {}
+        if (
+            evidence.tool_name != "navigate_scene"
+            or data.get("spaceId") != action["source_space_id"]
+            or data.get("version") != action["scene_version"]
+            or source.get("status") != "matched"
+            or source_text(source.get("sourceText") or "")
+            != source_text(ctx.goals[action["goal_id"]].query_span)
+            or not exists
+            or raw != action["result"]
+            or not COMMAND.fullmatch(raw)
+        ):
             raise DomainError("action_source", "动作编码与来源不一致。")
-        action_id = "action_" + fingerprint([ctx.record.run_id, task.idempotency_key])[:24]
+        action_id = "action_" + fingerprint([ctx.record.run_id, action_ref])[:24]
         if action_id in ctx.record.action_delivery:
             return TaskResult(
                 task_id=task.task_id,

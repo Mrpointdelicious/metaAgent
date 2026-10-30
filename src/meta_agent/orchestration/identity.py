@@ -43,6 +43,8 @@ class TrustedScope:
     identity_context_token: str = field(default="", repr=False, compare=False)
     patient_ref: str | None = None
     scope_fingerprint: str | None = None
+    client_name: str = "primary"
+    excluded_tools: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def has_patient(self) -> bool:
@@ -70,6 +72,8 @@ class TrustedScope:
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        if self.client_name != "primary" or self.excluded_tools:
+            material += json.dumps([self.client_name, sorted(self.excluded_tools)])
         return sha256(material.encode()).hexdigest()
 
     def thread_id(self, conversation_id: str) -> str:

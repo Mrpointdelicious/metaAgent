@@ -104,10 +104,12 @@ class AIWebApiClient:
         body = await self.post("resolve_patient_identity", scope.patient_payload({}))
         return scope.bind(body)
 
-    def headers(self) -> dict[str, str]:
+    def headers(self, *, hospital: bool = False) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
-        if self.settings.ai_webapi_bearer_token:
-            headers["Authorization"] = f"Bearer {self.settings.ai_webapi_bearer_token}"
+        token = self.settings.ai_webapi_hospital_bearer_token if hospital else ""
+        token = token or self.settings.ai_webapi_bearer_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         return headers
 
     async def post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -153,7 +155,10 @@ class AIWebApiClient:
         )
         try:
             async with self.client.stream(
-                "POST", f"{base}/{endpoint}", json=payload, headers=self.headers()
+                "POST",
+                f"{base}/{endpoint}",
+                json=payload,
+                headers=self.headers(hospital=endpoint in HOSPITAL_ENDPOINTS),
             ) as response:
                 content = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -164,6 +169,12 @@ class AIWebApiClient:
                         )
             if not response.is_success:
                 code = response.status_code
+                if endpoint == "navigate_scene" and code == 409:
+                    raise BackendCallError(
+                        "scene_version_mismatch",
+                        "场景版本已变化，请刷新后重试。",
+                        outcome="clarification",
+                    )
                 reason = None
                 try:
                     error = json.loads(content)
@@ -213,6 +224,46 @@ class AIWebApiClient:
                 )
         except httpx.HTTPError:
             return False
+
+    async def directory(self) -> list[dict[str, Any]]:
+        """Existing fixed GET API, sharing authentication and response limits."""
+        if self.settings.dry_run:
+            return [{"hospital_id": 1, "hospital_name": "合成演示机构", "tenant_level": 1}]
+        url = self.hospital_base.removesuffix("/tools") + "/directory"
+        try:
+            async with self.client.stream(
+                "GET", url, headers=self.headers(hospital=True)
+            ) as response:
+                content = bytearray()
+                async for chunk in response.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) > self.settings.max_tool_response_bytes:
+                        raise BackendCallError("response_too_large", "机构目录返回过大。")
+                if not response.is_success:
+                    raise BackendCallError(
+                        f"http_{response.status_code}",
+                        "机构目录暂不可用。",
+                        outcome="unavailable",
+                    )
+            rows = json.loads(content)
+        except httpx.RequestError as exc:
+            raise BackendCallError("transport_error", "机构目录暂不可用。", retryable=True) from exc
+        except ValueError as exc:
+            raise BackendCallError("invalid_directory", "机构目录格式无效。") from exc
+        if (
+            not isinstance(rows, list)
+            or any(
+                not isinstance(row, dict)
+                or type(row.get("hospital_id")) is not int
+                or row["hospital_id"] <= 0
+                or not isinstance(row.get("hospital_name"), str)
+                or not row["hospital_name"].strip()
+                for row in rows
+            )
+            or len({row["hospital_id"] for row in rows}) != len(rows)
+        ):
+            raise BackendCallError("invalid_directory", "机构目录格式无效。")
+        return [{key: row[key] for key in ("hospital_id", "hospital_name")} for row in rows]
 
     async def ping(self) -> tuple[bool, str]:
         if self.settings.dry_run:

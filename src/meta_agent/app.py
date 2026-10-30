@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from meta_agent.api.routes import router
 from meta_agent.config import Settings, get_settings
@@ -37,6 +39,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     application.include_router(router)
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        # Pydantic's input/ctx may contain entire submitted identity objects.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {"type": error["type"], "loc": list(error["loc"]), "msg": "请求字段无效。"}
+                    for error in exc.errors()
+                ]
+            },
+        )
+
     return application
 
 

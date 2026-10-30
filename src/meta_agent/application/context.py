@@ -23,6 +23,7 @@ from meta_agent.tools.ai_webapi import (
     IRETOUR_REPORT_ENDPOINTS,
     PATIENT_ENDPOINTS,
 )
+from meta_agent.tools.policy import tool_is_excluded
 
 
 @dataclass
@@ -55,6 +56,10 @@ class RunContext:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if tool_is_excluded(self.scope, endpoint):
+            raise DomainError(
+                "tool_not_allowed", "当前接入方未获此工具权限。", outcome="unsupported"
+            )
         if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
             raise DomainError("capability_disabled", "IReCog报表暂未启用。", outcome="unsupported")
         if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:

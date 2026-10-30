@@ -34,6 +34,9 @@ query_scope的覆盖不足只说明未确认的来源，不表示患者没有历
 依据返回的原文、来源和资料缺口回答；部分覆盖要说明缺口，无证据、权限拒绝和服务故障不能补成事实。
 医院布局、位置和操作须使用当前医院的资料；引用保留真实标题及页码或章节，不编造页码。
 知识证据仅用于当前轮；后续轮涉及知识事实时重新检索当前发布资料。
+医生查询、医生选择和挂号分别处理；查询或选择成功不代表已经挂号。
+场景matched仅代表已匹配，action_delivery只表示通道交付，不代表Unity已经执行。
+多动作交付因场景变化暂停时，说明需更新场景后继续；不声称全部完成。
 """
 
 
@@ -68,6 +71,12 @@ def compact_result(body: dict, budget: int) -> dict:
                     "identity_context_token",
                     "access_grant",
                     "system_context",
+                    "token",
+                    "apikey",
+                    "apitoken",
+                    "doctorPhones",
+                    "doctorIds",
+                    "command",
                 }
             }
         return value

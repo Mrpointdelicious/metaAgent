@@ -3,6 +3,7 @@
 文件功能：查询当前空间在线医生，仅展示可确认的名单，不自动联系或播报电话。
 """
 
+import re
 from typing import Any
 
 from meta_agent.application.context import RunContext
@@ -12,6 +13,51 @@ from meta_agent.domains.scene import numeric_envelope
 
 
 class DoctorAdapter:
+    async def select(self, task, args, ctx):
+        selection = args["selection"].strip()
+        if selection not in ctx.query:
+            raise DomainError(
+                "doctor_request_mismatch", "请使用本轮明确选择。", outcome="clarification"
+            )
+        key = fingerprint(["doctors", ctx.scope.space_id])
+        cached = await ctx.repository.get("cache", ctx.scope.scope_hash, key)
+        evidence = (
+            await ctx.repository.evidence(ctx.scope.scope_hash, cached["evidence_id"])
+            if cached
+            else None
+        )
+        if evidence is None:
+            raise DomainError(
+                "doctor_list_required", "请先查询当前空间在线医生。", outcome="clarification"
+            )
+        data = numeric_envelope(evidence.payload)
+        names = [name.strip() for name in data["doctorNames"].split("、") if name.strip()]
+        if len(names) != data["count"]:
+            raise DomainError("invalid_doctor_result", "医生名单无法逐项确认。")
+        ordinal = re.fullmatch(r"(?:第|选择|选)?([一二三四五六七八九十]|\d+)(?:个|位)?", selection)
+        if ordinal:
+            value = ordinal[1]
+            index = int(value) if value.isdigit() else "一二三四五六七八九十".index(value) + 1
+            selected = [index - 1] if 1 <= index <= len(names) else []
+        else:
+            selected = [i for i, name in enumerate(names) if name == selection]
+        if len(selected) != 1:
+            return TaskResult(
+                task_id=task.task_id,
+                status="clarification",
+                code="doctor_ambiguous",
+                message="请从当前名单明确选择一位医生。",
+            )
+        return TaskResult(
+            task_id=task.task_id,
+            evidence_ids=[evidence.evidence_id],
+            outputs={
+                "doctor_name": names[selected[0]],
+                "selected_index": selected[0] + 1,
+                "registration_status": "not_requested",
+            },
+        )
+
     async def execute(self, task: TaskSpec, args: dict[str, Any], ctx: RunContext) -> TaskResult:
         del args
         key = fingerprint(["doctors", ctx.scope.space_id])

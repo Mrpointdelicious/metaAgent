@@ -88,3 +88,91 @@ def encode_sse(event: dict[str, Any]) -> str:
 def encode_ping() -> str:
     """生成与 Dify 流式接口兼容的保活帧。"""
     return "event: ping\n\n"
+
+
+class DifyWorkflowEvents:
+    """Optional lifecycle projection; only public diagnostic fields are emitted.
+
+    Parallel nodes stay open until their actual run results are available. Answers
+    are still settled by DifyEventAdapter, which handles native replacements.
+    """
+
+    def __init__(self, record):
+        self.record = record
+        self.nodes = {}
+
+    def envelope(self, kind, data):
+        return {
+            "event": kind,
+            "task_id": self.record.run_id,
+            "workflow_run_id": self.record.run_id,
+            "conversation_id": self.record.conversation_id,
+            "data": data,
+        }
+
+    def started(self):
+        return self.envelope(
+            "workflow_started",
+            {
+                "id": self.record.run_id,
+                "status": "running",
+                "created_at": int(self.record.created_at.timestamp()),
+            },
+        )
+
+    def progress(self, event):
+        if event.type != "progress" or not event.task_id or event.task_id in self.nodes:
+            return []
+        self.nodes[event.task_id] = len(self.nodes) + 1
+        return [
+            self.envelope(
+                "node_started",
+                {
+                    "id": self.record.run_id + ":" + event.task_id,
+                    "node_id": event.task_id,
+                    "index": self.nodes[event.task_id],
+                    "status": "running",
+                    "node_type": "tool",
+                },
+            )
+        ]
+
+    def finished(self, answer):
+        frames = []
+        for task_id, index in self.nodes.items():
+            result = self.record.results.get(task_id)
+            frames.append(
+                self.envelope(
+                    "node_finished",
+                    {
+                        "id": self.record.run_id + ":" + task_id,
+                        "node_id": task_id,
+                        "index": index,
+                        "status": self.status(result.status if result else self.record.status),
+                        "outcome": result.status if result else self.record.status,
+                        "code": result.code if result else "",
+                    },
+                )
+            )
+        frames.append(
+            self.envelope(
+                "workflow_finished",
+                {
+                    "id": self.record.run_id,
+                    "status": self.status(self.record.status),
+                    "outcome": self.record.status,
+                    "outputs": {"answer": answer},
+                    "total_steps": len(self.nodes),
+                },
+            )
+        )
+        return frames
+
+    @staticmethod
+    def status(outcome):
+        return {
+            "succeeded": "succeeded",
+            "partial": "succeeded",
+            "cancelled": "stopped",
+            "running": "running",
+        }.get(outcome, "failed")

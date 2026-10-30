@@ -19,8 +19,14 @@ class DifyEventAdapter:
             if event.type in {"answer_part", "clarification"}:
                 key = event.goal_id or event.event_id
                 replaced_key = event_keys.get(event.payload.get("replaces"))
-                if replaced_key is not None and replaced_key != key:
-                    visible.pop(replaced_key, None)
+                if replaced_key is not None:
+                    key = event.goal_id or replaced_key
+                    if replaced_key != key:
+                        visible.pop(replaced_key, None)
+                        event_keys = {
+                            event_id: key if value == replaced_key else value
+                            for event_id, value in event_keys.items()
+                        }
                 visible[key] = event.payload["text"]
                 event_keys[event.event_id] = key
             elif event.type == "task_failed":
