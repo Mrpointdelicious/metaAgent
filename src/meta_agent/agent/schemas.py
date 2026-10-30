@@ -14,6 +14,10 @@ class EmptyArgs(StrictModel):
     pass
 
 
+class DirectoryArgs(StrictModel):
+    name: str | None = Field(default=None, max_length=100)
+
+
 class PatientPageArgs(StrictModel):
     page_number: int = Field(default=1, ge=1, le=100000)
     page_size: int = Field(default=5, ge=1, le=20)
@@ -81,6 +85,68 @@ class GoReportTrendArgs(GoTrendArgs):
     report_count: int = Field(default=4, ge=3, le=10)
 
 
+class IReCogHistoryArgs(StrictModel):
+    page_number: int = Field(default=1, ge=1, le=100000)
+    page_size: int = Field(default=10, ge=1, le=50)
+
+
+class IReCogSessionArgs(StrictModel):
+    selector: Literal["latest_usable", "session_ref"] = "latest_usable"
+    session_ref: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def check_ref(self):
+        if self.selector == "session_ref" and not self.session_ref:
+            raise ValueError("选择 session_ref 时必须提供历史工具返回的记录引用")
+        return self
+
+
+class IReCogTrendArgs(StrictModel):
+    selection_mode: Literal["latest_count", "date_range"] = "latest_count"
+    report_count: int = Field(default=4, ge=2, le=20)
+    start_date: str | None = Field(default=None, max_length=60)
+    end_date: str | None = Field(default=None, max_length=60)
+
+
+class IReCogReportArgs(StrictModel):
+    selector: Literal["session_ref"] = "session_ref"
+    session_ref: str = Field(min_length=1, max_length=1000)
+
+
+class IReCogReportTrendArgs(IReCogTrendArgs):
+    report_count: int = Field(default=4, ge=2, le=20)
+
+
+class AssessmentHistoryArgs(StrictModel):
+    page_number: int = Field(default=1, ge=1, le=100000)
+    page_size: int = Field(default=10, ge=1, le=50)
+    scale_type: int | None = Field(default=None, ge=1, le=99)
+
+
+class AssessmentSessionArgs(StrictModel):
+    selector: Literal["latest_usable", "assessment_ref"] = "latest_usable"
+    assessment_ref: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def check_ref(self):
+        if self.selector == "assessment_ref" and not self.assessment_ref:
+            raise ValueError("选择 assessment_ref 时必须提供历史工具返回的记录引用")
+        return self
+
+
+class AssessmentTrendArgs(StrictModel):
+    selection_mode: Literal["latest_count", "date_range"] = "latest_count"
+    report_count: int = Field(default=4, ge=2, le=20)
+    start_date: str | None = Field(default=None, max_length=60)
+    end_date: str | None = Field(default=None, max_length=60)
+    scale_type: int | None = Field(default=None, ge=1, le=99)
+
+
+class AssessmentReportArgs(StrictModel):
+    selector: Literal["assessment_ref"] = "assessment_ref"
+    assessment_ref: str = Field(min_length=1, max_length=1000)
+
+
 class ReportArgs(StrictModel):
     session_ref: str = Field(min_length=1, max_length=1000)
 
@@ -92,3 +158,22 @@ class SceneArgs(StrictModel):
 class KnowledgeArgs(StrictModel):
     query: str = Field(min_length=1, max_length=4000)
     domain: Literal["health", "product", "help"] = "health"
+    source: str | None = Field(default=None, max_length=100)
+    subqueries: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="同领域组合问题可拆为最多4个独立检索问题；非空时替代query执行。每轮总计最多4个问题，每领域最多2次检索。",
+    )
+
+
+class HealthKnowledgeArgs(KnowledgeArgs):
+    """The portfolio deployment currently publishes health literature only."""
+
+    query: str = Field(min_length=1, max_length=2000)
+    domain: Literal["health"] = "health"
+
+
+class SpaceKnowledgeArgs(KnowledgeArgs):
+    """Hospital knowledge is selected from the trusted current space."""
+
+    query: str = Field(min_length=1, max_length=2000)
