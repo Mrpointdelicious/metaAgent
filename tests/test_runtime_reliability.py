@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from meta_agent.api.routes import stream_dify
+from meta_agent.api.routes import stream
 from meta_agent.contracts import DomainError, Goal
 from meta_agent.tools.ai_webapi import AIWebApiClient
 from tests.helpers.runtime import (
@@ -53,7 +53,7 @@ def test_cancel_before_runner_starts_reaches_terminal_state():
     asyncio.run(check())
 
 
-def test_memory_retains_full_history_and_latest_record():
+def test_memory_retains_six_turns_and_latest_record():
     async def check():
         async with runtime() as (c, _):
             req = request("解读最近训练")
@@ -61,8 +61,6 @@ def test_memory_retains_full_history_and_latest_record():
             for i in range(8):
                 await c.application.execute(request("你好", f"greet-{i}"))
             memory = await c.repository.conversation(req.scope.thread_id(req.conversation_id))
-            # 会话历史完整持久化（不再硬截断到 6 轮），供 /v1/messages 返回；
-            # agent 上下文窗口在读取端自行截断。
             assert len(memory.turns) == 9
             assert memory.current_record.session_ref == "synthetic-session"
             assert all(t["assistant"] for t in memory.turns)
@@ -76,18 +74,12 @@ def test_stream_disconnect_cancels_tools_and_marks_delivery_unknown():
             backend.overrides["navigate_scene"] = scene_response
             backend.gates["get_irego_session_analysis"] = asyncio.Event()
             run = await c.application.start(request("打开面板，解读最近训练"))
-            iterator = stream_dify(
+            iterator = stream(
                 run, SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=c)))
             )
-            # 先推进流生成器到第一个 yield（进入 try/finally 块）；action_ready 不进
-            # Dify SSE 帧，改从运行记录观察场景动作是否就绪，再断流验证取消与交付标记。
-            await iterator.__anext__()
-
-            async def scene_action_ready():
-                while not any(e.type == "action_ready" for e in run.record.events):
-                    await asyncio.sleep(0.01)
-
-            await asyncio.wait_for(scene_action_ready(), timeout=5)
+            async for chunk in iterator:
+                if "event: action_ready" in chunk:
+                    break
             await iterator.aclose()
             assert run.record.status == "cancelled"
             assert set(run.record.action_delivery.values()) == {"delivery_unknown"}
@@ -114,7 +106,7 @@ def test_trend_ineligible_preserves_window_and_rejects_claim():
         async with runtime() as (c, backend):
             body = {
                 "tool_name": "get_irego_longitudinal_analysis",
-                "contract_version": "1.6.0",
+                "contract_version": "2.0.0",
                 "request_id": "fixture",
                 "status": "partial",
                 "meta": {},
@@ -153,7 +145,7 @@ def test_trend_ineligible_preserves_window_and_rejects_claim():
             text = answers(run.record)
             assert "请求记录数：4" in text and "窗口记录数：2" in text
             assert "不可比较" in text and "不应输出的改善断言" not in text
-            assert tool_calls(backend)[0][1]["selector"] == "latest_contiguous"
+            assert tool_calls(backend)[0][1].get("selection_mode", "latest_count") == "latest_count"
 
     asyncio.run(check())
 

@@ -142,8 +142,7 @@ def project(rows, budget, trace_id):
 async def search(source, payload, *, request_id, max_bytes):
     config = source.maxkb
     space = payload.get("scope", {}).get("space_id")
-    scoped = bool(config.allowed_space_ids)
-    if scoped and (not space or space not in config.allowed_space_ids):
+    if not space or space not in config.allowed_space_ids:
         raise KnowledgeAccessDenied("maxkb_space_denied")
     published = catalog(config.catalog_path, config.catalog_sha256)
     domain = payload.get("domain", "health")
@@ -152,7 +151,7 @@ async def search(source, payload, *, request_id, max_bytes):
         for route in published["routes"]
         if route.get("enabled")
         and route.get("scope_kind") == "space"
-        and (not scoped or route.get("space_id") == space)
+        and route.get("space_id") == space
         and "operator" in route.get("roles", [])
         and route.get("knowledge_type") in DOMAIN_TYPES[domain]
     ]
@@ -204,7 +203,7 @@ async def search(source, payload, *, request_id, max_bytes):
                         meta["knowledge_id"] != knowledge_id
                         or hit["document_id"] != meta["document_id"]
                         or doc["knowledge_id"] != knowledge_id
-                        or (scoped and doc.get("space_id") != space)
+                        or doc.get("space_id") != space
                         or doc.get("scope_kind") != "space"
                         or doc.get("knowledge_type") != route["knowledge_type"]
                         or hit["content"] != meta["text"]

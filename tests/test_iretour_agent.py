@@ -89,7 +89,9 @@ def test_tour_history_paging_and_selected_session_keep_identity_and_evidence():
             ]
             assert calls[1][1]["page_number"] == 2
             assert calls[2][1]["session_ref"] == ref
-            assert all(body["system_context"]["user"] == "3799" for _, body in calls)
+            assert all(
+                body["system_context"]["patient_identity"]["value"] == "3799" for _, body in calls
+            )
             assert not any(name == "resolve_patient_identity" for name, _ in backend.calls)
             memory = await c.repository.conversation(SCOPE.thread_id("c1"))
             assert ref in json.dumps(memory.agent_messages)

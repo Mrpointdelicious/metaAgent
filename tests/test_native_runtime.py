@@ -73,7 +73,10 @@ def test_current_report_reuses_reference_without_analysis():
             backend.calls.clear()
             backend.overrides["generate_irego_single_session_report"] = report_response
             run = await c.application.execute(request("把刚才那次生成图", "r2"))
-            assert [n for n, _ in tool_calls(backend)] == ["generate_irego_single_session_report"]
+            assert [n for n, _ in tool_calls(backend)] == [
+                "get_irego_session_analysis",
+                "generate_irego_single_session_report",
+            ]
             assert tool_calls(backend)[0][1]["session_ref"] == "synthetic-session"
             assert any(e.type == "artifact_ready" for e in run.record.events)
             assert run.record.status == "succeeded"
@@ -231,7 +234,7 @@ def test_guard_uses_doctor_query_result(count):
             assert len([e for e in run.record.events if e.type == "action_ready"]) == count
             assert "DoctorRecommend" not in answers(run.record)
             if not count:
-                assert tool_calls(backend) == []
+                assert [name for name, _ in tool_calls(backend)] == ["search_doctors"]
 
     asyncio.run(check())
 

@@ -25,7 +25,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from meta_agent.domains.chat_history import build as build_chat_history_url
-from meta_agent.domains.hospital import hospital_report_urls, render_hospital_markdown
+from meta_agent.domains.hospital import render_hospital_markdown
 from meta_agent.tools.ai_webapi import normalize_artifact_url
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,10 @@ REPORT_TOOLS = {
     "generate_irego_longitudinal_report",
     "generate_iretour_single_session_report",
     "generate_iretour_longitudinal_report",
+    "generate_irecog_single_session_report",
+    "generate_irecog_longitudinal_report",
+    "generate_assessment_single_report",
+    "generate_assessment_longitudinal_report",
 }
 
 
@@ -97,10 +101,21 @@ def post_process(
     web = ""
     for item in collected:
         raw = item.get("raw") or {}
-        if item.get("tool") not in REPORT_TOOLS:
+        if item.get("tool") not in REPORT_TOOLS or item.get("status") not in {
+            "succeeded",
+            "partial",
+        }:
             continue
-        data = raw.get("data") or {}
-        image_url = str(data.get("image_url") or "").strip()
+        verified = next(
+            (
+                r.outputs.get("artifact")
+                for r in ctx.record.results.values()
+                if r.outputs.get("tool_name") == item.get("tool")
+                and r.status in {"succeeded", "partial"}
+            ),
+            None,
+        )
+        image_url = str((verified or {}).get("url") or "").strip()
         if not image_url:
             continue
         cweb = "[Cweb]" + _public_artifact_url(ctx, image_url)
@@ -112,11 +127,22 @@ def post_process(
     for item in collected:
         if item.get("tool") != "query_hospital_operations":
             continue
+        if item.get("status") not in {"succeeded", "partial"}:
+            continue
         raw = item.get("raw") or {}
         rendered = render_hospital_markdown(raw)
         if rendered:
             answer = rendered
-        report = hospital_report_urls(raw)
+        verified = next(
+            (
+                r.outputs.get("artifact")
+                for r in ctx.record.results.values()
+                if r.outputs.get("tool_name") == "query_hospital_operations"
+                and r.status in {"succeeded", "partial"}
+            ),
+            None,
+        )
+        report = (verified or {}).get("url")
         if report:
             cweb = "[Cweb]" + _public_artifact_url(ctx, report)
             web = _web_page_url(ctx)
@@ -146,7 +172,7 @@ def post_process(
         extra={
             "run_id": getattr(ctx.record, "run_id", ""),
             "event_type": "answer",
-            "fields": {"answer": result["answer"]},
+            "fields": {"answer_length": len(result["answer"])},
         },
     )
     return result

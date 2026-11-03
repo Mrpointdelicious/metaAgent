@@ -4,17 +4,21 @@
 
 流程（与 Dify 原工作流一致）：
   1. POST Login/Login（固定账号）→ parse_token 提取 token；
-  2. GET SysUserInfo/GetUserMedicalInfomationNew（Bearer token + Phone=patientphone）
+  2. GET SysUserInfo/GetUserMedicalInfomation
+  New（Bearer token + Phone=patientphone）
      → parse_medical_data 提取 data（患者病历信息）；
-  3. GET SysUserInfo/GetUserIdAndRole（Bearer token + Phone=patientphone）
+  3. GET SysUserInfo/GetUserIdAndRole（Bearer
+  token + Phone=patientphone）
      → parse_user_role 提取 UserId / TenantId；
-  4. GET SysMedical/GetMedicalRecordTemplateContent（Bearer token + userId=UserId）
+  4. GET SysMedical/GetMedicalRecordTemplateC
+  ontent（Bearer token + userId=UserId）
      → 原始响应 body（补充信息）；
   5. current_time() 生成当前时间（dateTime=YYYY/M/D）；
   6. GET /api/chat-records（Bearer token + phone=requestphone）
      → 原始响应 body（对话内容）；
   7. 用 MEDICAL_RECORD_FILL_PROMPT 调用 LLM，生成「基本信息补充」纯文本；
-  8. parse_fill_result 把文本封装为 medical_record_fill 事件，返回 result JSON 字符串。
+  8. parse_fill_result 把文本封装为
+  medical_record_fill 事件，返回 result JSON 字符串。
 """
 
 import json
@@ -25,11 +29,12 @@ from typing import Any
 
 import httpx
 
+from meta_agent.adapters.text import model_text
 from meta_agent.application.context import RunContext
-from meta_agent.config import get_settings
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
 
+from .access import ConsultationClient
 from .prompts import MEDICAL_RECORD_FILL_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -37,7 +42,9 @@ logger = logging.getLogger(__name__)
 LOGIN_URL = "http://www.ga-robot.com/webyun/api/Login/Login"
 MEDICAL_INFO_URL = "http://192.168.8.71:8085/webyun/api/SysUserInfo/GetUserMedicalInfomationNew"
 USER_ROLE_URL = "http://192.168.8.71:8085/webyun/api/SysUserInfo/GetUserIdAndRole"
-TEMPLATE_CONTENT_URL = "http://192.168.8.71:8085/webyun/api/SysMedical/GetMedicalRecordTemplateContent"
+TEMPLATE_CONTENT_URL = (
+    "http://192.168.8.71:8085/webyun/api/SysMedical/GetMedicalRecordTemplateContent"
+)
 CHAT_RECORDS_URL = "http://192.168.8.71:4000/api/chat-records"
 TIMEOUT = 15  # 秒
 
@@ -61,9 +68,12 @@ def _mask_params(params: dict[str, str]) -> dict[str, str]:
     return masked
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 解析函数（照搬 Dify 代码节点逻辑）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def parse_token(input_data: Any) -> dict[str, str]:
     """从登录响应中提取 token；未获取到时返回 {"token": ""}。"""
@@ -80,7 +90,9 @@ def parse_token(input_data: Any) -> dict[str, str]:
     direct_token = str(input_data.get("token", "")) if input_data.get("token") is not None else ""
     if not direct_token and isinstance(input_data.get("data"), dict):
         data_layer = input_data.get("data") or {}
-        direct_token = str(data_layer.get("token", "")) if data_layer.get("token") is not None else ""
+        direct_token = (
+            str(data_layer.get("token", "")) if data_layer.get("token") is not None else ""
+        )
         if not direct_token and isinstance(data_layer.get("data"), dict):
             direct_token = str(data_layer.get("data", {}).get("token", "")) or ""
     if direct_token:
@@ -121,10 +133,7 @@ def parse_medical_data(body: Any) -> dict[str, Any]:
     if not body:
         return {"data": {}}
 
-    if isinstance(body, dict):
-        body_str = body.get("body") or ""
-    else:
-        body_str = body
+    body_str = body.get("body") or "" if isinstance(body, dict) else body
 
     try:
         level1 = json.loads(body_str)
@@ -176,7 +185,10 @@ def current_time() -> dict[str, str]:
 
 
 def _clean_value(v: Any) -> str:
-    """去掉值末尾「←系统已有 / ←默认值 / ←AI推断 / ←历史记录沿用 / ←对话提取」等来源标注，只保留真实值。"""
+    """
+    去掉值末尾「←系统已有 / ←默认值 / ←AI推断 / ←历史记录沿用 /
+    ←对话提取」等来源标注，只保留真实值。
+    """
     return (v or "").split("←")[0].strip()
 
 
@@ -242,7 +254,8 @@ def parse_fill_result(arg1: Any, arg2: Any, arg3: Any) -> dict[str, str]:
     arg2: 补充信息（basic_info_supplement，暂不使用，预留）
     arg3: 病历代写文本（"基本信息补充·AI一键代写..."）
     输出 result: JSON 字符串
-    {"event":"medical_record_fill","display_text":"[Answer:]"+arg3,"payload":{19个字段}}。
+    {"event":"medical_record_fill","display_t
+    ext":"[Answer:]"+arg3,"payload":{19个字段}}。
     """
     fill_text = arg3 if isinstance(arg3, str) else ""
 
@@ -284,13 +297,13 @@ def parse_fill_result(arg1: Any, arg2: Any, arg3: Any) -> dict[str, str]:
 
         # 特殊行：出生日期：X → 年龄：Y
         if line.startswith("出生日期："):
-            rest = line[len("出生日期："):]
+            rest = line[len("出生日期：") :]
             if "→" in rest:
                 birth, age_part = rest.split("→", 1)
                 payload["BirthDate"] = _format_birthdate(_clean_value(birth))
                 age_part = age_part.strip()
                 if age_part.startswith("年龄："):
-                    payload["Age"] = _clean_value(age_part[len("年龄："):])
+                    payload["Age"] = _clean_value(age_part[len("年龄：") :])
             else:
                 payload["BirthDate"] = _format_birthdate(_clean_value(rest))
             continue
@@ -300,7 +313,7 @@ def parse_fill_result(arg1: Any, arg2: Any, arg3: Any) -> dict[str, str]:
             if cn in ("出生日期", "年龄"):
                 continue
             if line.startswith(cn + "："):
-                payload[en] = _clean_value(line[len(cn) + 1:])
+                payload[en] = _clean_value(line[len(cn) + 1 :])
                 break
 
     # 家庭年收入：归一化成固定枚举
@@ -314,16 +327,18 @@ def parse_fill_result(arg1: Any, arg2: Any, arg3: Any) -> dict[str, str]:
     return {"result": json.dumps(event, ensure_ascii=False)}
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 网络请求与编排
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _phone(ctx: RunContext, *keys: str) -> str:
-    for key in keys:
-        value = ctx.record.raw_inputs.get(key)
-        if value not in (None, ""):
-            return str(value)
-    return ""
+    access = ctx.consultation_access
+    if access is None:
+        raise DomainError("consultation_forbidden", "请先确认问诊参与关系。", outcome="unavailable")
+    return access.requester_phone if "requesterphone" in keys else access.patient_phone
 
 
 def _to_text(value: Any) -> str:
@@ -339,16 +354,13 @@ def _extract_content(response: Any) -> str:
     content = response.content if hasattr(response, "content") else str(response)
     if isinstance(content, list):
         content = "\n".join(
-            b.get("text", "")
-            for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
-    return content or ""
+    return model_text(content or "")
 
 
-async def _login(client: Any) -> str:
+async def _login(client: Any, settings) -> str:
     run_id = CURRENT_RUN_ID.get()
-    settings = get_settings()
     try:
         resp = await client.post(
             LOGIN_URL,
@@ -376,7 +388,9 @@ async def _login(client: Any) -> str:
         status = exc.response.status_code
         body = exc.response.text[:300] if exc.response is not None else ""
         logger.warning(
-            "medical record login http error status=%s body=%s", status, body,
+            "medical record login http error status=%s body=%s",
+            status,
+            body,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -394,11 +408,17 @@ async def _login(client: Any) -> str:
         ) from exc
     except httpx.RequestError as exc:
         logger.warning(
-            "medical record login connection error err=%s", type(exc).__name__,
+            "medical record login connection error err=%s",
+            type(exc).__name__,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
-                "fields": {"step": "login", "method": "POST", "url": LOGIN_URL, "error": type(exc).__name__},
+                "fields": {
+                    "step": "login",
+                    "method": "POST",
+                    "url": LOGIN_URL,
+                    "error": type(exc).__name__,
+                },
             },
         )
         raise DomainError(
@@ -407,7 +427,8 @@ async def _login(client: Any) -> str:
 
     token = parse_token(login_body).get("token", "")
     logger.info(
-        "login ok status=%s", resp.status_code,
+        "login ok status=%s",
+        resp.status_code,
         extra={
             "run_id": run_id,
             "event_type": "http_call",
@@ -442,7 +463,9 @@ async def _get(
         resp.raise_for_status()
     except httpx.TimeoutException as exc:
         logger.warning(
-            "%s timeout url=%s", step, url,
+            "%s timeout url=%s",
+            step,
+            url,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -460,7 +483,11 @@ async def _get(
         status = exc.response.status_code
         body = exc.response.text[:300] if exc.response is not None else ""
         logger.warning(
-            "%s http error url=%s status=%s body=%s", step, url, status, body,
+            "%s http error url=%s status=%s body=%s",
+            step,
+            url,
+            status,
+            body,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -479,7 +506,10 @@ async def _get(
         ) from exc
     except httpx.RequestError as exc:
         logger.warning(
-            "%s connection error url=%s err=%s", step, url, type(exc).__name__,
+            "%s connection error url=%s err=%s",
+            step,
+            url,
+            type(exc).__name__,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -497,7 +527,10 @@ async def _get(
         ) from exc
 
     logger.info(
-        "%s ok url=%s status=%s", step, url, resp.status_code,
+        "%s ok url=%s status=%s",
+        step,
+        url,
+        resp.status_code,
         extra={
             "run_id": run_id,
             "event_type": "http_call",
@@ -580,9 +613,9 @@ def _build_fill_prompt(
 
 async def run_medical_record(ctx: RunContext, query: str, model: Any) -> str:
     """执行病历填写完整链路，返回最终 result JSON 字符串。"""
-    client = ctx.backend.client
+    client = ConsultationClient(ctx)
 
-    token = await _login(client)
+    token = await _login(client, ctx.settings)
 
     patient_phone = _phone(ctx, "patientphone", "phone")
     if not patient_phone:

@@ -11,6 +11,7 @@ from typing import Any
 
 from meta_agent.application.composer import ResponseComposer, safe_text
 from meta_agent.application.context import RunContext
+from meta_agent.application.conversations import ConversationSelector, owner_key, public_inputs
 from meta_agent.config import Settings
 from meta_agent.context.budget import LLMBudget
 from meta_agent.contracts import (
@@ -44,6 +45,7 @@ class ApplicationRequest:
     request_id: str
     raw_inputs: dict[str, Any] = field(default_factory=dict)
     client: Any = None
+    protocol: str = "native"
 
 
 @dataclass(slots=True)
@@ -100,6 +102,9 @@ class ApplicationService:
         self.active: dict[str, ApplicationRun] = {}
         # 分支名 -> Flow 的注册表；容器装配时由 flows.register_flows 填充。
         self.flows: dict[str, Any] = {}
+        self.conversations = ConversationSelector(repository)
+        # Runtime-only provider; service Bearer and raw phone inputs are insufficient.
+        self.consultation_identity_provider = None
         self.graph: Any = None
         self.runtime_guard: Any = None
 
@@ -107,6 +112,47 @@ class ApplicationService:
         started = time.monotonic()
         if self.runtime_guard:
             await self.runtime_guard()
+        if request.client:
+            request = replace(request, scope=replace(request.scope, client_id=request.client.name))
+        if self.consultation_identity_provider:
+            from meta_agent.flows.consultation_room.access import read_access
+
+            try:
+                is_room = route_from_inputs(request.raw_inputs).name == "consultation_room"
+            except ValueError as exc:
+                raise DomainError("invalid_position", str(exc)) from exc
+            if is_room:
+                locator = fingerprint(
+                    [
+                        request.raw_inputs["pos"].strip(),
+                        request.raw_inputs.get("consultation_id", ""),
+                    ]
+                )
+                candidate = replace(
+                    request.scope, agent_kind="consultation_room", consultation_context=locator
+                )
+                candidate = replace(
+                    candidate,
+                    consultation_id=request.raw_inputs.get("consultation_id", ""),
+                    position=request.raw_inputs["pos"].strip(),
+                )
+                access = await read_access(
+                    self.consultation_identity_provider,
+                    candidate,
+                    "session",
+                    self.settings.tool_timeout_seconds,
+                )
+                if (
+                    access.authorization_scope != candidate.scope_hash
+                    or "session" not in access.allowed_categories
+                    or access.consultation_context != locator
+                    or (candidate.has_patient and access.patient_ref != candidate.patient_ref)
+                ):
+                    raise DomainError("consultation_forbidden", "问诊参与关系与当前身份不符。")
+                request = replace(
+                    request,
+                    scope=replace(request.scope, consultation_patient_ref=access.patient_ref),
+                )
         scope = request.scope.scope_hash
         digest = fingerprint(
             {
@@ -115,6 +161,11 @@ class ApplicationService:
                 "conversation_id": request.conversation_id,
                 "space": request.scope.space_id,
                 "scene_version": request.scope.scene_version,
+                "consultation_patient": request.scope.consultation_patient_ref,
+                "routing": {
+                    k: request.raw_inputs.get(k)
+                    for k in ("pos", "consultation_id", "source_app", "caller_conversation_id")
+                },
             }
         )
         async with self.locks.hold("request:" + fingerprint([scope, request.request_id])):
@@ -145,13 +196,17 @@ class ApplicationService:
                 return ApplicationRun(
                     existing, EventEmitter(existing, self.repository), reused=True
                 )
+            binding, selected_scope = await self.conversations.select(request)
+            request = replace(
+                request, scope=selected_scope, conversation_id=binding.conversation_id
+            )
             record = RunRecord(
                 run_id=identifier("run"),
                 request_id=request.request_id,
                 request_hash=digest,
                 scope_key=scope,
                 conversation_id=request.conversation_id,
-                raw_inputs=request.raw_inputs,
+                raw_inputs=public_inputs(request.raw_inputs),
             )
             await self.repository.save_run(record)
             await self.repository.map_request(record)
@@ -240,7 +295,7 @@ class ApplicationService:
         """按 inputs 路由到对应分支流程；所有分支（含 default）都注册在 self.flows。"""
         branch = route_from_inputs(ctx.record.raw_inputs)
         ctx.record.metrics["branch"] = branch.name
-        flow = self.flows.get(branch.name) or self.flows.get("default")
+        flow = self.flows.get(branch.name)
         if flow is None:  # 装配缺失时的最后保护，正常不会发生。
             raise DomainError(
                 "no_flow_registered",
@@ -256,13 +311,12 @@ class ApplicationService:
         时保持 patient_brief=None，会话继续走无档案路径。装填响应落证据库，
         供概况类任务以事实投影引用。
         """
-        if not ctx.scope.patient_id or not ctx.settings.multisource_patient_context_enabled:
+        if not ctx.scope.has_patient or not ctx.settings.multisource_patient_context_enabled:
             return
         try:
             body = await ctx.call(
                 "get_multisource_patient_context",
                 {
-                    "system_context": {"user": ctx.scope.patient_id},
                     # purpose 标记链首装填调用，与领域工作流同端点调用区分
                     # （计量与测试隔离用）；后端忽略未知请求字段。
                     "purpose": "enrichment",
@@ -287,7 +341,7 @@ class ApplicationService:
                     "get_multisource_patient_context",
                     ctx.record.request_id,
                     body,
-                    "1.6.0",
+                    body["contract_version"],
                 )
                 brief = replace(
                     brief,
@@ -438,6 +492,15 @@ class ApplicationService:
                     evidence_id=result.evidence_ids[0],
                     session_time=result.outputs.get("session_time"),
                     source_version=result.outputs.get("source_version", "unknown"),
+                    scope_fingerprint=ctx.scope.scope_fingerprint,
+                    record_tenant=next(
+                        (
+                            view.fact.record_tenant
+                            for view in result.facts
+                            if view.fact.record_ref == ref and view.fact.record_tenant
+                        ),
+                        None,
+                    ),
                     domain=result.outputs.get("record_domain", "irego"),
                 )
             if "history_page" in result.outputs:
@@ -465,7 +528,7 @@ class ApplicationService:
         )
         await self.repository.save_conversation(thread, ctx.memory)
         await self.repository.save_conversation_index(
-            user=ctx.scope.end_user_id,
+            user=owner_key(ctx.scope),
             conversation_id=ctx.record.conversation_id,
             thread_id=thread,
             inputs=ctx.record.raw_inputs,

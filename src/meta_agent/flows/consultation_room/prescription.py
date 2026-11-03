@@ -4,13 +4,18 @@
 
 流程（与 Dify 原工作流一致）：
   1. 意图识别 LLM（PRESCRIPTION_INTENT_PROMPT）把用户输入路由到「选择添加」或「推荐处方」；
-  2. 不含「推荐处方」→ parse_prescription_selection 封装 prescription_selection 事件，输出 result；
+  2. 不含「推荐处方」→ parse_prescription_selection
+  封装 prescription_selection 事件，输出 result；
   3. 含「推荐处方」→ 登录取 token → 取对话记录（对话内容）→ 取病历信息 →
      parse_disease_recommendation 提取 disease（覆盖会话变量 disease）→
-     GET GetPrescriptionListNew（keyword=disease）→ parse_prescription_filter 过滤线下处方 →
+     GET
+     GetPrescriptionListNew（keyword=disease）→
+     parse_prescription_filter 过滤线下处方 →
      current_time → 有剩余处方才走推荐 LLM（PRESCRIPTION_RECOMMEND_PROMPT）→
-     parse_prescription_recommendation 调详情接口封装 prescription_recommendation 事件，
-     并把 prescription_ids / prescription_names / prescription_time_slots 覆盖到会话变量；
+     parse_prescription_recommendation
+     调详情接口封装 prescription_recommendation 事件，
+     并把 prescription_ids / prescription_names
+     / prescription_time_slots 覆盖到会话变量；
   4. 无剩余处方时固定输出「未找到适配的处方或已全部推荐最匹配的处方…」。
 """
 
@@ -20,14 +25,12 @@ import json
 import logging
 import random
 import re
-import ssl
-import urllib.request
 from typing import Any
 
 from meta_agent.application.context import RunContext
-from meta_agent.config import get_settings
 from meta_agent.contracts import DomainError
 
+from .access import ConsultationClient, fetch_details
 from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,
@@ -43,7 +46,9 @@ from .prompts import PRESCRIPTION_INTENT_PROMPT, PRESCRIPTION_RECOMMEND_PROMPT
 logger = logging.getLogger(__name__)
 
 PRESCRIPTION_LIST_URL = "http://192.168.8.71:8085/webyun/api/SysPrescription/GetPrescriptionListNew"
-PRESCRIPTION_DETAIL_URL = "http://192.168.8.71:8085/webyun/api/SysPrescription/GetPrescriptionInfoById"
+PRESCRIPTION_DETAIL_URL = (
+    "http://192.168.8.71:8085/webyun/api/SysPrescription/GetPrescriptionInfoById"
+)
 
 # 无剩余线下处方时的固定输出。
 _NO_PRESCRIPTION_RESULT = (
@@ -51,9 +56,12 @@ _NO_PRESCRIPTION_RESULT = (
 )
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 解析函数（照搬 Dify 代码节点逻辑）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def parse_prescription_selection(arg1: Any) -> dict[str, str]:
     """
@@ -89,31 +97,97 @@ def parse_prescription_selection(arg1: Any) -> dict[str, str]:
     return {"result": json.dumps(event, ensure_ascii=False)}
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 疾病提取（照搬 Dify 代码节点：直连 DeepSeek，硬编码 key）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 
 DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL = "deepseek-chat"
 
-# 处方 Indication 词表（硬编码）：从 dbprescription.json 的 Indication 字段去重提取。
+# 处方 Indication 词表（硬编码）：从 dbprescription.json
+# 的 Indication 字段去重提取。
 # 长词在前，保证匹配时优先命中更具体的病名。
-PRESCRIPTION_INDICATIONS = sorted([
-    "中枢损伤后肢体运动功能障碍者", "评估各类患者日常生活自理能力", "哮喘等慢性呼吸系统疾病",
-    "外伤后平衡功能障碍人群", "综合评估功能障碍者生活", "各类急慢性疼痛患者",
-    "脑瘫等肢体痉挛患者", "髌股关节疼痛综合征", "脑损伤致失语患者", "肩术后功能评估",
-    "腰椎间盘突出症", "膝关节骨关节炎", "运动功能障碍者", "运动后气短患者",
-    "关节置换术后", "左膝关节胀痛", "挛缩瘢痕评估", "筛查吞咽障碍",
-    "类风湿关节炎", "脑卒中后遗症", "评估运动耐力", "半月板损伤", "坐骨神经痛",
-    "手功能障碍", "紧张性头痛", "腰间盘突出", "运动受限者", "阿兹海默症",
-    "颈肩腰腿痛", "骨关节疾病", "骨质疏松症", "关节损伤", "呛咳人群", "帕金森病",
-    "心肺疾病", "术后增生", "睡眠障碍", "社交能力", "肢体瘫痪", "脊髓损伤",
-    "腰肌劳损", "膝关节炎", "运动损伤", "韧带拉伤", "韧带损伤", "骨关节炎",
-    "骨折术后", "骨质增生", "偏头痛", "关节炎", "帕金森", "慢阻肺", "抑郁症",
-    "滑膜炎", "肌少症", "肌无力", "肩周炎", "肩损伤", "肾结石", "脑卒中",
-    "腿骨折", "颈肩痛", "下肢", "偏瘫", "僵硬", "卒中", "外伤", "心肺",
-    "感冒", "粘连", "脚疼", "过敏", "骨折",
-], key=len, reverse=True)
+PRESCRIPTION_INDICATIONS = sorted(
+    [
+        "中枢损伤后肢体运动功能障碍者",
+        "评估各类患者日常生活自理能力",
+        "哮喘等慢性呼吸系统疾病",
+        "外伤后平衡功能障碍人群",
+        "综合评估功能障碍者生活",
+        "各类急慢性疼痛患者",
+        "脑瘫等肢体痉挛患者",
+        "髌股关节疼痛综合征",
+        "脑损伤致失语患者",
+        "肩术后功能评估",
+        "腰椎间盘突出症",
+        "膝关节骨关节炎",
+        "运动功能障碍者",
+        "运动后气短患者",
+        "关节置换术后",
+        "左膝关节胀痛",
+        "挛缩瘢痕评估",
+        "筛查吞咽障碍",
+        "类风湿关节炎",
+        "脑卒中后遗症",
+        "评估运动耐力",
+        "半月板损伤",
+        "坐骨神经痛",
+        "手功能障碍",
+        "紧张性头痛",
+        "腰间盘突出",
+        "运动受限者",
+        "阿兹海默症",
+        "颈肩腰腿痛",
+        "骨关节疾病",
+        "骨质疏松症",
+        "关节损伤",
+        "呛咳人群",
+        "帕金森病",
+        "心肺疾病",
+        "术后增生",
+        "睡眠障碍",
+        "社交能力",
+        "肢体瘫痪",
+        "脊髓损伤",
+        "腰肌劳损",
+        "膝关节炎",
+        "运动损伤",
+        "韧带拉伤",
+        "韧带损伤",
+        "骨关节炎",
+        "骨折术后",
+        "骨质增生",
+        "偏头痛",
+        "关节炎",
+        "帕金森",
+        "慢阻肺",
+        "抑郁症",
+        "滑膜炎",
+        "肌少症",
+        "肌无力",
+        "肩周炎",
+        "肩损伤",
+        "肾结石",
+        "脑卒中",
+        "腿骨折",
+        "颈肩痛",
+        "下肢",
+        "偏瘫",
+        "僵硬",
+        "卒中",
+        "外伤",
+        "心肺",
+        "感冒",
+        "粘连",
+        "脚疼",
+        "过敏",
+        "骨折",
+    ],
+    key=len,
+    reverse=True,
+)
 
 
 def _normalize(s):
@@ -152,70 +226,16 @@ def _extract_raw_disease(arg):
     return disease or ""
 
 
-def _call_deepseek(priority_text, candidates):
-    """调用 DeepSeek，按优先级从候选标准病名里选出最匹配的一个。返回选中的病名（或空串）。"""
-    if not candidates:
-        return ""
-
-    system = (
-        "你是医疗术语标准化助手。你会收到三段信息：医生的要求、医患对话内容、病历疾病描述，"
-        "以及一个候选列表（含病种、症状、评估/评定适用人群等）。请严格按以下优先级从候选列表里选出最匹配的一项："
-        "1) 医生的要求：只要医生提出了明确要求（疾病、症状、评估/评定/量表需求等），就无条件以医生的要求为准，忽略其它信息。"
-        "例如「要脑卒中处方」→「脑卒中」；「做日常生活自理能力评估」→「评估各类患者日常生活自理能力」。"
-        "2) 医患对话内容：若医生没有明确要求，就根据对话里的疾病/症状/评估需求判断，不要被病历描述覆盖（对话是当前最新信息）。"
-        "3) 病历疾病描述：只有当医生的要求和对话内容里都没有有效信息时，才用病历描述判断。"
-        "硬性要求：输出必须是候选列表里的某一项，绝对禁止输出列表之外的任何词。"
-        "即使关联很弱，也必须挑一个最相近的。只输出该项，不要任何解释、标点或多余文字。"
-    )
-    user = f"{priority_text}\n候选病名列表：{'、'.join(candidates)}"
-
-    body = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "temperature": 0,
-        "max_tokens": 64,
-    }
-
-    req = urllib.request.Request(
-        DEEPSEEK_API_URL,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Authorization": "Bearer " + get_settings().prescription_deepseek_api_key.get_secret_value(),
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-
-    # Dify 沙箱精简容器常缺 CA 证书，这里跳过 SSL 验证（仅本机内网调 DeepSeek 用）
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
-    try:
-        with urllib.request.urlopen(req, timeout=20, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        return "__DEEPSEEK_ERROR__: " + str(e)
-
-    try:
-        return (data["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        return "__DEEPSEEK_ERROR__: " + str(e)
-
-
 def _align_answer(answer, terms):
     """把 DeepSeek 返回的病名对齐到词表里真实存在的病名（防止 AI 改字）。"""
     a = _normalize(answer)
     if not a or a in ("无", "无匹配", "无相关", "无合适", "无适合"):
         return ""
 
-    for t in terms:                       # 精确
+    for t in terms:  # 精确
         if t == a:
             return t
-    for t in terms:                       # 子串
+    for t in terms:  # 子串
         if t in a or a in t:
             return t
     return ""
@@ -239,7 +259,7 @@ def _is_re_recommend(text):
 
 
 def parse_disease_recommendation(
-    arg: Any, conversation: str, doctor_request: str, last_disease: str = ""
+    arg: Any, conversation: str, doctor_request: str, last_disease: str = "", answer: str = ""
 ) -> dict[str, str]:
     """
     按优先级判断疾病：医生的要求 > 医患对话内容 > 病历 MedicalHistory，
@@ -264,26 +284,23 @@ def parse_disease_recommendation(
     if not raw and not doctor and not conv:
         return {"disease": ""}
 
-    priority_text = (
-        f"医生的要求：{doctor or '（无）'}\n"
-        f"医患对话内容：{conv or '（无）'}\n"
-        f"病历疾病描述：{raw or '（无）'}"
-    )
-
-    answer = _call_deepseek(priority_text, PRESCRIPTION_INDICATIONS)
+    answer = answer or ""
     if answer.startswith("__DEEPSEEK_ERROR__:"):
         return {"disease": answer}
 
     matched = _align_answer(answer, PRESCRIPTION_INDICATIONS)
     if not matched:
-        matched = _fallback_closest(raw or conv or doctor, PRESCRIPTION_INDICATIONS)
+        matched = next((t for t in PRESCRIPTION_INDICATIONS if t in (doctor or conv or raw)), "")
 
     return {"disease": matched}
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 处方列表过滤（照搬 Dify 代码节点）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _empty() -> dict[str, Any]:
     return {
@@ -318,12 +335,14 @@ def _parse_last_ids(raw):
 def parse_prescription_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
     """
     过滤并压缩处方列表：仅保留 Type==1（线下）处方，并拆分输出：
-      - result：处方列表 {"data":[{Id,Type,Name}]}，已剔除上次推荐过的处方（缩进格式，方便 LLM 读取）。
+      - result：处方列表 {"data":[{Id,Type,Name}]}
+      ，已剔除上次推荐过的处方（缩进格式，方便 LLM 读取）。
       - hospitals：空闲机构名称列表（JSON 字符串数组），所有处方共用同一份。
       - count：本轮可推荐（未在上次推荐过）的线下处方数量。
       - start_index：推荐序号起始值 = 上次推荐数量 + 1（首次/无历史为 1），供提示词续排序号。
     已占用机构（occupied_slots 非空）不参与推荐，直接丢弃。
-    last_ids：上次已推荐处方的 Id 列表（JSON 数组或逗号分隔），按 Id 精确匹配后从本轮候选里剔除，避免重复推荐。
+    last_ids：上次已推荐处方的 Id 列表（JSON 数组或逗号分隔），按
+    Id 精确匹配后从本轮候选里剔除，避免重复推荐。
     """
     root = json.loads(arg) if isinstance(arg, str) else arg
     if not isinstance(root, dict):
@@ -357,11 +376,13 @@ def parse_prescription_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
         if pid and pid in excluded:
             continue
 
-        out.append({
-            "Id": it.get("Id"),
-            "Type": it.get("Type"),
-            "Name": it.get("Name", ""),
-        })
+        out.append(
+            {
+                "Id": it.get("Id"),
+                "Type": it.get("Type"),
+                "Name": it.get("Name", ""),
+            }
+        )
 
         # 新结构：Hospitals = [{"Name":..., "occupied_slots":[...]}]
         # 只有 occupied_slots 为空（[] 或 {}）才表示设备空闲、可推荐
@@ -370,10 +391,9 @@ def parse_prescription_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
                 continue
             name = h.get("Name", "")
             slots = h.get("occupied_slots")
-            if isinstance(slots, (dict, list)) and not slots:
-                if name and name not in seen:
-                    seen.add(name)
-                    hospital_names.append(name)
+            if isinstance(slots, (dict, list)) and not slots and name and name not in seen:
+                seen.add(name)
+                hospital_names.append(name)
 
     start_index = len(excluded) + 1 if excluded else 1
 
@@ -385,9 +405,12 @@ def parse_prescription_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
     }
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 推荐结果封装（照搬 Dify 代码节点，含详情接口调用）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _to_int(v):
     """尽量转成 int，失败则保留原值。"""
@@ -398,7 +421,10 @@ def _to_int(v):
 
 
 def _parse_last_ids_list(raw):
-    """把 last_ids 解析成有序的字符串列表（去重、保序），兼容 JSON 数组 / 逗号顿号分隔 / 单个值。"""
+    """
+    把 last_ids 解析成有序的字符串列表（去重、保序），兼容 JSON 数组
+    / 逗号顿号分隔 / 单个值。
+    """
     result = []
     seen = set()
 
@@ -437,11 +463,15 @@ def _parse_last_ids_list(raw):
 def _strip_index(s):
     """去掉名称前可能带有的「1.」「1、」「1）」等序号前缀，便于跨轮重新编号。"""
     m = re.match(r"^\s*\d+\s*[.、)）:：]\s*", s)
-    return s[m.end():] if m else s
+    return s[m.end() :] if m else s
 
 
 def _parse_last_slots(raw):
-    """把 last_time_slots 解析成有序的 dict 列表（与 last_ids 顺序对齐），兼容 JSON 数组 / 单个对象；非法项用 {} 占位。"""
+    """
+    把 last_time_slots 解析成有序的 dict 列表（与
+    last_ids 顺序对齐），兼容 JSON 数组 / 单个对象；非法项用 {}
+    占位。
+    """
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -459,19 +489,8 @@ def _parse_last_slots(raw):
     return []
 
 
-def _fetch_detail(pid, base, token):
-    """调用处方详情接口，返回 data 字典；失败或无 data 时返回 {}。"""
-    detail = None
-    try:
-        url = f"{base}?Id={pid}"
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            detail = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        detail = None
-    if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
-        return detail["data"]
-    return {}
+def _fetch_detail(pid, base, token, detail_cache=None):
+    return (detail_cache or {}).get(str(pid), {})
 
 
 def _normalize_imgs(raw):
@@ -490,19 +509,28 @@ def _build_details(d, fallback_imgs):
             img = t.get("GameImg") or ""
             if not img and i < len(fallback_imgs):
                 img = fallback_imgs[i]
-            details.append({
-                "DeviceType": t.get("DeviceType", ""),
-                "GameName": t.get("GameName", ""),
-                "GameFunc": t.get("GameFunc", ""),
-                "GameIcon": t.get("GameIcon", ""),
-                "GameImg": img,
-                "SettingTime": t.get("SettingTime", 0),
-            })
+            details.append(
+                {
+                    "DeviceType": t.get("DeviceType", ""),
+                    "GameName": t.get("GameName", ""),
+                    "GameFunc": t.get("GameFunc", ""),
+                    "GameIcon": t.get("GameIcon", ""),
+                    "GameImg": img,
+                    "SettingTime": t.get("SettingTime", 0),
+                }
+            )
     if not details and fallback_imgs:
-        details = [{
-            "DeviceType": "", "GameName": "", "GameFunc": "",
-            "GameIcon": "", "GameImg": img, "SettingTime": 0,
-        } for img in fallback_imgs]
+        details = [
+            {
+                "DeviceType": "",
+                "GameName": "",
+                "GameFunc": "",
+                "GameIcon": "",
+                "GameImg": img,
+                "SettingTime": 0,
+            }
+            for img in fallback_imgs
+        ]
     return details
 
 
@@ -515,18 +543,32 @@ def parse_prescription_recommendation(
     arg6: Any = "",
     arg7: Any = "",
     arg8: Any = "",
+    detail_cache=None,
 ) -> dict[str, Any]:
     """
-    线下处方推荐事件：按提示词推荐的处方（用「训练项目」= 处方 Name 匹配）调用接口获取详情，封装为推荐事件。
-    arg1: 线下处方列表 JSON（{"data":[...]}，data 里 Type==1 的处方含 Id、Name，不含机构信息）
+    线下处方推荐事件：用「训练项目」匹配处方 Name，
+    使用已读取的详情封装推荐事件。
+    arg1: 线下处方列表 JSON（{"data":[...]}，data 里
+    Type==1 的处方含 Id、Name，不含机构信息）
     arg2: 当前日期（预留，未参与解析）
     arg3: LLM 生成的训练处方推荐文本（含「训练项目:」「训练地点:」「时间安排:」）
     arg4: token（裸 JWT 字符串）
     arg5: 空闲机构名称列表（JSON 字符串数组）
     arg6: 上次已推荐处方的 Id 列表 last_ids（JSON 数组或逗号分隔，可为空）；本次会在此基础上累加
-    arg7: 上次已推荐处方的名称列表 last_names（JSON 数组或逗号分隔，可为空）；与 arg6 顺序一一对应，本次在此基础上累加
-    arg8: 上次已推荐处方的推荐时间档期列表 last_time_slots（JSON 数组，元素为 {"Hospital":..., "Time":...}，与 arg6 顺序一一对应，可为空）；本次在此基础上累加
-    输出 result: JSON 字符串；prescription_ids: array[number]（累计推荐过的处方 Id 列表 = 上次 + 本次）；prescription_names: array[string]（累计推荐过的处方名称列表，带「序号. 」前缀，与 prescription_ids 顺序一一对应）；prescription_time_slots: array[object]（累计推荐过的处方时间档期列表，与 prescription_ids 顺序一一对应）
+    arg7: 上次已推荐处方的名称列表 last_names（JSON
+    数组或逗号分隔，可为空）；与 arg6 顺序一一对应，本次在此基础上累加
+    arg8: 上次已推荐处方的推荐时间档期列表
+    last_time_slots（JSON 数组，元素为
+    {"Hospital":..., "Time":...}，与 arg6
+    顺序一一对应，可为空）；本次在此基础上累加
+    输出 result: JSON 字符串；prescription_ids:
+    array[number]（累计推荐过的处方 Id 列表 = 上次 +
+    本次）；prescription_names:
+    array[string]（累计推荐过的处方名称列表，带「序号. 」前缀，与
+    prescription_ids
+    顺序一一对应）；prescription_time_slots:
+    array[object]（累计推荐过的处方时间档期列表，与
+    prescription_ids 顺序一一对应）
     """
     # 1. 解析处方列表，取 Type==1 的线下处方
     root = arg1
@@ -577,10 +619,10 @@ def parse_prescription_recommendation(
         for m in (marker + ":", marker + "："):
             idx = line.find(m)
             if idx != -1:
-                return line[idx + len(m):].strip()
+                return line[idx + len(m) :].strip()
         return ""
 
-    blocks = {}   # 序号 -> {"Name","Hospital","Time"}
+    blocks = {}  # 序号 -> {"Name","Hospital","Time"}
     cur_idx = None
     for line in text.split("\n"):
         s = line.strip()
@@ -600,9 +642,8 @@ def parse_prescription_recommendation(
                 blocks[cur_idx]["Hospital"] = h
             continue
         t = extract_value(s, "时间安排")
-        if t:
-            if cur_idx is not None:
-                blocks[cur_idx]["Time"] = t
+        if t and cur_idx is not None:
+            blocks[cur_idx]["Time"] = t
 
     # 兜底：若文本没出现「推荐{序号}」编号，按出现顺序依次编号
     if not blocks:
@@ -624,7 +665,7 @@ def parse_prescription_recommendation(
                 blocks[seq] = {"Name": pending_name, "Hospital": pending_h, "Time": t}
                 seq += 1
 
-    # 5. 按 Name 匹配处方：用「消耗式」列表，支持同名处方（同名时逐个匹配到不同处方，避免重复输出同一个）
+    # 按 Name 匹配；同名候选逐个消耗，避免重复输出。
     available_items = list(items)
 
     def find_and_consume(name):
@@ -654,20 +695,27 @@ def parse_prescription_recommendation(
     prescription_time_slots = _parse_last_slots(arg8)
     base = PRESCRIPTION_DETAIL_URL
     # 先按累计 prescription_ids 顺序补回上次已推荐的处方，逐个调接口取详情，
-    # 使 payload.prescriptions 与 prescription_ids 一一对应（第一次 N 个，第二次累计 2N 个）。
+    # 使 payload.prescriptions 与
+    # prescription_ids 一一对应（第一次 N 个，第二次累计 2N
+    # 个）。
     for _i, _pid in enumerate(prescription_ids):
-        _d = _fetch_detail(_pid, base, token)
+        _d = _fetch_detail(_pid, base, token, detail_cache)
         _slot = prescription_time_slots[_i] if _i < len(prescription_time_slots) else {}
-        prescriptions.append({
-            "display_index": _i + 1,
-            "Id": _pid,
-            "Name": _d.get("Name") or (prescription_names[_i] if _i < len(prescription_names) else ""),
-            "Indication": _d.get("Indication", ""),
-            "Prescription": _d.get("Prescription", ""),
-            "Hospitals": hospitals,
-            "Details": _build_details(_d, []),
-            "time_slot_recommendation": [_slot] if (_slot.get("Hospital") or _slot.get("Time")) else [],
-        })
+        prescriptions.append(
+            {
+                "display_index": _i + 1,
+                "Id": _pid,
+                "Name": _d.get("Name")
+                or (prescription_names[_i] if _i < len(prescription_names) else ""),
+                "Indication": _d.get("Indication", ""),
+                "Prescription": _d.get("Prescription", ""),
+                "Hospitals": hospitals,
+                "Details": _build_details(_d, []),
+                "time_slot_recommendation": [_slot]
+                if (_slot.get("Hospital") or _slot.get("Time"))
+                else [],
+            }
+        )
 
     for idx in sorted(blocks.keys()):
         b = blocks[idx]
@@ -682,7 +730,7 @@ def parse_prescription_recommendation(
         prescription_ids.append(_to_int(pid))
         seen_ids.add(pid_str)
 
-        d = _fetch_detail(pid, base, token)
+        d = _fetch_detail(pid, base, token, detail_cache)
 
         # arg1 里已带 GameImg（来自列表接口），详情接口缺图时用它兜底，保证 GameImg 不为空
         fallback_imgs = _normalize_imgs(it.get("GameImg"))
@@ -693,16 +741,18 @@ def parse_prescription_recommendation(
         own_time_slot = [slot] if (slot.get("Hospital") or slot.get("Time")) else []
 
         resolved_name = d.get("Name", it.get("Name", ""))
-        prescriptions.append({
-            "display_index": len(prescription_ids),
-            "Id": pid,
-            "Name": resolved_name,
-            "Indication": d.get("Indication", ""),
-            "Prescription": d.get("Prescription", ""),
-            "Hospitals": hospitals,
-            "Details": details,
-            "time_slot_recommendation": own_time_slot,
-        })
+        prescriptions.append(
+            {
+                "display_index": len(prescription_ids),
+                "Id": pid,
+                "Name": resolved_name,
+                "Indication": d.get("Indication", ""),
+                "Prescription": d.get("Prescription", ""),
+                "Hospitals": hospitals,
+                "Details": details,
+                "time_slot_recommendation": own_time_slot,
+            }
+        )
         prescription_names.append(resolved_name)
         prescription_time_slots.append(slot)
 
@@ -720,9 +770,12 @@ def parse_prescription_recommendation(
     }
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 提示词组装与编排
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _build_intent_prompt(query: str, names_text: str, ids_text: str) -> str:
     return (
@@ -771,11 +824,39 @@ def _build_recommend_prompt(
     return prompt
 
 
+async def extract_disease(ctx, model, medical_text, conversation, query, previous):
+    if previous and _is_re_recommend(query):
+        return {"disease": previous}
+    await ctx.llm_budget.take()
+    prompt = (
+        "根据明确的本轮要求、对话及病历，从候选中选择疾病检索词。"
+        "不能确认则输出空字符串，不猜测诊断。只输出候选原文。\n"
+        + json.dumps(
+            {
+                "query": query,
+                "conversation": conversation,
+                "medical": _extract_raw_disease(medical_text),
+                "candidates": PRESCRIPTION_INDICATIONS,
+            },
+            ensure_ascii=False,
+        )
+    )
+    response = await model.ainvoke(prompt)
+    result = parse_disease_recommendation(
+        medical_text, conversation, query, previous, answer=_extract_content(response)
+    )
+    if not result["disease"]:
+        raise DomainError(
+            "disease_required", "请明确本次需要推荐的病种或评估目的。", outcome="clarification"
+        )
+    return result
+
+
 async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
     """推荐处方链路：登录 → 对话/病历 → 提取疾病 → 处方列表 → 过滤 → LLM 推荐 → 封装事件。"""
-    client = ctx.backend.client
+    client = ConsultationClient(ctx)
 
-    token = await _login(client)
+    token = await _login(client, ctx.settings)
 
     # 对话内容（可选）：手机号缺失或接口不可用都不阻断，告警后按空继续。
     request_phone = _phone(ctx, "requesterphone", "phone")
@@ -835,8 +916,8 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
 
     # 提取疾病（直连 DeepSeek，同步阻塞，放入线程池），覆盖会话变量 disease。
     last_disease = ctx.memory.get_variable("disease") or ""
-    disease_result = await asyncio.to_thread(
-        parse_disease_recommendation, medical_text, conversation, query, last_disease
+    disease_result = await extract_disease(
+        ctx, model, medical_text, conversation, query, last_disease
     )
     disease = disease_result.get("disease", "")
     ctx.memory.set_variable("disease", disease)
@@ -911,6 +992,21 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
         last_time_slots,
     )
 
+    detail_cache = await fetch_details(
+        ctx, client, PRESCRIPTION_DETAIL_URL, token, final["prescription_ids"]
+    )
+    final = parse_prescription_recommendation(
+        result,
+        date_time,
+        rec_text,
+        token,
+        hospitals,
+        last_ids,
+        last_names,
+        last_time_slots,
+        detail_cache=detail_cache,
+    )
+
     # 累计推荐结果覆盖会话变量，供下一轮「选择添加」/「重新推荐」复用。
     ctx.memory.set_variable("prescription_ids", final["prescription_ids"])
     ctx.memory.set_variable("prescription_names", final["prescription_names"])
@@ -949,4 +1045,13 @@ async def run_prescription(ctx: RunContext, query: str, model: Any) -> str:
     if "推荐处方" in intent_text:
         return await _run_recommendation(ctx, query, model)
 
-    return parse_prescription_selection(intent_text)["result"]
+    result = parse_prescription_selection(intent_text)["result"]
+    selected = json.loads(result)["payload"]["selected_prescription_ids"]
+    candidates = {
+        str(value) for value in _parse_last_ids_list(ctx.memory.get_variable("prescription_ids"))
+    }
+    if any(str(value) not in candidates for value in selected):
+        raise DomainError(
+            "selection_not_recommended", "请从本次问诊已推荐的处方中选择。", outcome="clarification"
+        )
+    return result

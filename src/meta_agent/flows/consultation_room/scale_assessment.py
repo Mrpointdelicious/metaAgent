@@ -4,11 +4,17 @@
 
 与处方配置同构（流程一致），仅代码与推荐提示词不同：
   1. 意图识别 LLM（复用 PRESCRIPTION_INTENT_PROMPT）路由到「选择添加」或「推荐处方」；
-  2. 不含「推荐处方」→ parse_scale_selection 封装 prescription_selection 事件，输出 result；
-  3. 含「推荐处方」→ 登录取 token → 取对话记录/病历信息 → parse_disease_recommendation 提取
-     disease（覆盖会话变量 disease）→ GET GetPrescriptionListNew（keyword=disease）→
-     parse_scale_filter 过滤 Type==0 量表 → 有剩余量表才走推荐 LLM（SCALE_RECOMMEND_PROMPT）→
-     parse_scale_recommendation 调详情接口取 EvaluationList 封装 prescription_recommendation 事件，
+  2. 不含「推荐处方」→ parse_scale_selection 封装
+  prescription_selection 事件，输出 result；
+  3. 含「推荐处方」→ 登录取 token → 取对话记录/病历信息 →
+  parse_disease_recommendation 提取
+     disease（覆盖会话变量 disease）→ GET
+     GetPrescriptionListNew（keyword=disease）→
+     parse_scale_filter 过滤 Type==0 量表 →
+     有剩余量表才走推荐 LLM（SCALE_RECOMMEND_PROMPT）→
+     parse_scale_recommendation 调详情接口取
+     EvaluationList 封装
+     prescription_recommendation 事件，
      并把 scale_ids / scale_names 覆盖到会话变量；
   4. 无剩余量表时固定输出「未找到适配的量表或已全部推荐最匹配的量表…」。
 """
@@ -17,12 +23,12 @@ import asyncio
 import json
 import logging
 import re
-import urllib.request
 from typing import Any
 
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
+from .access import ConsultationClient, fetch_details
 from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,
@@ -35,7 +41,7 @@ from .medical_record import (
 from .prescription import (
     PRESCRIPTION_INTENT_PROMPT,
     PRESCRIPTION_LIST_URL,
-    parse_disease_recommendation,
+    extract_disease,
 )
 from .prompts import SCALE_RECOMMEND_PROMPT
 
@@ -49,9 +55,12 @@ _NO_SCALE_RESULT = (
 )
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 解析函数（照搬 Dify 代码节点逻辑）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def parse_scale_selection(arg1: Any) -> dict[str, str]:
     """
@@ -115,7 +124,8 @@ def parse_scale_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
     data 仅保留 Type==0、且未被上次推荐过的处方）。用字符串输出以避免嵌套对象过深。
     输出 count：本轮可推荐（未在上次推荐过）的 Type==0 处方数量（整数），供提示词据此生成推荐数量。
     输出 start_index：推荐序号起始值 = 上次推荐数量 + 1（首次/无历史为 1），供提示词续排序号。
-    last_ids：上次已推荐处方的 Id 列表（JSON 数组或逗号分隔），按 Id 精确匹配后从本轮候选里剔除，避免重复推荐。
+    last_ids：上次已推荐处方的 Id 列表（JSON 数组或逗号分隔），按
+    Id 精确匹配后从本轮候选里剔除，避免重复推荐。
     """
     root = json.loads(arg) if isinstance(arg, str) else arg
     if not isinstance(root, dict):
@@ -129,7 +139,8 @@ def parse_scale_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
         except Exception:
             return {"result": json.dumps(root, ensure_ascii=False), "count": 0, "start_index": 1}
 
-    # 新结构：data 是对象，Type==0（量表）在 online_prescriptions；旧结构 data 直接是列表
+    # 新结构：data 是对象，Type==0（量表）在
+    # online_prescriptions；旧结构 data 直接是列表
     data = body.get("data") if isinstance(body, dict) else None
     if isinstance(data, dict):
         raw = data.get("online_prescriptions", [])
@@ -155,16 +166,25 @@ def parse_scale_filter(arg: Any, last_ids: Any = "") -> dict[str, Any]:
 
     # 若输入为完整响应且 body 原本是字符串，还原为字符串，保持结构一致
     if "body" in root:
-        root["body"] = json.dumps(body, ensure_ascii=False) if isinstance(root["body"], str) else body
+        root["body"] = (
+            json.dumps(body, ensure_ascii=False) if isinstance(root["body"], str) else body
+        )
 
     start_index = len(excluded) + 1 if excluded else 1
 
-    return {"result": json.dumps(root, ensure_ascii=False), "count": count, "start_index": start_index}
+    return {
+        "result": json.dumps(root, ensure_ascii=False),
+        "count": count,
+        "start_index": start_index,
+    }
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 推荐结果封装（照搬 Dify 代码节点，含详情接口调用）
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _to_int(v):
     """尽量转成 int，失败则保留原值。"""
@@ -180,7 +200,10 @@ def _norm(name):
 
 
 def _parse_last_ids_list(raw):
-    """把 last_ids 解析成有序的 Id 字符串列表（去重、保序），兼容 JSON 数组 / 逗号顿号分隔 / 单个值。"""
+    """
+    把 last_ids 解析成有序的 Id 字符串列表（去重、保序），兼容 JSON
+    数组 / 逗号顿号分隔 / 单个值。
+    """
     result = []
     seen = set()
 
@@ -219,35 +242,31 @@ def _parse_last_ids_list(raw):
 def _strip_index(s):
     """去掉名称前可能带有的「1.」「1、」「1）」等序号前缀，便于跨轮重新编号。"""
     m = re.match(r"^\s*\d+\s*[.、)）:：]\s*", s)
-    return s[m.end():] if m else s
+    return s[m.end() :] if m else s
 
 
-def _fetch_detail(pid, base, token):
-    """调用处方详情接口，返回 data 字典；失败或无 data 时返回 {}。"""
-    detail = None
-    try:
-        url = f"{base}?Id={pid}"
-        req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            detail = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        detail = None
-    if isinstance(detail, dict) and isinstance(detail.get("data"), dict):
-        return detail["data"]
-    return {}
+def _fetch_detail(pid, base, token, detail_cache=None):
+    return (detail_cache or {}).get(str(pid), {})
 
 
 def parse_scale_recommendation(
-    arg1: Any, arg2: Any, arg3: Any, arg4: Any = "", arg5: Any = ""
+    arg1: Any, arg2: Any, arg3: Any, arg4: Any = "", arg5: Any = "", detail_cache=None
 ) -> dict[str, Any]:
     """
-    量表测评推荐事件：按提示词推荐的量表（用「量表名称」匹配处方 Name）调用接口获取 EvaluationList，封装为推荐事件。
-    arg1: 量表列表 JSON（提取量表处方.py 的 result，data 里为 Type==0 的处方，含 Id、Name 等）
+    量表测评推荐事件：按提示词推荐的量表（用「量表名称」匹配处方
+    Name）调用接口获取 EvaluationList，封装为推荐事件。
+    arg1: 量表列表 JSON（提取量表处方.py 的 result，data
+    里为 Type==0 的处方，含 Id、Name 等）
     arg2: LLM 生成的量表推荐文本（含「量表名称:」）
     arg3: token（裸 JWT 字符串，或 {"token":"..."}）
     arg4: 上次已推荐量表的 Id 列表 last_ids（JSON 数组或逗号分隔，可为空）；本次会在此基础上累加
-    arg5: 上次已推荐量表的名称列表 last_names（JSON 数组或逗号分隔，可为空）；与 arg4 顺序一一对应，本次在此基础上累加
-    输出 result: JSON 字符串；scale_ids: array[number]（累计推荐过的量表 Id 列表 = 上次 + 本次）；scale_names: array[string]（累计推荐过的量表名称列表，带「序号. 」前缀，与 scale_ids 顺序一一对应）
+    arg5: 上次已推荐量表的名称列表 last_names（JSON
+    数组或逗号分隔，可为空）；与 arg4 顺序一一对应，本次在此基础上累加
+    输出 result: JSON 字符串；scale_ids:
+    array[number]（累计推荐过的量表 Id 列表 = 上次 +
+    本次）；scale_names:
+    array[string]（累计推荐过的量表名称列表，带「序号. 」前缀，与
+    scale_ids 顺序一一对应）
     """
     # 1. 解析量表列表，取 Type==0 的处方
     root = arg1
@@ -289,10 +308,10 @@ def parse_scale_recommendation(
         for m in (marker + ":", marker + "："):
             idx = line.find(m)
             if idx != -1:
-                return line[idx + len(m):].strip()
+                return line[idx + len(m) :].strip()
         return ""
 
-    blocks = {}   # 序号 -> 量表名称
+    blocks = {}  # 序号 -> 量表名称
     cur_idx = None
     for line in text.split("\n"):
         s = line.strip()
@@ -302,9 +321,8 @@ def parse_scale_recommendation(
             blocks.setdefault(cur_idx, "")
             continue
         n = extract_value(s, "量表名称")
-        if n:
-            if cur_idx is not None:
-                blocks[cur_idx] = n
+        if n and cur_idx is not None:
+            blocks[cur_idx] = n
 
     # 兜底：若文本没出现「推荐{序号}」编号，按出现顺序依次编号
     if not blocks:
@@ -316,8 +334,11 @@ def parse_scale_recommendation(
                 blocks[seq] = n
                 seq += 1
 
-    # 4. 建立 量表名称 -> 量表 映射，并做模糊匹配（归一化去掉括号/横杠/下划线等，避免 LLM 复制名称时丢符号导致匹配失败）。
-    #    量表名可能来自 Name 字段，也可能来自 Details 数组里的字符串（如 "ADL日常生活能力量表"），两者都纳入映射。
+    # 4. 建立 量表名称 -> 量表
+    # 映射，并做模糊匹配（归一化去掉括号/横杠/下划线等，避免 LLM
+    # 复制名称时丢符号导致匹配失败）。
+    #    量表名可能来自 Name 字段，也可能来自 Details
+    # 数组里的字符串（如 "ADL日常生活能力量表"），两者都纳入映射。
     name_to_item = {}
     norm_to_item = {}
 
@@ -365,17 +386,20 @@ def parse_scale_recommendation(
     scale_names = list(prev_names)
     base = SCALE_DETAIL_URL
     # 先按累计 scale_ids 顺序补回上次已推荐的量表，逐个调接口取详情，
-    # 使 payload.prescriptions 与 scale_ids 一一对应（第一次 N 个，第二次累计 2N 个）。
+    # 使 payload.prescriptions 与 scale_ids
+    # 一一对应（第一次 N 个，第二次累计 2N 个）。
     for _i, _pid in enumerate(scale_ids):
-        _d = _fetch_detail(_pid, base, token)
-        prescriptions.append({
-            "display_index": _i + 1,
-            "Id": _pid,
-            "Name": _d.get("Name") or (scale_names[_i] if _i < len(scale_names) else ""),
-            "Indication": _d.get("Indication", ""),
-            "Prescription": _d.get("Prescription", ""),
-            "Details": _d.get("EvaluationList", []) or [],
-        })
+        _d = _fetch_detail(_pid, base, token, detail_cache)
+        prescriptions.append(
+            {
+                "display_index": _i + 1,
+                "Id": _pid,
+                "Name": _d.get("Name") or (scale_names[_i] if _i < len(scale_names) else ""),
+                "Indication": _d.get("Indication", ""),
+                "Prescription": _d.get("Prescription", ""),
+                "Details": _d.get("EvaluationList", []) or [],
+            }
+        )
 
     for idx in sorted(blocks.keys()):
         name = blocks[idx]
@@ -390,20 +414,22 @@ def parse_scale_recommendation(
         scale_ids.append(_to_int(pid))
         seen_ids.add(pid_str)
 
-        d = _fetch_detail(pid, base, token)
+        d = _fetch_detail(pid, base, token, detail_cache)
 
         # Details 来自接口返回的 EvaluationList
         details = d.get("EvaluationList", []) or []
 
         resolved_name = d.get("Name", it.get("Name", ""))
-        prescriptions.append({
-            "display_index": len(scale_ids),
-            "Id": pid,
-            "Name": resolved_name,
-            "Indication": d.get("Indication", ""),
-            "Prescription": d.get("Prescription", ""),
-            "Details": details,
-        })
+        prescriptions.append(
+            {
+                "display_index": len(scale_ids),
+                "Id": pid,
+                "Name": resolved_name,
+                "Indication": d.get("Indication", ""),
+                "Prescription": d.get("Prescription", ""),
+                "Details": details,
+            }
+        )
         scale_names.append(resolved_name)
 
     # 6. 组装输出
@@ -419,9 +445,12 @@ def parse_scale_recommendation(
     }
 
 
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
 # 提示词组装与编排
-# --------------------------------------------------------------------------- #
+# -------------------------------------------
+# -------------------------------- #
+
 
 def _build_intent_prompt(query: str, names_text: str, ids_text: str) -> str:
     return (
@@ -465,9 +494,9 @@ def _build_scale_recommend_prompt(
 
 async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
     """量表推荐链路：登录 → 对话/病历 → 提取疾病 → 量表列表 → 过滤 → LLM 推荐 → 封装事件。"""
-    client = ctx.backend.client
+    client = ConsultationClient(ctx)
 
-    token = await _login(client)
+    token = await _login(client, ctx.settings)
 
     # 对话内容（供疾病提取用，可选）：缺失/不可用都按空继续。
     request_phone = _phone(ctx, "requesterphone", "phone")
@@ -527,8 +556,8 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
 
     # 提取疾病（直连 DeepSeek，同步阻塞，放入线程池），覆盖会话变量 disease。
     last_disease = ctx.memory.get_variable("disease") or ""
-    disease_result = await asyncio.to_thread(
-        parse_disease_recommendation, medical_text, conversation, query, last_disease
+    disease_result = await extract_disease(
+        ctx, model, medical_text, conversation, query, last_disease
     )
     disease = disease_result.get("disease", "")
     ctx.memory.set_variable("disease", disease)
@@ -582,6 +611,11 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
         parse_scale_recommendation, result, rec_text, token, last_ids, last_names
     )
 
+    detail_cache = await fetch_details(ctx, client, SCALE_DETAIL_URL, token, final["scale_ids"])
+    final = parse_scale_recommendation(
+        result, rec_text, token, last_ids, last_names, detail_cache=detail_cache
+    )
+
     # 累计推荐结果覆盖会话变量，供下一轮「选择添加」/「重新推荐」复用。
     ctx.memory.set_variable("scale_ids", final["scale_ids"])
     ctx.memory.set_variable("scale_names", final["scale_names"])
@@ -617,4 +651,13 @@ async def run_scale_assessment(ctx: RunContext, query: str, model: Any) -> str:
     if "推荐处方" in intent_text:
         return await _run_recommendation(ctx, query, model)
 
-    return parse_scale_selection(intent_text)["result"]
+    result = parse_scale_selection(intent_text)["result"]
+    selected = json.loads(result)["payload"]["selected_prescription_ids"]
+    candidates = {
+        str(value) for value in _parse_last_ids_list(ctx.memory.get_variable("scale_ids"))
+    }
+    if any(str(value) not in candidates for value in selected):
+        raise DomainError(
+            "selection_not_recommended", "请从本次问诊已推荐的量表中选择。", outcome="clarification"
+        )
+    return result

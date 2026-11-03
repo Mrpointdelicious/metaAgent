@@ -26,9 +26,7 @@ def _request(token: str | None, settings) -> Request:
         "server": ("testserver", 80),
         "client": ("testclient", 50000),
         "scheme": "http",
-        "app": SimpleNamespace(
-            state=SimpleNamespace(container=SimpleNamespace(settings=settings))
-        ),
+        "app": SimpleNamespace(state=SimpleNamespace(container=SimpleNamespace(settings=settings))),
     }
     return Request(scope)
 
@@ -67,9 +65,7 @@ def _ctx(client: ClientIdentity) -> SimpleNamespace:
             doctors_enabled=True,
             knowledge_backend="maxkb",
         ),
-        scope=SimpleNamespace(
-            project_patient_id="3799", iretour_patient_id=None, patient_id=None, role="patient"
-        ),
+        scope=SimpleNamespace(has_patient=True, role="patient"),
         record=SimpleNamespace(raw_inputs={}),
     )
 

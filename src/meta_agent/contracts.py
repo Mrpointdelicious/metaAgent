@@ -37,6 +37,8 @@ Domain = Literal[
     "irego",
     "iremo",
     "iretour",
+    "irecog",
+    "assessment",
     "scene",
     "doctors",
     "health",
@@ -47,6 +49,8 @@ Domain = Literal[
 GoalKind = Literal[
     "chat",
     "iretour",
+    "irecog",
+    "assessment",
     "hospital_query",
     "irego",
     "rehab_overview",
@@ -90,6 +94,8 @@ ActionDeliveryStatus = Literal[
 Effect = Literal["read", "prepare_artifact", "emit_frontend_action"]
 Capability = Literal[
     "iretour.execute",
+    "irecog.execute",
+    "assessment.execute",
     "hospital.query",
     "hospital.directory",
     "irego.execute",
@@ -164,6 +170,16 @@ class IReTourRequest(IReGoRequest):
     activity_scope: ActivityScope = "straight_primary"
 
 
+class IReCogRequest(IReGoRequest):
+    """IReCog 认知测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+
+class AssessmentRequest(IReGoRequest):
+    """线上量表测评的唯一高层业务请求；内部工具链由固定 Workflow 决定。"""
+
+    scale_type: int | None = Field(default=None, ge=1, le=99)
+
+
 class HospitalRequest(StrictModel):
     scope: Literal["institution", "comparison", "platform"] = "institution"
     hospital_id: int | None = Field(default=None, gt=0)
@@ -173,14 +189,17 @@ class HospitalRequest(StrictModel):
         "all", "overview", "consultation", "rooms", "assessment_training", "records", "analysis"
     ] = "all"
     # 相对日期窗口由代码按 Asia/Shanghai 计算；date_mode="range" 时才使用 start_date/end_date。
-    date_mode: Literal[
-        "this_month", "last_month", "last_7_days", "last_30_days", "today", "yesterday", "range"
-    ] | None = None
+    date_mode: (
+        Literal[
+            "this_month", "last_month", "last_7_days", "last_30_days", "today", "yesterday", "range"
+        ]
+        | None
+    ) = None
     start_date: str | None = None
     end_date: str | None = None
     output_mode: Literal["analysis", "report", "analysis_and_report"] = Field(
         default="analysis",
-        description="仅当用户要求生成报表/报告图片时用 analysis_and_report（或 report），否则保持 analysis。",
+        description=("用户要求报表图片时用 analysis_and_report；否则用 analysis。"),
     )
     analysis_depth: Literal["summary", "standard"] = "standard"
 
@@ -202,6 +221,8 @@ class Goal(StrictModel):
     condition: Condition | None = None
     irego: IReGoRequest | None = None
     iretour: IReTourRequest | None = None
+    irecog: IReCogRequest | None = None
+    assessment: AssessmentRequest | None = None
     hospital: HospitalRequest | None = None
 
 
@@ -260,6 +281,8 @@ class ValidatedPlan(StrictModel):
 
 
 class Fact(StrictModel):
+    record_tenant: dict[str, Any] | None = None
+    scope_fingerprint: str | None = None
     contract_type: Literal["Fact"] = "Fact"
     schema_version: Literal["1.0"] = "1.0"
     fact_id: str
@@ -402,7 +425,9 @@ class TaskResult(StrictModel):
 
 
 class RecordAnchor(StrictModel):
-    domain: Literal["irego", "iretour"] = "irego"
+    record_tenant: dict[str, Any] | None = None
+    scope_fingerprint: str | None = None
+    domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     session_ref: str
     evidence_id: str
     observed_at: datetime = Field(default_factory=utcnow)
@@ -418,7 +443,7 @@ class ConversationState(StrictModel):
     current_record: RecordAnchor | None = None
     history_page: int = 1
     history_seen: bool = False
-    history_domain: Literal["irego", "iretour"] = "irego"
+    history_domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
     # 上一轮任务分类（consultation_room 分支的 LLM 分类器写入，供下一轮多轮延续判断）。
     previous_category: str = ""
     # Dify 风格的会话变量：键值对，跨轮次持久化，供各分支 / 子流程读写。

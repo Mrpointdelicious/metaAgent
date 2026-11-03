@@ -55,9 +55,7 @@ class DifyEventFactory:
 
     def workflow_started(self, inputs: dict[str, Any] | None = None) -> dict[str, Any]:
         inputs = inputs or {}
-        workflow_id = str(
-            inputs.get("sys.workflow_id") or inputs.get("workflow_id") or "metaagent"
-        )
+        workflow_id = str(inputs.get("sys.workflow_id") or inputs.get("workflow_id") or "metaagent")
         body = self._envelope("workflow_started")
         # Dify 中 workflow_run_id 与 task_id 同值，指向本次工作流运行；前端据此回显入参。
         body["workflow_run_id"] = self.task_id
@@ -273,6 +271,11 @@ class DifyEventAdapter:
                     code=event.payload.get("code", "agent_execution_failed"),
                 )
             )
+        if event.type == "action_ready":
+            frame = self.factory.message(event.payload["command_code"])
+            frame["action_id"] = event.payload["action_id"]
+            frame["command_order"] = event.payload["command_order"]
+            return encode_sse(frame)
         if event.type == "completed":
             prefix = self._finish_open_nodes()
             if not self._workflow_finished:
@@ -284,5 +287,13 @@ class DifyEventAdapter:
                         _dify_status(outcome), outputs={"answer": answer}
                     )
                 )
-            return prefix + encode_sse(self.factory.message_end(empty_metadata()))
+            return prefix + encode_sse(
+                self.factory.message_end(
+                    {
+                        **empty_metadata(),
+                        "status": self.record.status,
+                        "action_delivery": dict(self.record.action_delivery),
+                    }
+                )
+            )
         return ""

@@ -6,6 +6,7 @@
 以及混有额外文字等常见 LLM 输出；解析失败时退化为正则兜底。
 """
 
+import contextlib
 import json
 import re
 from typing import Any
@@ -30,17 +31,13 @@ def parse_classification(arg: Any) -> dict[str, str]:
 
     obj = None
     # 先尝试直接解析
-    try:
+    with contextlib.suppress(Exception):
         obj = json.loads(s)
-    except Exception:
-        pass
 
     # 再尝试去掉转义后解析（LLM 输出可能带 \"）
     if obj is None:
-        try:
+        with contextlib.suppress(Exception):
             obj = json.loads(s.replace('\\"', '"'))
-        except Exception:
-            pass
 
     # 若外层是 {"result": "..."} 之类的包装，解一层
     if isinstance(obj, dict):

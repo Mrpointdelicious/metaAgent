@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from meta_agent.agent.results import collect_agent_results
+
 from . import post_process as post_process_module
 
 if TYPE_CHECKING:

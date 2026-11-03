@@ -90,20 +90,68 @@ def _resolve_window(date_mode, start_date, end_date, today):
 
 class HospitalAdapter:
     async def directory(self, task, args, ctx):
-        """返回可用机构目录，支持按名称关键字过滤，供 LLM 匹配机构名称与编号。"""
-        entries = await ctx.backend.directory()
-        name = (args or {}).get("name")
-        if name:
-            needle = str(name).strip()
-            entries = [e for e in entries if needle in e["hospital_name"]]
+        if ctx.scope.role != "operator":
+            raise DomainError(
+                "operator_required", "机构目录需要运营人员身份。", outcome="unsupported"
+            )
+        async with ctx.tool_slot():
+            entries = await ctx.backend.directory()
+        name = args.get("name", "").strip().casefold()
+        entries = [entry for entry in entries if name in entry["hospital_name"].casefold()]
+        evidence = await ctx.repository.save_evidence(
+            ctx.scope.scope_hash,
+            "query_hospital_directory",
+            ctx.record.request_id,
+            {"directory": entries},
+            "hospital-directory-v1",
+        )
         return TaskResult(
             task_id=task.task_id,
-            status="succeeded",
+            evidence_ids=[evidence.evidence_id],
             outputs={"directory": entries, "total": len(entries)},
         )
 
     async def execute(self, task, args, ctx):
+        if ctx.scope.role != "operator":
+            raise DomainError(
+                "operator_required", "医院运营查询需要运营人员身份。", outcome="unsupported"
+            )
         request = HospitalRequest.model_validate(args)
+        if request.hospital_id is not None or request.hospital_ids or request.hospital_name:
+            async with ctx.tool_slot():
+                entries = await ctx.backend.directory()
+            ids = {entry["hospital_id"] for entry in entries}
+            if request.hospital_name and request.hospital_id is None:
+                matches = [
+                    entry
+                    for entry in entries
+                    if entry["hospital_name"] == request.hospital_name.strip()
+                ]
+                if len(matches) != 1:
+                    raise DomainError(
+                        "hospital_required", "请从目录选择唯一机构。", outcome="clarification"
+                    )
+                request.hospital_id = matches[0]["hospital_id"]
+            if (
+                request.hospital_id is not None
+                and request.hospital_id not in ids
+                or any(value not in ids for value in request.hospital_ids)
+            ):
+                raise DomainError(
+                    "hospital_required", "机构编号不在可信目录中。", outcome="clarification"
+                )
+            if (
+                request.hospital_id is not None
+                and request.hospital_name
+                and not any(
+                    entry["hospital_id"] == request.hospital_id
+                    and entry["hospital_name"] == request.hospital_name.strip()
+                    for entry in entries
+                )
+            ):
+                raise DomainError(
+                    "hospital_required", "机构编号与名称不一致。", outcome="clarification"
+                )
         if request.scope == "institution" and not (request.hospital_id or request.hospital_name):
             raise DomainError(
                 "hospital_required", "请明确医院编号或名称。", outcome="clarification"
@@ -114,33 +162,6 @@ class HospitalAdapter:
             raise DomainError(
                 "hospital_required", "请明确两个不同的医院编号。", outcome="clarification"
             )
-        # 目录兜底校验：编号必须来自真实目录，防止 LLM 跳过目录工具直接编造 id。
-        directory = {entry["hospital_id"] for entry in await ctx.backend.directory()}
-        if request.hospital_id is not None and request.hospital_id not in directory:
-            raise DomainError(
-                "hospital_required", "机构编号不在目录中，请重新查询机构列表。", outcome="clarification"
-            )
-        if request.hospital_ids and any(i not in directory for i in request.hospital_ids):
-            raise DomainError(
-                "hospital_required", "机构编号不在目录中，请重新查询机构列表。", outcome="clarification"
-            )
-        # 快照类 section 不支持历史区间；相对日期窗口由代码按 Asia/Shanghai 计算。
-        if request.section in SNAPSHOT_SECTIONS and request.date_mode not in (
-            None,
-            "today",
-            "this_month",
-        ):
-            raise DomainError(
-                "invalid_request",
-                "该类数据目前只有当前/上游快照，不能查询指定历史区间。可改查当前快照，或查询该区间的问诊人数和次数。",
-                outcome="clarification",
-            )
-        today = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).date().isoformat()
-        start, end = _resolve_window(
-            request.date_mode, request.start_date, request.end_date, today
-        )
-        request.start_date = start
-        request.end_date = end
         body = await ctx.call("query_hospital_operations", request.model_dump(exclude_none=True))
         try:
             envelope = PatientEnvelope.model_validate({"meta": {}, **body})
@@ -312,11 +333,17 @@ def render_hospital_markdown(response: dict) -> str | None:
     if not names:
         return None
 
-    lines = ["**" + " / ".join(names) + "**", "", f"查询内容：{RENDER_SECTIONS.get(section, section)}"]
+    lines = [
+        "**" + " / ".join(names) + "**",
+        "",
+        f"查询内容：{RENDER_SECTIONS.get(section, section)}",
+    ]
     if section in ("all", "analysis", "consultation") and start and end:
         lines.append(f"问诊统计区间：{start} 至 {end}")
     if section != "consultation":
-        lines.append("机构概况、诊室、评估训练及业务资料按当前/上游快照展示，不代表查询日期区间的新增数量。")
+        lines.append(
+            "机构概况、诊室、评估训练及业务资料按当前/上游快照展示，不代表查询日期区间的新增数量。"
+        )
     lines.append("")
 
     for snap in hospitals:
@@ -371,8 +398,16 @@ def render_hospital_markdown(response: dict) -> str | None:
     if scope == "comparison":
         comparison = data.get("comparison")
         if isinstance(comparison, dict):
-            left = comparison.get("left_hospital") if isinstance(comparison.get("left_hospital"), dict) else {}
-            right = comparison.get("right_hospital") if isinstance(comparison.get("right_hospital"), dict) else {}
+            left = (
+                comparison.get("left_hospital")
+                if isinstance(comparison.get("left_hospital"), dict)
+                else {}
+            )
+            right = (
+                comparison.get("right_hospital")
+                if isinstance(comparison.get("right_hospital"), dict)
+                else {}
+            )
             left_name = name_map.get(left.get("hospital_id"), "")
             right_name = name_map.get(right.get("hospital_id"), "")
             if left_name and right_name and left.get("hospital_id") != right.get("hospital_id"):
@@ -386,16 +421,25 @@ def render_hospital_markdown(response: dict) -> str | None:
                 )
                 allowed = {key for fields in RENDER_FIELDS.values() for key, _, _ in fields}
                 allowed.update(
-                    ("daily_active_rate", "patients_per_doctor", "training_room_share", "ai_consultation_share")
+                    (
+                        "daily_active_rate",
+                        "patients_per_doctor",
+                        "training_room_share",
+                        "ai_consultation_share",
+                    )
                 )
                 for metric in comparison.get("metrics", []):
                     if not isinstance(metric, dict) or metric.get("code") not in allowed:
                         continue
-                    if any(type(metric.get(k)) not in (int, float) for k in ("left_value", "right_value", "difference")):
+                    if any(
+                        type(metric.get(k)) not in (int, float)
+                        for k in ("left_value", "right_value", "difference")
+                    ):
                         continue
                     lines.append(
                         f"| {metric.get('label', '')} | {metric.get('left_display_value', '')} | "
-                        f"{metric.get('right_display_value', '')} | {metric.get('difference_display_value', '')} |"
+                        f"{metric.get('right_display_value', '')} | "
+                        f"{metric.get('difference_display_value', '')} |"
                     )
                 lines.extend(["", "差值高低不直接代表运营质量的好坏。"])
 

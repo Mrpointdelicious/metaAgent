@@ -12,6 +12,7 @@ from pydantic import Field
 from meta_agent.config import Settings
 from meta_agent.contracts import (
     ConversationState,
+    DomainError,
     FactView,
     RunRecord,
     StrictModel,
@@ -116,6 +117,8 @@ class Repository:
         evidence = await self.evidence(scope, fact.evidence_id)
         if evidence is None or fact.source_version != evidence.source_version:
             return False
+        if not self._fact_metadata_matches(evidence, fact):
+            return False
         exists, value = resolve_pointer(evidence.payload, fact.path)
         if not exists:
             return fact.value is None and fact.value_status == "missing"
@@ -134,6 +137,8 @@ class Repository:
             evidence = sources[fact.evidence_id]
             if evidence is None or evidence.source_version != fact.source_version:
                 return False
+            if not self._fact_metadata_matches(evidence, fact):
+                return False
             exists, value = resolve_pointer(evidence.payload, fact.path)
             if not exists:
                 if fact.value is not None or fact.value_status != "missing":
@@ -142,6 +147,15 @@ class Repository:
                 return False
         return True
 
+    @staticmethod
+    def _fact_metadata_matches(evidence, fact):
+        from meta_agent.domains.facts import record_tenant_for
+
+        scope = (evidence.payload.get("query_scope") or {}).get("scope_fingerprint")
+        return fact.scope_fingerprint == scope and fact.record_tenant == record_tenant_for(
+            evidence.payload, fact.path, fact.record_ref
+        )
+
     async def save_conversation(self, thread_id: str, memory: ConversationState) -> None:
         memory.updated_at = utcnow()
         # A turn may contain a large answer; retention never stores full tool JSON.
@@ -149,7 +163,11 @@ class Repository:
         # agent 上下文窗口在读取端（parser/context）自行截断，不依赖这里的持久化轮数。
         # 只截断 user/assistant 文本，保留 created_at 等其余字段。
         memory.turns = [
-            {**t, "user": str(t.get("user", ""))[:2000], "assistant": str(t.get("assistant", ""))[:2000]}
+            {
+                **t,
+                "user": str(t.get("user", ""))[:2000],
+                "assistant": str(t.get("assistant", ""))[:2000],
+            }
             for t in memory.turns[-self.settings.conversation_turn_limit :]
         ]
         await self.put(
@@ -172,6 +190,8 @@ class Repository:
         now = utcnow().timestamp()
         existing = await self.get("conversation_index", user, conversation_id)
         if existing:
+            if existing["thread_id"] != thread_id:
+                raise DomainError("conversation_binding_changed", "会话归属不能修改。")
             meta = {
                 **existing,
                 "thread_id": thread_id,

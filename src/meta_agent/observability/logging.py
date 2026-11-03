@@ -10,6 +10,32 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 
+SAFE_FIELDS = frozenset(
+    {
+        "step",
+        "method",
+        "status",
+        "http_status",
+        "error",
+        "error_type",
+        "endpoint",
+        "code",
+        "tool",
+        "tools",
+        "count",
+        "category",
+        "success",
+        "has_token",
+        "has_result",
+        "call",
+        "tool_calls",
+        "llm_calls",
+        "elapsed_ms",
+        "answer_length",
+        "stage",
+    }
+)
+
 
 class JsonFormatter(logging.Formatter):
     """将标准日志记录转换为单行 JSON。"""
@@ -27,7 +53,13 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         fields = getattr(record, "fields", None)
         if isinstance(fields, dict):
-            payload.update(fields)
+            payload.update(
+                {
+                    key: value
+                    for key, value in fields.items()
+                    if key in SAFE_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
+                }
+            )
         if record.exc_info:
             payload["error_type"] = record.exc_info[0].__name__ if record.exc_info[0] else "unknown"
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

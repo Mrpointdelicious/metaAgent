@@ -12,7 +12,7 @@ from meta_agent.contracts import TaskSpec
 from meta_agent.domains.chat_history import ChatHistoryAdapter, build, is_chat_history_query
 
 SPACE = "67ecd511-5532-405d-9b70-1cd1c0532eed"
-URL = "http://192.168.8.161:9090/chatPage/?user=118&spaceId=" + SPACE
+URL = "http://192.168.8.160:9090/chatPage/?user=118&spaceId=" + SPACE
 
 
 def test_build_success():
@@ -69,7 +69,11 @@ def test_adapter_execute_success():
         repository=SimpleNamespace(save_evidence=save_evidence),
     )
     task = TaskSpec(
-        task_id="t1", goal_ids=["agent"], capability="chat.history", arguments={}, idempotency_key="k"
+        task_id="t1",
+        goal_ids=["agent"],
+        capability="chat.history",
+        arguments={},
+        idempotency_key="k",
     )
     result = asyncio.run(ChatHistoryAdapter().execute(task, {}, ctx))
     assert result.status == "succeeded"

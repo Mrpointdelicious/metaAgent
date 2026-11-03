@@ -102,7 +102,10 @@ class PortfolioKnowledgeAdapter:
         )
         budget["used_context_tokens"] += reserved
         try:
-            async with httpx.AsyncClient(timeout=settings.portfolio_timeout_seconds) as client:
+            async with (
+                ctx.tool_slot(),
+                httpx.AsyncClient(timeout=settings.portfolio_timeout_seconds) as client,
+            ):
                 response = await client.post(
                     settings.portfolio_base_url.rstrip("/") + "/v1/retrieve",
                     headers={"Authorization": "Bearer " + token},

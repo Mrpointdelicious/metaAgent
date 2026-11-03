@@ -18,8 +18,8 @@ from meta_agent.contracts import (
     utcnow,
 )
 from meta_agent.domains.facts import FactBuilder
-from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.planning.parser import StructuredIntentPlanner
+from tests.helpers.identity import patient_scope
 from tests.helpers.runtime import answers, request, runtime, tool_calls
 from tests.helpers.settings import AppTestSettings
 
@@ -157,10 +157,10 @@ def test_physical_expiry_also_removes_checkpoint():
 
 
 def test_scope_tuple_has_no_delimiter_collisions():
-    a = TrustedScope("a:b", "c", "1")
-    b = TrustedScope("a", "b:c", "1")
+    a = patient_scope("a:b", "c", "1")
+    b = patient_scope("a", "b:c", "1")
     assert a.scope_hash != b.scope_hash
-    assert a.scope_hash != TrustedScope("a:b", "c", "1", role="clinician").scope_hash
+    assert a.scope_hash != patient_scope("a:b", "c", "1", role="clinician").scope_hash
     assert a.thread_id("same") != b.thread_id("same")
 
 

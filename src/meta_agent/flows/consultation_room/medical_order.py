@@ -18,6 +18,7 @@ from typing import Any
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
+from .access import ConsultationClient
 from .invite_doctor import parse_disease
 from .medical_record import (
     MEDICAL_INFO_URL,
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # 解析函数（照搬 Dify 代码节点逻辑）
 # --------------------------------------------------------------------------- #
+
 
 def parse_medical_order(arg: Any) -> dict[str, str]:
     """
@@ -78,6 +80,7 @@ def parse_medical_order(arg: Any) -> dict[str, str]:
 # 提示词组装与编排
 # --------------------------------------------------------------------------- #
 
+
 def _build_prompt(disease: str, chat_body: str, query: str) -> str:
     return (
         MEDICAL_ORDER_PROMPT.replace("{{#17888371559050.disease#}}", disease)
@@ -93,8 +96,8 @@ async def run_medical_order(ctx: RunContext, query: str, model: Any) -> str:
             "medical_order_model_unavailable", "医嘱填写模型暂不可用。", outcome="unavailable"
         )
 
-    client = ctx.backend.client
-    token = await _login(client)
+    client = ConsultationClient(ctx)
+    token = await _login(client, ctx.settings)
 
     # 患者病情是可选输入：手机号缺失或病历接口不可用都不阻断，告警后按空继续。
     patient_phone = _phone(ctx, "patientphone", "phone")

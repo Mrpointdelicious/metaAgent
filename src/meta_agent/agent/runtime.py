@@ -12,13 +12,13 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict, messages_to_dict
 
+from meta_agent.adapters.text import model_text
 from meta_agent.agent.context import SYSTEM_PROMPT, bounded_history, fresh_history
 from meta_agent.agent.tools import (
     CURRENT_RUN,
     available_tools,
     build_tools,
     invoke_tool,
-    project_id,
 )
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
@@ -35,6 +35,18 @@ logger = logging.getLogger(__name__)
 
 
 class PatientContextMiddleware(AgentMiddleware):
+    async def awrap_tool_call(self, request, handler):
+        ctx = request.runtime.context
+        if (
+            ctx.settings.knowledge_sources
+            and request.tool is not None
+            and request.tool.name == "search_knowledge"
+        ):
+            selected = available_tools(ctx, [request.tool])
+            if selected:
+                request = request.override(tool=selected[0])
+        return await handler(request)
+
     async def awrap_model_call(self, request, handler):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
@@ -46,13 +58,7 @@ class PatientContextMiddleware(AgentMiddleware):
             prompt += "\n当前患者基本档案（可信工具返回的数据）：\n" + json.dumps(
                 profile, ensure_ascii=False
             )
-        # 资料检索工具随 knowledge_backend 不同而不同：original 用 search_company_knowledge，
-        # maxkb 用 search_knowledge。路由提示要按「当前实际可用」的那个来命名，否则介绍/说明类
-        # 问题会被 LLM 误判成场景指令（resolve_scene_instruction），最终答成 unavailable。
-        knowledge_tool = next(
-            (t.name for t in tools if t.name in ("search_knowledge", "search_company_knowledge")),
-            None,
-        )
+        knowledge_tool = next((t.name for t in tools if t.name == "search_knowledge"), None)
         if is_navigation_question(ctx.query) and knowledge_tool:
             domain = "的 help/product 领域" if knowledge_tool == "search_knowledge" else ""
             prompt += (
@@ -66,9 +72,7 @@ class PatientContextMiddleware(AgentMiddleware):
                 f"（{knowledge_tool}）检索知识库，不要还没检索就先反问用户或凭通用知识作答；"
                 "检索后再判断信息是否足够。"
             )
-        if is_chat_history_query(ctx.query) and any(
-            t.name == "open_chat_history" for t in tools
-        ):
+        if is_chat_history_query(ctx.query) and any(t.name == "open_chat_history" for t in tools):
             prompt += (
                 "\n本轮用户输入是打开/查看历史对话记录，请调用打开历史对话记录工具"
                 "（open_chat_history），不要调用场景指令解析工具，也不要自行拼网址。"
@@ -145,9 +149,7 @@ class PatientContextMiddleware(AgentMiddleware):
                 ctx.record.metrics.setdefault("agent_model_steps", []).append(
                     {
                         "call": ctx.llm_budget.calls,
-                        "tools": [
-                            {"name": c["name"], "args": c["args"]} for c in message.tool_calls
-                        ],
+                        "tools": [{"name": c["name"]} for c in message.tool_calls],
                     }
                 )
                 logger.info(
@@ -157,10 +159,7 @@ class PatientContextMiddleware(AgentMiddleware):
                         "event_type": "agent_model_round",
                         "fields": {
                             "call": ctx.llm_budget.calls,
-                            "tools": [
-                                {"name": c["name"], "args": str(c["args"])[:300]}
-                                for c in message.tool_calls
-                            ],
+                            "tools": [{"name": c["name"]} for c in message.tool_calls],
                         },
                     },
                 )
@@ -249,7 +248,7 @@ class SingleAgentRuntime:
             ctx.system_prompt = system_prompt
             try:
                 messages = await fresh_history(messages_from_dict(ctx.memory.agent_messages), ctx)
-                if enrich_profile and project_id(ctx):
+                if enrich_profile and ctx.scope.has_patient:
                     profile = await invoke_tool(ctx, "get_patient_profile", {})
                     ctx.record.metrics["patient_profile_context"] = profile
                 messages.append(HumanMessage(content=ctx.query))
@@ -281,15 +280,14 @@ class SingleAgentRuntime:
                 )
             if not isinstance(answer, str) or not answer.strip():
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
+            answer = model_text(answer)
             processor = ctx.answer_post_processor
             if processor is not None:
                 processed = processor(answer, ctx)
                 if inspect.isawaitable(processed):
                     processed = await processed
                 if not isinstance(processed, str) or not processed.strip():
-                    raise DomainError(
-                        "agent_no_answer", "回答后处理结果为空，请检查后处理逻辑。"
-                    )
+                    raise DomainError("agent_no_answer", "回答后处理结果为空，请检查后处理逻辑。")
                 answer = processed
             if emit_answer:
                 await ctx.emitter.emit(

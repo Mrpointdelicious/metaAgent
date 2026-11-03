@@ -53,9 +53,7 @@ async def require_service_identity(request: Request) -> ClientIdentity:
     elif settings.service_bearer_token_secondary and hmac.compare_digest(
         provided, settings.service_bearer_token_secondary
     ):
-        client = ClientIdentity(
-            "secondary", frozenset(settings.secondary_excluded_tools)
-        )
+        client = ClientIdentity("secondary", frozenset(settings.secondary_excluded_tools))
     else:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

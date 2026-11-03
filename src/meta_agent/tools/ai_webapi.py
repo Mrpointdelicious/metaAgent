@@ -12,6 +12,7 @@ import httpx
 
 from meta_agent.config import Settings
 from meta_agent.contracts import DomainError
+from meta_agent.orchestration.identity import TrustedScope
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def normalize_artifact_url(settings: Settings, url: str) -> str:
     path = parts.path
     if not path.startswith("/api/"):
         return url
-    path = "/" + prefix + "/" + path[len("/api/"):]
+    path = "/" + prefix + "/" + path[len("/api/") :]
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
@@ -154,40 +155,9 @@ class AIWebApiClient:
     async def close(self) -> None:
         await self.client.aclose()
 
-    async def resolve_patient_identity(self, *, project_patient_id=None, phone=None) -> dict:
-        """参数只允许来自认证网关 inputs；此接口不暴露给语言模型。"""
-        if (project_patient_id is None) == (phone is None):
-            raise BackendCallError("invalid_identity", "请提供且仅提供一种可信患者标识。")
-        if project_patient_id is not None:
-            value = str(project_patient_id)
-            if not value.isascii() or not value.isdigit() or int(value) <= 0:
-                raise BackendCallError("invalid_identity", "项目患者编号须为正整数。")
-            payload = {"project_patient_id": int(value)}
-        else:
-            if not isinstance(phone, str) or not phone.strip() or len(phone) > 32:
-                raise BackendCallError("invalid_identity", "可信手机号无效。")
-            payload = {"phone": phone.strip()}
-        body = await self.post("resolve_patient_identity", payload)
-        data = body.get("data")
-        if (
-            body.get("tool_name") != "resolve_patient_identity"
-            or body.get("contract_version") != "1.6.0"
-            or body.get("status") != "success"
-            or not isinstance(data, dict)
-            or data.get("binding_status") != "resolved"
-            or type(data.get("robot_patient_id")) is not int
-            or data["robot_patient_id"] <= 0
-            or type(data.get("project_patient_id")) is not int
-            or data["project_patient_id"] <= 0
-            or (
-                project_patient_id is not None
-                and data.get("project_patient_id") != int(project_patient_id)
-            )
-        ):
-            raise BackendCallError(
-                "identity_unresolved", "无法唯一确认患者身份。", outcome="clarification"
-            )
-        return data
+    async def resolve_patient_identity(self, scope: TrustedScope) -> TrustedScope:
+        body = await self.post("resolve_patient_identity", scope.patient_payload({}))
+        return scope.bind(body)
 
     def headers(self, endpoint: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -222,10 +192,7 @@ class AIWebApiClient:
                 "IReCog报表暂未启用，仍可查询历史和分析结果。",
                 outcome="unsupported",
             )
-        if (
-            endpoint in ASSESSMENT_REPORT_ENDPOINTS
-            and not self.settings.assessment_reports_enabled
-        ):
+        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
             raise BackendCallError(
                 "capability_disabled",
                 "量表报表暂未启用，仍可查询历史和分析结果。",
@@ -246,26 +213,6 @@ class AIWebApiClient:
             async with self.client.stream(
                 "POST", f"{base}/{endpoint}", json=payload, headers=self.headers(endpoint)
             ) as response:
-                if not response.is_success:
-                    code = response.status_code
-                    message = await _read_error_body(response)
-                    logger.warning(
-                        "backend tool error",
-                        extra={
-                            "event_type": "backend_tool_error",
-                            "dependency": "ai_webapi",
-                            "fields": {
-                                "endpoint": endpoint,
-                                "http_status": code,
-                                "base": base,
-                            },
-                        },
-                    )
-                    raise BackendCallError(
-                        f"http_{code}",
-                        message or _http_fallback_message(code),
-                        retryable=code in {408, 429, 502, 503, 504},
-                    )
                 content = bytearray()
                 async for chunk in response.aiter_bytes():
                     content.extend(chunk)
@@ -273,6 +220,24 @@ class AIWebApiClient:
                         raise BackendCallError(
                             "response_too_large", "工具结果过大，请缩小查询范围。"
                         )
+            if not response.is_success:
+                code = response.status_code
+                reason = None
+                try:
+                    error = json.loads(content)
+                    reasons = error.get("reason_codes") if isinstance(error, dict) else None
+                    if isinstance(reasons, list) and reasons and isinstance(reasons[0], str):
+                        reason = reasons[0]
+                except (ValueError, UnicodeDecodeError):
+                    pass
+                raise BackendCallError(
+                    reason or f"http_{code}",
+                    "患者登录凭证已失效或权限不足，请重新登录。"
+                    if code in {401, 403}
+                    else f"工具服务返回错误（HTTP {code}）。",
+                    retryable=code in {408, 429, 502, 503, 504},
+                    outcome="unavailable" if code in {401, 403} else "failed",
+                )
             body = json.loads(content)
         except httpx.RequestError as exc:
             raise BackendCallError(

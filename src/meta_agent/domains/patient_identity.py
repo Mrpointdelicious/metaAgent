@@ -2,7 +2,7 @@
 创建日期：2026-09-24
 文件功能：识别可信患者身份并装填基本档案，供意图解析器在上下文中参考。
 
-当前数据源为后端契约 1.6.0 的 get_multisource_patient_context；
+当前数据源为后端契约 2.0.0 的 get_multisource_patient_context；
 后端 1.7.0 拆分出的 get_patient_profile 上线后切换调用端点即可，
 解析逻辑与字段白名单不变（契约届时新增 name 字段，保留在上下文中，
 由提示词约束不得在回答中提及）。

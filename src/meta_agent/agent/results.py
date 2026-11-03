@@ -23,9 +23,7 @@ async def collect_agent_results(ctx: RunContext) -> list[dict[str, Any]]:
     for tid, result in ctx.record.results.items():
         raw = None
         if result.evidence_ids:
-            evidence = await ctx.repository.evidence(
-                ctx.scope.scope_hash, result.evidence_ids[0]
-            )
+            evidence = await ctx.repository.evidence(ctx.scope.scope_hash, result.evidence_ids[0])
             raw = evidence.payload if evidence else None
         items.append(
             {
