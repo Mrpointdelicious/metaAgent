@@ -21,7 +21,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from meta_agent.agent.context import BASIC_COMMAND_SYSTEM_PROMPT
 from meta_agent.agent.results import collect_agent_results
@@ -280,6 +281,7 @@ async def _end_consultation(
         goal_id="consultation_room:结束问诊",
     )
 
+
 # category -> 子流程处理器。评估分析暂未使用，不在此映射，由 route() 兜底。
 HANDLERS: dict[str, Handler] = {
     "基础问答": _basic_or_command,
@@ -297,6 +299,10 @@ async def route(
     ctx: RunContext, category: str, reason: str, application: ApplicationService
 ) -> None:
     """按分类结果分发到对应子流程；未知类别兜底到基础问答与指令。"""
+    if category == "评估分析":
+        raise DomainError(
+            "consultation_analysis_not_enabled", "问诊内评估分析暂未启用。", outcome="unsupported"
+        )
     handler = HANDLERS.get(category) or _basic_or_command
     ctx.record.metrics["subtask"] = category
     await handler(ctx, category, reason, application)

@@ -7,8 +7,10 @@ from pydantic import ValidationError
 
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec
+from meta_agent.domains.assessment import AssessmentWorkflow
 from meta_agent.domains.doctors import DoctorAdapter
 from meta_agent.domains.hospital import HospitalAdapter
+from meta_agent.domains.irecog import IReCogWorkflow
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.iretour import IReTourWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
@@ -24,6 +26,8 @@ class DomainDispatcher:
         self._rehab = RehabAdapter()
         self._irego = IReGoWorkflow(self._rehab)
         self._iretour = IReTourWorkflow()
+        self._irecog = IReCogWorkflow()
+        self._assessment = AssessmentWorkflow()
         self._hospital = HospitalAdapter()
         self._scene = SceneAdapter()
         self._doctors = DoctorAdapter()
@@ -42,11 +46,7 @@ class DomainDispatcher:
             raise DomainError("capability_disabled", "能力未启用或执行类型不匹配。")
         if (
             spec.requires_patient
-            and not (
-                ctx.scope.iretour_patient_id
-                if capability == "iretour.execute"
-                else ctx.scope.patient_id
-            )
+            and not ctx.scope.has_patient
             or spec.requires_space
             and not ctx.scope.space_id
         ):
@@ -71,6 +71,10 @@ class DomainDispatcher:
             return await self._irego.execute(task, arguments, ctx)
         if capability == "iretour.execute":
             return await self._iretour.execute(task, arguments, ctx)
+        if capability == "irecog.execute":
+            return await self._irecog.execute(task, arguments, ctx)
+        if capability == "assessment.execute":
+            return await self._assessment.execute(task, arguments, ctx)
         if capability == "hospital.query":
             return await self._hospital.execute(task, arguments, ctx)
 

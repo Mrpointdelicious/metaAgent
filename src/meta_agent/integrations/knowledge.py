@@ -26,8 +26,7 @@ class NativeMaxKBConfig(BaseModel):
     workspace_id: str = Field(default="default", pattern=r"^[A-Za-z0-9_-]{1,100}$")
     catalog_path: str = Field(min_length=1)
     catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    # 空列表 = 不按空间隔离；非空时作为空间白名单强制校验。
-    allowed_space_ids: list[str] = Field(default_factory=list, max_length=100)
+    allowed_space_ids: list[str] = Field(min_length=1, max_length=100)
 
     @model_validator(mode="after")
     def validate_native(self):

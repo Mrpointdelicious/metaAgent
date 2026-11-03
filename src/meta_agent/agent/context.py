@@ -21,10 +21,11 @@ SYSTEM_PROMPT = """你是康复患者的助理。使用中文，直接、自然�
 患者数据分为基本信息、就诊信息、康复信息。基本档案可能已加载；询问病史、诊断、医嘱时查询就诊工具；
 询问训练史、训练记录、训练报告、训练数据（如“查训练报告”“看训练记录”“训练了几次”）时，直接调用康复工具或对应设备历史，不要先调用知识库，也不要说训练报告功能未接入或训练服务不可用；结合两者给建议时获取相关的就诊和康复记录。
 患者身份由系统注入，不猜测患者编号，不使用另一个患者的信息。无需让用户知道设备名后才能查询：
-不知道设备时可先查询康复概览。IReGo身份映射失败不影响基本信息、就诊信息或IReTour。
-先回答有依据的部分。记录不存在、查询失败、功能未接入是不同情况；不把缺少记录说成没有疾病或没有训练；某服务是否可用只能通过实际调用对应工具判断，不把知识库不可用类推成训练/就诊服务不可用。
-查询未查到数据、查询失败或功能未接入时，只对用户说“没查到/暂时查不到”，不要出现 HTTP 状态码、错误码、“系统错误”“服务错误”等内部信息，并顺势引导可用的其他功能（如挂号、查看训练记录）。
-知识库检索无匹配或不可用时，直接用通用知识作答，不要在答复里声明“知识库不可用”“服务不可用”“按通用常识回答”等内部状态或自述，直接给出回答本身。
+不知道设备时可先查询康复概览。所有设备共用已认证患者身份和当前查询范围。
+查询默认覆盖本人全部已确认机构的康复记录；按每条记录的record_tenant说明所属医院/卫生中心。
+当前登录机构不代表历史记录所属机构；未知机构如实说明，不自行补全。A→B→A不表示连续治疗期间。
+query_scope的覆盖不足只说明未确认的来源，不表示患者没有历史记录。切换范围后重新查询引用。
+先回答有依据的部分。记录不存在、查询失败、功能未接入是不同情况；不把缺少记录说成没有疾病或没有训练。
 明确历史记录的日期，不把历史训练当作今天的状态。计划不等于实际完成，缺失值不补成0，未知单位不自行转换。
 允许综合解释和提出建议；个人诊断、用药、病史和既往医嘱只能来自已查询记录。
 给建议时区分既往医嘱、根据记录的推断与一般建议；信息不足时说明具体缺少什么，不编造个性化事实。
@@ -35,14 +36,20 @@ SYSTEM_PROMPT = """你是康复患者的助理。使用中文，直接、自然�
 仅在用户要求生成训练报告图片/报表时调用生成报表工具：先查对应设备的训练分析（session analysis）拿到 session_ref，再用该引用生成报表；记录引用必须来自工具。
 最终展示只需要回答，不输出内部状态码、工具JSON、调试过程或大段字段列表，不提及患者姓名。
 需要说明依据时用自然语言提及就诊或训练日期。不要把回答替换成通用问候语。
+知识检索按本轮工具声明选择领域和逻辑知识源，网络地址、身份、医院范围和检索策略由系统处理。
+依据返回的原文、来源和资料缺口回答；部分覆盖要说明缺口，无证据、权限拒绝和服务故障不能补成事实。
+医院布局、位置和操作须使用当前医院的资料；引用保留真实标题及页码或章节，不编造页码。
+知识证据仅用于当前轮；后续轮涉及知识事实时重新检索当前发布资料。
 """
 
 
-BASIC_COMMAND_SYSTEM_PROMPT = """你是康复机构的智能助理，负责基础问答与界面指令两类任务。
+BASIC_COMMAND_SYSTEM_PROMPT = """你是在线问诊房间的智能助理，负责本次问诊中的基础问答与界面指令。
 先分清用户是「提问」还是「指令」：
 - 提问（询问/介绍/解释/说明/是什么/怎么用，含界面元素、按钮、区域、功能，如“介绍左上角”“个人中心是什么”“这个按钮干什么用”）走知识库：先调用资料检索工具（search_knowledge，依据问题选 help/product/health 领域）作答，不要凭空编造机构或产品信息。
 - 指令（明确的操作/导航/设备控制动词，如“打开个人中心”“去二楼”“返回上个场景”“投屏”“切换视角”“关闭XX”）才调用场景指令解析工具，返回匹配到的指令编码，不要凭常识臆测指令。
 “介绍”“解释”“说明”“是什么”“怎么用”是提问，不是指令，不要调用场景指令解析工具。
+明确要求执行的场景动作调用 navigate_scene；resolve_scene_instruction 仅用于匹配预览，不表示执行。
+匹配成功、发往前端与前端执行完成是不同状态，没有客户端确认时不声称已经执行完成。
 只使用本轮可用的工具；回答简洁自然，最终只输出答复文本，不输出内部状态码、工具 JSON 或调试过程，不提及患者姓名。"""
 
 
@@ -50,24 +57,45 @@ def compact_result(body: dict, budget: int) -> dict:
     """Keep an explicit truncation marker; full data remains in the evidence store."""
     omitted = False
 
-    def shrink(value: Any, text_limit: int, list_limit: int):
+    def shrink(value: Any, text_limit: int | None, list_limit: int | None):
         nonlocal omitted
-        if isinstance(value, str) and len(value) > text_limit:
+        if isinstance(value, str) and text_limit is not None and len(value) > text_limit:
             omitted = True
             return value[:text_limit] + "（摘要截断，可缩小查询范围获取更多内容）"
         if isinstance(value, list):
-            if len(value) > list_limit:
+            if list_limit is not None and len(value) > list_limit:
                 omitted = True
             return [shrink(x, text_limit, list_limit) for x in value[:list_limit]]
         if isinstance(value, dict):
             return {
-                k: shrink(v, text_limit, list_limit)
+                k: shrink(
+                    "报告已生成，请查看报告卡片。"
+                    if isinstance(v, str) and "access_grant=" in v
+                    else v,
+                    text_limit,
+                    list_limit,
+                )
                 for k, v in value.items()
-                if k not in {"display_name_private", "phone", "password"}
+                if k
+                not in {
+                    "display_name_private",
+                    "phone",
+                    "password",
+                    "identity_context_token",
+                    "access_grant",
+                    "system_context",
+                }
             }
         return value
 
-    for text_limit, list_limit in [(1600, 10), (800, 5), (400, 3), (200, 2), (100, 1)]:
+    for text_limit, list_limit in [
+        (None, None),
+        (1600, 10),
+        (800, 5),
+        (400, 3),
+        (200, 2),
+        (100, 1),
+    ]:
         result = shrink(body, text_limit, list_limit)
         if omitted:
             result["context_truncated"] = True
@@ -108,6 +136,22 @@ async def fresh_history(messages: list[BaseMessage], ctx) -> list[BaseMessage]:
         try:
             payload = json.loads(message.content)
         except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("tool_name") == "search_knowledge"
+            and (payload.get("data") or {}).get("retrieval_trace_id")
+        ):
+            # Publication or qualification can change before the next conversational turn.
+            # A live Store TTL is not proof that the source remains published.
+            message.content = json.dumps(
+                {
+                    "tool_name": "search_knowledge",
+                    "status": "expired",
+                    "patient_message": "旧知识结果须按当前发布重新检索，不能直接作为本轮证据。",
+                },
+                ensure_ascii=False,
+            )
             continue
         eid = payload.get("evidence_id") if isinstance(payload, dict) else None
         if eid and await ctx.repository.evidence(ctx.scope.scope_hash, eid) is None:

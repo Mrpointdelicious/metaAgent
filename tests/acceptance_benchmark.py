@@ -10,7 +10,7 @@ import platform
 import time
 from pathlib import Path
 
-from meta_agent.orchestration.identity import TrustedScope
+from tests.helpers.identity import patient_scope
 from tests.helpers.runtime import report_response, request, runtime, scene_response
 
 
@@ -32,7 +32,7 @@ async def measure(parallel, concurrency):
 
         async def one(i):
             start = time.perf_counter()
-            scope = TrustedScope("synthetic", f"actor-{i}", "1", space_id="space", scene_version=7)
+            scope = patient_scope("synthetic", f"actor-{i}", "1", space_id="space", scene_version=7)
             run = await c.application.start(
                 request("打开面板，查询患者信息，解读最近训练并生成报告图片", f"r-{i}", scope=scope)
             )

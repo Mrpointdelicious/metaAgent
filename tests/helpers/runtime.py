@@ -6,16 +6,12 @@
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from urllib.parse import urlsplit
-
-import httpx
 
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import IntentDecision
-from meta_agent.domains.doctors import LOGIN_URL, QUERY_URL
 from meta_agent.infrastructure.container import create_container
-from meta_agent.orchestration.identity import TrustedScope
-from meta_agent.tools.demo import demo_response
+from meta_agent.tools.demo import attach_synthetic_scope, demo_response
+from tests.helpers.identity import patient_scope
 from tests.helpers.settings import AppTestSettings
 
 
@@ -53,21 +49,8 @@ class Backend:
         self.entered = {}
         self.cancelled = []
         self.artifact_ok = True
-        self.directory_entries = None
         self.doctor_count = 0
-        self.client = httpx.AsyncClient(transport=httpx.MockTransport(self._doctor_handler))
-
-    def _doctor_handler(self, request):
-        # 在线医生直连上游的合成响应：登录拿 token，再按 doctor_count 返回医生列表。
-        if request.url.path == urlsplit(LOGIN_URL).path:
-            return httpx.Response(200, json={"token": "synthetic-token"})
-        if request.url.path == urlsplit(QUERY_URL).path:
-            data = [
-                {"name": f"合成医生{i + 1}", "phone": f"1380000000{i}"}
-                for i in range(self.doctor_count)
-            ]
-            return httpx.Response(200, json={"message": "", "data": data})
-        return httpx.Response(404, json={})
+        self.directory_entries = [{"hospital_id": 1, "hospital_name": "合成医院"}]
 
     async def post(self, endpoint, payload):
         self.calls.append((endpoint, deepcopy(payload)))
@@ -86,8 +69,13 @@ class Backend:
                 value = self.overrides[endpoint]
                 if isinstance(value, Exception):
                     raise value
-                return deepcopy(value(payload) if callable(value) else value)
-            return demo_response(endpoint, payload)
+                return attach_synthetic_scope(
+                    deepcopy(value(payload) if callable(value) else value), payload
+                )
+            body = demo_response(endpoint, payload)
+            if endpoint == "search_doctors":
+                body["data"]["count"] = self.doctor_count
+            return attach_synthetic_scope(body, payload)
         except asyncio.CancelledError:
             self.cancelled.append(endpoint)
             raise
@@ -96,17 +84,13 @@ class Backend:
         return self.artifact_ok
 
     async def directory(self):
-        if self.directory_entries is not None:
-            return deepcopy(self.directory_entries)
-        from meta_agent.tools.demo import demo_directory
-
-        return demo_directory()
+        return deepcopy(self.directory_entries)
 
 
 def request(query, rid="r1", *, scope=None, conversation="c1"):
     return ApplicationRequest(
         query,
-        scope or TrustedScope("tenant", "actor", "461", space_id="space", scene_version=7),
+        scope or patient_scope("tenant", "actor", "461", space_id="space", scene_version=7),
         conversation,
         rid,
     )
@@ -127,7 +111,6 @@ async def runtime(**settings):
     try:
         yield container, backend
     finally:
-        await backend.client.aclose()
         await container.close()
 
 
@@ -158,7 +141,7 @@ def scene_response(payload):
 def report_response(payload):
     return {
         "tool_name": "generate_irego_single_session_report",
-        "contract_version": "1.6.0",
+        "contract_version": "2.0.0",
         "request_id": "synthetic",
         "status": "success",
         "meta": {},

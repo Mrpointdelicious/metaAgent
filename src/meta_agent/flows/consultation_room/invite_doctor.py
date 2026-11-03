@@ -20,6 +20,7 @@ from typing import Any
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
+from .access import ConsultationClient
 from .medical_record import MEDICAL_INFO_URL, _extract_content, _get, _login, _phone
 from .prompts import DOCTOR_RECOMMEND_PROMPT
 
@@ -31,6 +32,7 @@ DOCTORS_ALL_URL = "http://192.168.8.71:4000/api/users/all"
 # --------------------------------------------------------------------------- #
 # 解析函数（照搬 Dify 代码节点逻辑）
 # --------------------------------------------------------------------------- #
+
 
 def parse_disease(arg: Any) -> dict[str, str]:
     """从病历信息接口响应中提取「疾病」字段（PatientDetails.MedicalHistory 首个逗号前）。"""
@@ -111,14 +113,16 @@ def parse_doctor_recommendation(arg1: Any, arg2: Any) -> dict[str, Any]:
         doctor_ids = []
         doctor_names = []
         for i, d in enumerate(doctors):
-            payload_doctors.append({
-                "display_index": i + 1,
-                "doctorId": d.get("id"),
-                "name": d.get("name", ""),
-                "phone": d.get("phone", ""),
-                "tenantName": d.get("tenantName", ""),
-                "status": 0,
-            })
+            payload_doctors.append(
+                {
+                    "display_index": i + 1,
+                    "doctorId": d.get("id"),
+                    "name": d.get("name", ""),
+                    "phone": d.get("phone", ""),
+                    "tenantName": d.get("tenantName", ""),
+                    "status": 0,
+                }
+            )
             doctor_ids.append(_to_int(d.get("id")))
             doctor_names.append(d.get("name", ""))
         event = {
@@ -131,7 +135,7 @@ def parse_doctor_recommendation(arg1: Any, arg2: Any) -> dict[str, Any]:
         # 无在线医生：固定兜底文案，payload 为空
         event = {
             "event": "doctor_recommendation",
-            "display_text": "[Answer:]当前没有在线医生。建议您稍后再试，或我可以先为您发送离线邀请，待医生上线后通知。\n",
+            "display_text": "[Answer:]当前没有在线医生，请稍后再试。\n",
             "payload": {},
         }
         has_doctor = False
@@ -162,16 +166,16 @@ _DOCTORS_UNAVAILABLE_RESULT = json.dumps(
 
 
 def _build_prompt(doctor_list: str, disease: str) -> str:
-    return DOCTOR_RECOMMEND_PROMPT.replace(
-        "{{#1789444010244.doctor_list#}}", doctor_list
-    ).replace("{{#17888359554260.disease#}}", disease)
+    return DOCTOR_RECOMMEND_PROMPT.replace("{{#1789444010244.doctor_list#}}", doctor_list).replace(
+        "{{#17888359554260.disease#}}", disease
+    )
 
 
 async def run_invite_doctor(ctx: RunContext, model: Any) -> str:
     """执行邀请医生完整链路，返回最终 result JSON 字符串。"""
-    client = ctx.backend.client
+    client = ConsultationClient(ctx)
 
-    token = await _login(client)
+    token = await _login(client, ctx.settings)
 
     request_phone = _phone(ctx, "requesterphone", "phone")
     if not request_phone:

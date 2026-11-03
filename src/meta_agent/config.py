@@ -141,11 +141,8 @@ class Settings(BaseSettings):
     knowledge_corpus_path: str = ""
     # 多知识源统一契约（knowledge-search-v1）；非空时 search_knowledge 优先走此接入。
     knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
-    # 知识库接入方式：original = 原先知识库（直连 http://114.80.41.254:8086/richtxt，
-    # search_company_knowledge 工具），maxkb = MaxKB 原生 API 直连（search_knowledge 工具）。
-    # 决定启用哪个知识检索工具：original 启用 search_company_knowledge，
-    # maxkb 启用 search_knowledge。
-    knowledge_backend: Literal["original", "maxkb"] = "original"
+    # 兼容旧配置名；知识检索统一使用 search_knowledge，不再启用独立企业问答。
+    knowledge_backend: Literal["maxkb"] = "maxkb"
     knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
     # rag-portfolio 接入：health 全局文献 + 按 spaceId 选择的医院 help/product。
     portfolio_enabled: bool = False
@@ -179,11 +176,55 @@ class Settings(BaseSettings):
     # webyun 直连业务接口的固定服务账号（场景指令 / 医生 / 问诊房间共用的登录凭据）。
     webyun_login_phone: str = ""
     webyun_login_password: SecretStr = SecretStr("")
-    # 场景指令 .NET 直连接口（192.168.8.160/back/*）的 apikey / apitoken。
-    scene_backend_api_key: str = ""
-    scene_backend_api_token: SecretStr = SecretStr("")
-    # 处方疾病提取专用 DeepSeek key（照搬 Dify 代码节点，独立于主 deepseek_api_key）。
-    prescription_deepseek_api_key: SecretStr = SecretStr("")
+
+    @classmethod
+    def settings_customise_sources(
+        cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings
+    ):
+        file_values = dotenv_settings()
+
+        def with_file_tokens(source):
+            def read():
+                values = source()
+                configured = values.get("knowledge_sources")
+                if isinstance(configured, list):
+                    resolved = []
+                    for item in configured:
+                        if isinstance(item, dict):
+                            name = item.get("token_env", "")
+                            if (
+                                isinstance(name, str)
+                                and name
+                                and name not in os.environ
+                                and not item.get("token")
+                            ):
+                                token = file_values.get(name, file_values.get(name.lower()))
+                                if token:
+                                    item = {**item, "token_env": "", "token": token}
+                            native = item.get("maxkb")
+                            if isinstance(native, dict):
+                                native = dict(native)
+                                for field in ("username", "password"):
+                                    name = native.get(field + "_env", "")
+                                    if name and name not in os.environ and not native.get(field):
+                                        secret = file_values.get(
+                                            name, file_values.get(name.lower())
+                                        )
+                                        if secret:
+                                            native.update({field + "_env": "", field: secret})
+                                item = {**item, "maxkb": native}
+                        resolved.append(item)
+                    values = {**values, "knowledge_sources": resolved}
+                return values
+
+            return read
+
+        return (
+            with_file_tokens(init_settings),
+            with_file_tokens(env_settings),
+            with_file_tokens(lambda: file_values),
+            file_secret_settings,
+        )
 
     @field_validator("knowledge_sources")
     @classmethod
@@ -196,12 +237,6 @@ class Settings(BaseSettings):
         issues = []
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
             issues.append("v1仅支持一个worker；扩容须实现跨进程租约与事件回放")
-        if self.knowledge_backend == "maxkb" and not any(
-            source.protocol == "maxkb" for source in self.knowledge_sources
-        ):
-            issues.append(
-                "knowledge_backend=maxkb 但 knowledge_sources 中缺少 protocol=maxkb 的知识源"
-            )
         return issues
 
     def production_issues(self) -> list[str]:

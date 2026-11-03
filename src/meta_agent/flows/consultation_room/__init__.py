@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
 
+from .access import CLINICAL_CATEGORIES, authorize
 from .classifier import parse_classification
 from .prompts import CATEGORIES, CLASSIFIER_PROMPT
 from .subtasks import route
@@ -73,11 +74,7 @@ class Flow:
             extra={
                 "run_id": ctx.record.run_id,
                 "event_type": "consultation_room_classified",
-                "fields": {
-                    "category": category,
-                    "reason": reason[:200],
-                    "llm_output": str(content)[:300],
-                },
+                "fields": {"category": category},
             },
         )
 
@@ -86,7 +83,11 @@ class Flow:
         # DomainError 的 outcome（如 unavailable），避免出现「状态 succeeded 但 task_failed」。
         run_id_token = CURRENT_RUN_ID.set(ctx.record.run_id)
         try:
+            if category in CLINICAL_CATEGORIES:
+                await authorize(ctx, category, self._application)
             await route(ctx, category, reason, self._application)
-            ctx.record.goal_statuses["consultation_room"] = "succeeded"
+            ctx.record.goal_statuses["consultation_room"] = (
+                ctx.record.status if ctx.record.status != "running" else "succeeded"
+            )
         finally:
             CURRENT_RUN_ID.reset(run_id_token)

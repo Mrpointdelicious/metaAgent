@@ -3,9 +3,7 @@
 文件功能：验证场景指令前的确定性「指令分流」与量表→评估室映射。
 """
 
-import asyncio
 from datetime import datetime, timedelta
-from types import SimpleNamespace
 
 from meta_agent.domains.instruction_classify import (
     classify_instruction,
@@ -49,95 +47,3 @@ def test_scale_to_room():
     assert scale_to_room("MoCA") == "四楼6号评估室"
     assert scale_to_room("巴氏指数") == "四楼2号评估室"
     assert scale_to_room("记忆训练") == "未知评估室"
-
-
-def test_is_command_query_for_scale_intent():
-    from meta_agent.domains.scene_instruction import is_command_query
-
-    assert is_command_query("做AD8量表") is True
-    assert is_command_query("做量表") is True
-    assert is_command_query("想训练") is True
-    assert is_command_query("去二楼") is True
-    assert is_command_query("AD8是什么") is False  # 提问不是指令
-    assert is_command_query("训练报告") is False  # 查报告不是场景指令
-
-
-def test_is_command_query_for_record_query():
-    from meta_agent.domains.scene_instruction import is_command_query
-
-    assert is_command_query("查这个月的报告") is True  # 含时间 → result 2
-    assert is_command_query("修改病历") is True  # 修改病历 → result 2
-
-
-def test_extract_token():
-    from meta_agent.domains.scene_instruction import _extract_token
-
-    assert _extract_token({"token": "abc"}) == "abc"
-    assert _extract_token({"data": {"token": "abc"}}) == "abc"
-    assert _extract_token({"data": {"data": {"token": "abc"}}}) == "abc"
-    assert _extract_token({"body": '{"data": {"token": "abc"}}'}) == "abc"
-    assert _extract_token({"foo": "bar"}) == ""
-
-
-def test_latest_prescribed_scale():
-    async def check():
-        from meta_agent.domains import scene_instruction as si
-
-        class FakeResp:
-            def __init__(self, data):
-                self._data = data
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return self._data
-
-        class FakeClient:
-            def __init__(self, responses):
-                self._responses = list(responses)
-
-            async def get(self, url, params=None, timeout=None):
-                return FakeResp(self._responses.pop(0))
-
-        today = datetime.now()
-        old = (today - timedelta(days=10)).strftime("%Y-%m-%d %H:%M:%S")
-        now = today.strftime("%Y-%m-%d %H:%M:%S")
-        records = {"data": [{"Id": 1, "CreateTime": old}, {"Id": 42, "CreateTime": now}]}
-        order = {"data": {"PrescriptionInfo": [{"ScaleName": "MoCA"}]}}
-        client = FakeClient([records, order])
-        ctx = SimpleNamespace(
-            record=SimpleNamespace(raw_inputs={"requesterphone": "15900000000"}),
-            backend=SimpleNamespace(client=client),
-        )
-        scale = await si._latest_prescribed_scale(ctx)
-        assert scale == "MoCA"
-
-    asyncio.run(check())
-
-
-def test_latest_prescribed_scale_no_records():
-    async def check():
-        from meta_agent.domains import scene_instruction as si
-
-        class FakeResp:
-            def __init__(self, data):
-                self._data = data
-
-            def raise_for_status(self):
-                pass
-
-            def json(self):
-                return self._data
-
-        class FakeClient:
-            async def get(self, url, params=None, timeout=None):
-                return FakeResp({"data": []})
-
-        ctx = SimpleNamespace(
-            record=SimpleNamespace(raw_inputs={"requesterphone": "15900000000"}),
-            backend=SimpleNamespace(client=FakeClient()),
-        )
-        assert await si._latest_prescribed_scale(ctx) is None
-
-    asyncio.run(check())

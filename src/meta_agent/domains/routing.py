@@ -20,12 +20,14 @@ class Branch:
 def route_from_inputs(raw_inputs: dict[str, Any]) -> Branch:
     """把前端 inputs 映射到分支名。
 
-    - pos 同时包含「问诊」和「放房间」→ consultation_room（分支 A）
+    - pos 包含连续的「问诊房间」→ consultation_room
     - 其余 → default（分支 B，即当前的 agent 默认流程）
 
     规则变复杂时只改这里，别散落到业务代码。
     """
-    pos = str(raw_inputs.get("pos") or "")
-    if "问诊" in pos and "房间" in pos:
+    pos = raw_inputs.get("pos", "")
+    if not isinstance(pos, str):
+        raise ValueError("pos 必须是字符串")
+    if "问诊房间" in pos.strip():
         return Branch(name="consultation_room")
     return Branch(name="default")

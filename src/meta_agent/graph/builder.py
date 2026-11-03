@@ -8,10 +8,13 @@ from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.runtime import Runtime
 
 from meta_agent.context.compiler import ContextCompiler
+from meta_agent.contracts import DomainError
 from meta_agent.evidence.store import EvidenceRepository
 from meta_agent.graph.state import AgentState
+from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.orchestration.planner import (
     TaskName,
     TaskPlanner,
@@ -55,14 +58,17 @@ def build_agent_graph(
 
     async def execute_domain_workflow(
         state: AgentState,
+        runtime: Runtime[TrustedScope],
     ) -> dict[str, Any]:
         tasks = cast(
             tuple[TaskName, ...],
             tuple(state.get("tasks") or []),
         )
 
+        if not runtime.context or runtime.context.scope_hash != state["scope_hash"]:
+            raise DomainError("patient_scope_mismatch", "缺少当前已认证患者上下文。")
         outcome = await workflow.execute(
-            state["patient_id"],
+            runtime.context,
             tasks,
         )
 
@@ -108,7 +114,7 @@ def build_agent_graph(
             "response_text": response_text,
         }
 
-    builder = StateGraph(AgentState)
+    builder = StateGraph(AgentState, context_schema=TrustedScope)
     builder.add_node("plan_tasks", plan_tasks)
     builder.add_node("execute_domain_workflow", execute_domain_workflow)
     builder.add_node("compose_response", compose_response)
