@@ -40,3 +40,7 @@ build/
 
 # MaxKB 已发布资料目录（由 generate_maxkb_catalog.py 生成，体积 17MB，不入库）
 /maxkb/catalog.json
+
+# 本地设计文档（不随代码提交）
+/平台新增AI功能设计文档.html
+/平台新增AI功能设计文档.md
