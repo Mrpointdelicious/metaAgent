@@ -14,7 +14,7 @@
   - 医嘱填写
   - 结束问诊
 
-评估分析暂未使用：分类器仍可识别，但路由落到兜底「基础问答与指令」。
+评估分析尚未启用：分类器仍可识别，路由明确返回 unsupported。
 """
 
 from __future__ import annotations
@@ -282,7 +282,7 @@ async def _end_consultation(
     )
 
 
-# category -> 子流程处理器。评估分析暂未使用，不在此映射，由 route() 兜底。
+# category -> 子流程处理器。评估分析由 route() 单独返回 unsupported。
 HANDLERS: dict[str, Handler] = {
     "基础问答": _basic_or_command,
     "指令功能": _basic_or_command,

@@ -1,13 +1,13 @@
 """
 创建日期：2026-10-10
-文件功能：分支 A（pos 含「问诊」且含「放房间」）。
+文件功能：pos 包含连续「问诊房间」时的独立问诊流程。
 
-本分支不走 agent：进入后先用一个 LLM 任务分类器把本轮话术归入 9 个任务类别，
+进入后先用一个 LLM 任务分类器把本轮话术归入 9 个任务类别，
 再用 classifier.parse_classification 稳健解析出 category / reason，最后按 category
 路由到 subtasks 里的对应子流程。分类结果不直接下发，只用于选择子流程。
 
-当前进度：分类器 + 解析 + 路由骨架已就绪；子流程按 category 分为 7 路
-（基础问答 / 指令功能合并为一路，其余各一路），各路暂为占位，评估分析暂未使用。
+基础问答/指令使用受限 Agent；临床分支先校验参与关系，再执行业务适配器。
+结束问诊返回前端确认事件；评估分析尚未启用，明确返回 unsupported。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 class Flow:
-    """问诊 + 放房间 分支：LLM 分类 → 解析 → 按 category 路由到 9 个子流程。"""
+    """独立问诊会话：任务分类 → 授权校验 → 按类别执行对应处理器。"""
 
     def __init__(self, application: ApplicationService) -> None:
         self._application = application

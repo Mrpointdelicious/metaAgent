@@ -149,7 +149,7 @@ def post_process(
         break
     # 时间戳作为独立 message 分段下发：前置 [timestamp=…] 进 answer，由 DifyEventAdapter 的
     # split_answer_segments 拆成单独 message（如 "[timestamp=150.26]" + "[Answer:]…"）。
-    # 问诊/放房间分支由调用方传 include_timestamp=False 关闭。
+    # 问诊分支由调用方传 include_timestamp=False 关闭。
     timestamp = ""
     if include_timestamp:
         raw_ts = (ctx.record.raw_inputs or {}).get("timestamp")

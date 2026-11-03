@@ -4,7 +4,7 @@
 
 一条 Flow = 一个分支的完整处理流程。编排层（ApplicationService._dispatch）
 按 domains.routing.route_from_inputs 得到 branch.name，再从这里注册的
-application.flows 查表执行；未注册的分支回退到 default。
+application.flows 查表执行；未注册的分支明确返回不可用。
 
 每个分支是一个文件夹 flows/<branch>/，约定：
   - 文件夹的 __init__.py 导出一个 Flow 类；

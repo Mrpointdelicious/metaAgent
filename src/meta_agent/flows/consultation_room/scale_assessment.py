@@ -554,7 +554,7 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
                 },
             )
 
-    # 提取疾病（直连 DeepSeek，同步阻塞，放入线程池），覆盖会话变量 disease。
+    # 使用已配置模型提取检索词，覆盖当前问诊私有变量。
     last_disease = ctx.memory.get_variable("disease") or ""
     disease_result = await extract_disease(
         ctx, model, medical_text, conversation, query, last_disease
