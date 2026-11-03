@@ -52,7 +52,7 @@ class RunContext:
     interrupted: bool = False
     on_result: Any = None
     runtime_guard: Any = None
-    consultation_access: Any = None
+    business_inputs: dict[str, str] = field(default_factory=dict)
     # 分支流程可在调用 agent 前设置，用于对最终回答做后处理（如剥离 reasoning 标记）。
     # 签名：processor(answer: str, ctx: RunContext) -> str | Awaitable[str]。
     answer_post_processor: Any = None

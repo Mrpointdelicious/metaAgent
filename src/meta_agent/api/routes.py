@@ -22,6 +22,7 @@ from meta_agent.api.security import require_service_identity
 from meta_agent.application.conversations import owner_key
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord
+from meta_agent.domains.routing import route_from_inputs
 from meta_agent.events.dify import DifyEventAdapter as SettledDifyAdapter
 from meta_agent.events.stream import NativeEventAdapter
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
@@ -31,8 +32,13 @@ router = APIRouter()
 
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
+        inputs = dict(payload.inputs)
+        if route_from_inputs(inputs).name == "consultation_room":
+            # Existing clinical lookup parameters do not establish patient v2 identity.
+            for key in ("patientphone", "patientPhone", "patient_phone"):
+                inputs.pop(key, None)
         scope = trusted_scope_from_inputs(
-            dict(payload.inputs),
+            inputs,
             payload.user,
             request.app.state.container.settings.default_tenant_id,
         )
@@ -253,7 +259,7 @@ async def conversation_history(payload, request, conversation_id="", limit=20, c
         visible = []
         for meta in metas:
             binding = await selector.get(scope, meta["conversation_id"])
-            if binding and await can_read_conversation(binding, scope, request):
+            if binding and binding.authorization_scope == scope.scope_hash:
                 visible.append({**meta, "agent_kind": binding.agent_kind})
         visible.sort(key=lambda m: m["updated_at"], reverse=True)
         if cursor:
@@ -276,7 +282,7 @@ async def conversation_history(payload, request, conversation_id="", limit=20, c
             ],
         }
     binding = await selector.get(scope, conversation_id)
-    if not binding or not await can_read_conversation(binding, scope, request):
+    if not binding or binding.authorization_scope != scope.scope_hash:
         raise HTTPException(404, "会话不存在或不属于当前作用域")
     scope = replace(
         scope, agent_kind=binding.agent_kind, consultation_context=binding.consultation_context
@@ -301,41 +307,6 @@ async def conversation_history(payload, request, conversation_id="", limit=20, c
         index = next((i for i, row in enumerate(rows) if row["id"] == cursor), None)
         rows = rows[index + 1 :] if index is not None else []
     return {"limit": limit, "has_more": len(rows) > limit, "data": rows[:limit]}
-
-
-async def can_read_conversation(binding, scope, request):
-    if binding.authorization_scope != scope.scope_hash:
-        return False
-    if binding.agent_kind != "consultation_room" or not binding.authorized_patient_binding:
-        return True
-    from pydantic import ValidationError
-
-    from meta_agent.flows.consultation_room.access import ConsultationAccess
-
-    provider = request.app.state.container.application.consultation_identity_provider
-    if provider is None:
-        return False
-    selected = replace(
-        scope,
-        agent_kind=binding.agent_kind,
-        position=binding.position,
-        consultation_id=binding.consultation_id,
-        consultation_context=binding.consultation_context,
-        consultation_patient_ref=binding.authorized_patient_binding,
-    )
-    try:
-        async with asyncio.timeout(15):
-            access = ConsultationAccess.model_validate(
-                await provider.authorize(selected, "history")
-            )
-        return (
-            access.authorization_scope == scope.scope_hash
-            and access.consultation_context == binding.consultation_context
-            and access.patient_ref == binding.authorized_patient_binding
-            and "history" in access.allowed_categories
-        )
-    except (DomainError, ValidationError, TimeoutError):
-        return False
 
 
 @router.get("/v1/conversations", dependencies=[Depends(require_service_identity)])

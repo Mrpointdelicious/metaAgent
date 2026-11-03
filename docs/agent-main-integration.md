@@ -24,7 +24,7 @@
 
 首次留空 conversation_id。前端保存响应中的实际 ID，后续每轮传回。
 普通 A 带入问诊会创建 B；B 带回普通位置会恢复来源 A（仍有效且授权范围一致），否则创建普通会话。
-从 A 再发起新问诊创建 B2；明确携带有效 B 才恢复该问诊。不同房间位置、consultation_id 或已授权目标患者会新建会话。
+从 A 再发起新问诊创建 B2；明确携带有效 B 才恢复该问诊。不同房间位置、consultation_id 或目标患者上下文会新建会话。
 若两次就诊的 pos 相同且上游无 consultation_id，后端不能识别物理就诊已更换，前端应明确新建会话。
 
 Dify 不允许用未知 ID 创建会话，未知/跨主体 ID 返回 404。原生协议保留首次自定义短 ID 的兼容行为，
@@ -49,7 +49,7 @@ ConversationSelector 在加载历史之前选择不可变会话绑定。
 `GET /v1/conversations`、`GET /v1/messages` 保留列表/分页接口，可传 tenant_id/role。
 携带患者 v2 上下文的查询优先使用 `POST /v1/conversations/query`、`POST /v1/messages/query?conversation_id=...`，
 请求体为 `{ "user": "...", "inputs": { ... } }`，避免在 URL 放登录凭据。
-列表与消息按完整当前授权范围过滤；临床问诊历史还会重新校验参与关系，撤权后不可读。
+列表与消息沿用当前用户、租户、角色、接入方及患者 v2 范围校验；不再额外查询问诊参与关系。
 
 当前已提交代码仍没有完整长期 MemoryService。本次没有合入其他工作区的未提交原型，
 没有把 ConversationState 冒充长期 memory。两个 Agent 共享同一已验证用户的长期偏好属于后续独立阶段；
@@ -66,23 +66,17 @@ ConversationSelector 在加载历史之前选择不可变会话绑定。
 只启用内部映射不能保证外层 Dify 的历史和变量隔离。此次测试覆盖 ASGI 兼容 API 及桥接映射，
 没有访问真实 Dify WebApp、修改前端或部署工作流；实际外层切换仍须接入验收。
 
-## 临床授权依赖
+## 原有问诊取数流程
 
 保留问诊分类及原有业务处理文件，暂不把临床工具整体迁往 AI_WebApi。
-main 的患者 2.0.0 契约、patient_ref、scope_fingerprint、data_scope、机构范围及报表来源快照校验保留。
-旧 patientId/projectPatientId/患者手机号不能替代登录凭据。
+本次新增的独立问诊参与关系 provider 已撤销；五个临床分支直接进入原有的登录、查询、模型生成与事件输出流程，
+不需要另行装配授权组件。服务入口的 Bearer 认证、main 患者 v2 校验及会话作用域隔离保持有效。
 
-服务 Bearer 和 pos 不证明某医生/患者参与本次问诊。启动装配应注入
-`application.consultation_identity_provider`，实现异步 `authorize(scope, category)` 返回 `ConsultationAccess`。
-这是服务端依赖，不能由 inputs 传入；本仓库未臆造真实业务授权接口，因此默认未装配。
-未装配时普通能力、问诊基础问答/场景指令及结束确认可用；涉及患者资料的五个临床分支明确返回 unavailable。
-
-provider 接收已认证 scope 的 actor/role/client_id、position、consultation_id 和上下文。
-先以 category=session 验证参与关系并返回真实 patient_ref，**在选择会话及读取历史之前**完成目标患者绑定；
-之后按实际临床类别重新确认权限，历史查询使用 category=history。
-返回字段包括 authorization_scope、consultation_context、patient_ref、requester_phone、patient_phone、allowed_categories。
-allowed_categories 必须明确包含对应类别（包括 session/history）；作用域、上下文、目标患者每次都须一致。
-联系方式只留运行期，不存 inputs、模型上下文或日志。可信 provider 的真实实现需依据业务登录及参与关系契约补齐。
+问诊处理继续使用原有 patientphone、requesterphone、phone 字段；patientPhone/patient_phone 也映射为患者联系方式。
+这些字段仅作问诊原有业务接口的查询参数，不转换成患者 v2 身份。
+它们只留本次运行上下文，不进入持久化 inputs；目标患者参数变化会创建独立问诊会话。
+普通场景的患者工具仍使用 patient_identity、identity_context_token、patient_ref、scope_fingerprint、data_scope，
+旧患者编号和手机号不能替代该契约；报表的机构范围、来源快照和制品校验保留。
 
 临床登录/读取/详情请求共享工具预算、并发限制和取消，疾病检索词选择使用已配置模型及 LLM 预算，
 不再使用独立 DeepSeek 凭据或关闭 TLS 校验的同步网络调用。
@@ -94,6 +88,6 @@ allowed_categories 必须明确包含对应类别（包括 session/history）；
 离线检查：`uv run --locked --extra dev pytest --ignore=tests/integration -ra`；
 静态检查：`uv run --locked ruff check src tests interactive.py`。
 离线测试拦截非本机真实网络，覆盖真实分类/SingleAgentRuntime/处理器、Dify 两入口与两种响应方式、
-普通↔问诊历史隔离、医生切换目标患者、临床撤权历史、候选选择、临床预算/取消和场景动作不重放。
+普通↔问诊历史隔离、医生切换目标患者、历史归属、原有联系方式透传、候选选择、临床预算/取消和场景动作不重放。
 原本地场景 SQL/匹配测试改为 AI_WebApi 来源、版本、歧义、交付契约测试；临床接口使用合成响应。
-PostgreSQL 实例测试需要独立测试 DSN；真实问诊授权、真实外层 Dify 与临床持久化不在离线通过声明内。
+PostgreSQL 实例测试需要独立测试 DSN；真实外层 Dify 与临床持久化不在离线通过声明内。

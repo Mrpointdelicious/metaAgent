@@ -20,7 +20,7 @@ from typing import Any
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
-from .access import ConsultationClient
+from .client import ConsultationClient
 from .medical_record import MEDICAL_INFO_URL, _extract_content, _get, _login, _phone
 from .prompts import DOCTOR_RECOMMEND_PROMPT
 

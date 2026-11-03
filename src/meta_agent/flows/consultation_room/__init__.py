@@ -6,7 +6,7 @@
 再用 classifier.parse_classification 稳健解析出 category / reason，最后按 category
 路由到 subtasks 里的对应子流程。分类结果不直接下发，只用于选择子流程。
 
-基础问答/指令使用受限 Agent；临床分支先校验参与关系，再执行业务适配器。
+基础问答/指令使用受限 Agent；临床分支执行原有业务适配器。
 结束问诊返回前端确认事件；评估分析尚未启用，明确返回 unsupported。
 """
 
@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
 
-from .access import CLINICAL_CATEGORIES, authorize
 from .classifier import parse_classification
 from .prompts import CATEGORIES, CLASSIFIER_PROMPT
 from .subtasks import route
@@ -31,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 class Flow:
-    """独立问诊会话：任务分类 → 授权校验 → 按类别执行对应处理器。"""
+    """独立问诊会话：任务分类 → 按类别执行对应处理器。"""
 
     def __init__(self, application: ApplicationService) -> None:
         self._application = application
@@ -83,8 +82,6 @@ class Flow:
         # DomainError 的 outcome（如 unavailable），避免出现「状态 succeeded 但 task_failed」。
         run_id_token = CURRENT_RUN_ID.set(ctx.record.run_id)
         try:
-            if category in CLINICAL_CATEGORIES:
-                await authorize(ctx, category, self._application)
             await route(ctx, category, reason, self._application)
             ctx.record.goal_statuses["consultation_room"] = (
                 ctx.record.status if ctx.record.status != "running" else "succeeded"

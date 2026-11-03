@@ -34,7 +34,7 @@ from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
 
-from .access import ConsultationClient
+from .client import ConsultationClient
 from .prompts import MEDICAL_RECORD_FILL_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -335,10 +335,7 @@ def parse_fill_result(arg1: Any, arg2: Any, arg3: Any) -> dict[str, str]:
 
 
 def _phone(ctx: RunContext, *keys: str) -> str:
-    access = ctx.consultation_access
-    if access is None:
-        raise DomainError("consultation_forbidden", "请先确认问诊参与关系。", outcome="unavailable")
-    return access.requester_phone if "requesterphone" in keys else access.patient_phone
+    return next((ctx.business_inputs[key] for key in keys if ctx.business_inputs.get(key)), "")
 
 
 def _to_text(value: Any) -> str:

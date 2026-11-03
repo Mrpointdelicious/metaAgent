@@ -48,7 +48,6 @@ class TrustedScope:
     client_id: str = "primary"
     agent_kind: str = "default"
     consultation_context: str = ""
-    consultation_patient_ref: str = ""
     consultation_id: str = ""
 
     @property

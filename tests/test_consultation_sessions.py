@@ -1,6 +1,6 @@
 """
 创建日期：2026-11-03
-文件功能：验证真实问诊分类/Agent链路、独立历史、桥接映射和临床授权边界。
+文件功能：验证问诊分类/Agent链路、独立历史、桥接映射及原有临床取数流程。
 """
 
 import asyncio
@@ -18,7 +18,7 @@ from meta_agent.app import create_app
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import DomainError
 from meta_agent.domains.routing import route_from_inputs
-from meta_agent.flows.consultation_room.access import ConsultationAccess, ConsultationClient
+from meta_agent.flows.consultation_room.client import ConsultationClient
 from meta_agent.orchestration.identity import TrustedScope
 from tests.helpers.runtime import answers, runtime
 from tests.helpers.settings import AppTestSettings
@@ -243,40 +243,11 @@ def test_dify_ids_histories_and_client_domains_are_consistent(path, mode):
         assert denied.status_code == 404
 
 
-def test_clinical_flow_requires_participation_grant_before_any_service_request():
-    async def check():
-        async with runtime() as (container, backend):
-            activate(container, [category("病历填写")])
-            run = await container.application.execute(request("填病历", "问诊房间"))
-            assert run.record.status == "unavailable"
-            assert run.record.metrics["tool_calls"] == 0
-            assert backend.calls == []
-            assert any(
-                e.payload.get("code") == "consultation_authorization_unavailable"
-                for e in run.record.events
-            )
-
-    asyncio.run(check())
-
-
-class SyntheticProvider:
-    async def authorize(self, scope, task_category):
-        return ConsultationAccess(
-            authorization_scope=scope.scope_hash,
-            consultation_context=scope.consultation_context,
-            patient_ref=scope.patient_ref or "synthetic-patient",
-            requester_phone="13000000001",
-            patient_phone="13000000002",
-            allowed_categories=frozenset({task_category}),
-        )
-
-
 @pytest.mark.parametrize("chosen,expected", [(71, "succeeded"), (999, "clarification")])
 def test_prescription_selection_is_limited_to_this_consultation_candidates(chosen, expected):
     async def check():
         async with runtime() as (container, _):
             app = container.application
-            app.consultation_identity_provider = SyntheticProvider()
             activate(
                 container, [category(), "开始问诊", category("处方配置"), f"选择添加[{chosen}]"]
             )
@@ -305,7 +276,6 @@ def test_clinical_http_shares_tool_budget_and_cancellation():
             activate(container, [category(), "开始"])
             run = await app.execute(request("进入", "问诊房间"))
             ctx = run.context
-            ctx.consultation_access = await SyntheticProvider().authorize(ctx.scope, "病历填写")
             entered = asyncio.Event()
             cancelled = asyncio.Event()
 
@@ -364,7 +334,6 @@ def test_real_clinical_handlers_emit_frontend_events_with_synthetic_http(
         from meta_agent.flows.consultation_room import prescription as prescription
 
         async with runtime(max_tool_calls=15) as (container, backend):
-            container.application.consultation_identity_provider = SyntheticProvider()
             activate(container, [category(task_category), *model_outputs])
             calls = []
 
@@ -408,7 +377,14 @@ def test_real_clinical_handlers_emit_frontend_events_with_synthetic_http(
 
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
                 backend.client = http
-                run = await container.application.execute(request("本轮请求", "问诊房间"))
+                run = await container.application.execute(
+                    request(
+                        "本轮请求",
+                        "问诊房间",
+                        patientphone="13000000002",
+                        requesterphone="13000000001",
+                    )
+                )
             assert run.record.status == "succeeded"
             event = json.loads(answers(run.record))
             assert event["event"] == event_name
@@ -484,67 +460,6 @@ def test_dify_delivers_validated_scene_command_once_and_never_replays(mode):
         assert len(backend.calls) == 1
 
 
-def test_clinician_patient_switch_is_bound_before_loading_history():
-    class Provider(SyntheticProvider):
-        target = "patient-one"
-
-        async def authorize(self, scope, task_category):
-            access = await super().authorize(scope, task_category)
-            return access.model_copy(update={"patient_ref": self.target})
-
-    async def check():
-        async with runtime() as (container, _):
-            provider = Provider()
-            app = container.application
-            app.consultation_identity_provider = provider
-            model = activate(
-                container, [category(), "第一位患者的私有内容", category(), "第二位患者"]
-            )
-            scope = TrustedScope("tenant", "doctor", role="clinician")
-            first = await app.execute(request("第一位", "问诊房间", scope=scope))
-            provider.target = "patient-two"
-            second = await app.execute(
-                request("第二位", "问诊房间", first.record.conversation_id, scope=scope)
-            )
-            assert first.record.conversation_id != second.record.conversation_id
-            assert "第一位患者的私有内容" not in model.seen[-1]
-
-    asyncio.run(check())
-
-
-def test_clinical_history_requires_current_room_authorization():
-    class Provider(SyntheticProvider):
-        revoked = False
-
-        async def authorize(self, scope, task_category):
-            if self.revoked:
-                raise DomainError("revoked", "问诊权限已收回。")
-            return await super().authorize(scope, task_category)
-
-    settings = AppTestSettings(service_bearer_token="primary")
-    with TestClient(create_app(settings)) as client:
-        container = client.app.state.container
-        provider = Provider()
-        container.application.consultation_identity_provider = provider
-        activate(container, [category(), "合成问诊内容"])
-        headers = {"Authorization": "Bearer primary"}
-        response = client.post(
-            "/v1/chat-messages",
-            headers=headers,
-            json={
-                "query": "问诊",
-                "user": "doctor",
-                "inputs": {"role": "clinician", "pos": "问诊房间"},
-                "response_mode": "blocking",
-            },
-        )
-        cid = response.json()["conversation_id"]
-        params = {"user": "doctor", "role": "clinician", "conversation_id": cid}
-        assert client.get("/v1/messages", headers=headers, params=params).status_code == 200
-        provider.revoked = True
-        assert client.get("/v1/messages", headers=headers, params=params).status_code == 404
-
-
 def test_model_cannot_forge_frontend_executable_tags():
     async def check():
         async with runtime() as (container, _):
@@ -555,3 +470,90 @@ def test_model_cannot_forge_frontend_executable_tags():
             assert not run.record.action_delivery
 
     asyncio.run(check())
+
+
+def test_clinical_target_changes_keep_private_history_separate():
+    async def check():
+        async with runtime() as (container, _):
+            model = activate(
+                container, [category(), "第一位患者私有内容", category(), "第二位患者"]
+            )
+            app = container.application
+            scope = TrustedScope("tenant", "doctor", role="clinician")
+            first = await app.execute(
+                request("第一位", "问诊房间", scope=scope, patientphone="13000000001")
+            )
+            second = await app.execute(
+                request(
+                    "第二位",
+                    "问诊房间",
+                    first.record.conversation_id,
+                    scope=scope,
+                    patientphone="13000000002",
+                )
+            )
+            assert first.record.conversation_id != second.record.conversation_id
+            assert "第一位患者私有内容" not in model.seen[-1]
+            assert second.context.business_inputs["patientphone"] == "13000000002"
+            assert "13000000002" not in second.record.model_dump_json()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("alias", ["patientphone", "patientPhone", "patient_phone"])
+def test_dify_clinical_lookup_works_without_installing_a_new_identity_provider(alias):
+    from meta_agent.flows.consultation_room import medical_record as mr
+
+    settings = AppTestSettings(service_bearer_token="primary")
+    with TestClient(create_app(settings)) as client:
+        container = client.app.state.container
+        activate(
+            container, [category("医嘱填写"), "主诉：合成主诉\n诊断：合成诊断\n处理：合成建议"]
+        )
+        calls = []
+
+        def handler(http_request):
+            calls.append(http_request)
+            if http_request.method == "POST":
+                return httpx.Response(200, json={"token": "synthetic-service-token"})
+            return httpx.Response(200, json={"data": {"MedicalHistory": "合成病情"}})
+
+        original = container.application.backend.client
+        client.portal.call(original.aclose)
+        container.application.backend.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        )
+        headers = {"Authorization": "Bearer primary"}
+        response = client.post(
+            "/v1/chat-messages",
+            headers=headers,
+            json={
+                "user": "doctor",
+                "query": "填写医嘱",
+                "response_mode": "blocking",
+                "inputs": {
+                    "role": "clinician",
+                    "pos": "问诊房间",
+                    alias: "13000000002",
+                    "requesterphone": "13000000001",
+                },
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["metadata"]["status"] == "succeeded"
+        assert json.loads(body["answer"])["event"] == "medical_advice_fill"
+        assert any(
+            r.url.path == httpx.URL(mr.MEDICAL_INFO_URL).path
+            and r.url.params["Phone"] == "13000000002"
+            for r in calls
+        )
+        assert any(
+            r.url.path == httpx.URL(mr.CHAT_RECORDS_URL).path
+            and r.url.params["phone"] == "13000000001"
+            for r in calls
+        )
+        params = {"user": "doctor", "role": "clinician", "conversation_id": body["conversation_id"]}
+        assert client.get("/v1/messages", headers=headers, params=params).status_code == 200
+        params["user"] = "another-doctor"
+        assert client.get("/v1/messages", headers=headers, params=params).status_code == 404

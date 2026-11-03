@@ -11,7 +11,12 @@ from typing import Any
 
 from meta_agent.application.composer import ResponseComposer, safe_text
 from meta_agent.application.context import RunContext
-from meta_agent.application.conversations import ConversationSelector, owner_key, public_inputs
+from meta_agent.application.conversations import (
+    ConversationSelector,
+    consultation_inputs,
+    owner_key,
+    public_inputs,
+)
 from meta_agent.config import Settings
 from meta_agent.context.budget import LLMBudget
 from meta_agent.contracts import (
@@ -103,8 +108,6 @@ class ApplicationService:
         # 分支名 -> Flow 的注册表；容器装配时由 flows.register_flows 填充。
         self.flows: dict[str, Any] = {}
         self.conversations = ConversationSelector(repository)
-        # Runtime-only provider; service Bearer and raw phone inputs are insufficient.
-        self.consultation_identity_provider = None
         self.graph: Any = None
         self.runtime_guard: Any = None
 
@@ -114,45 +117,6 @@ class ApplicationService:
             await self.runtime_guard()
         if request.client:
             request = replace(request, scope=replace(request.scope, client_id=request.client.name))
-        if self.consultation_identity_provider:
-            from meta_agent.flows.consultation_room.access import read_access
-
-            try:
-                is_room = route_from_inputs(request.raw_inputs).name == "consultation_room"
-            except ValueError as exc:
-                raise DomainError("invalid_position", str(exc)) from exc
-            if is_room:
-                locator = fingerprint(
-                    [
-                        request.raw_inputs["pos"].strip(),
-                        request.raw_inputs.get("consultation_id", ""),
-                    ]
-                )
-                candidate = replace(
-                    request.scope, agent_kind="consultation_room", consultation_context=locator
-                )
-                candidate = replace(
-                    candidate,
-                    consultation_id=request.raw_inputs.get("consultation_id", ""),
-                    position=request.raw_inputs["pos"].strip(),
-                )
-                access = await read_access(
-                    self.consultation_identity_provider,
-                    candidate,
-                    "session",
-                    self.settings.tool_timeout_seconds,
-                )
-                if (
-                    access.authorization_scope != candidate.scope_hash
-                    or "session" not in access.allowed_categories
-                    or access.consultation_context != locator
-                    or (candidate.has_patient and access.patient_ref != candidate.patient_ref)
-                ):
-                    raise DomainError("consultation_forbidden", "问诊参与关系与当前身份不符。")
-                request = replace(
-                    request,
-                    scope=replace(request.scope, consultation_patient_ref=access.patient_ref),
-                )
         scope = request.scope.scope_hash
         digest = fingerprint(
             {
@@ -161,7 +125,7 @@ class ApplicationService:
                 "conversation_id": request.conversation_id,
                 "space": request.scope.space_id,
                 "scene_version": request.scope.scene_version,
-                "consultation_patient": request.scope.consultation_patient_ref,
+                "business_context": fingerprint(consultation_inputs(request.raw_inputs)),
                 "routing": {
                     k: request.raw_inputs.get(k)
                     for k in ("pos", "consultation_id", "source_app", "caller_conversation_id")
@@ -231,6 +195,7 @@ class ApplicationService:
                 on_result=self._on_result,
                 runtime_guard=self.runtime_guard,
                 client=request.client,
+                business_inputs=consultation_inputs(request.raw_inputs),
             )
             run = ApplicationRun(record, emitter, context=ctx)
             self.active[record.run_id] = run

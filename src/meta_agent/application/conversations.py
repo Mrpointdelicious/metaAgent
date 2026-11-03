@@ -20,7 +20,6 @@ class ConversationBinding(StrictModel):
     authorization_scope: str
     agent_kind: Literal["default", "consultation_room"]
     consultation_context: str = ""
-    authorized_patient_binding: str = ""
     consultation_id: str = ""
     position: str = ""
     origin_default_conversation_id: str = ""
@@ -40,6 +39,19 @@ def public_inputs(inputs):
     return {k: v for k, v in inputs.items() if k in allowed and isinstance(v, (str, int, float))}
 
 
+def consultation_inputs(inputs):
+    """Keep clinical lookup fields runtime-only, outside patient v2 identity."""
+    values = {}
+    for key, aliases in (
+        ("patientphone", ("patientphone", "patientPhone", "patient_phone", "phone")),
+        ("requesterphone", ("requesterphone", "requesterPhone", "requester_phone", "phone")),
+    ):
+        value = next((inputs[name] for name in aliases if inputs.get(name) not in (None, "")), None)
+        if value is not None:
+            values[key] = str(value)
+    return values
+
+
 class ConversationSelector:
     def __init__(self, repository):
         self.repository = repository
@@ -49,6 +61,11 @@ class ConversationSelector:
         data = await self.repository.get(
             "conversation_bindings_v2", owner_key(scope), conversation_id
         )
+        if data:
+            # Read bindings written before the temporary provider was withdrawn.
+            data = {
+                key: value for key, value in data.items() if key != "authorized_patient_binding"
+            }
         return ConversationBinding.model_validate(data) if data else None
 
     async def save(self, binding):
@@ -81,7 +98,10 @@ class ConversationSelector:
         if source_app and not position:
             raise DomainError("bridge_position_required", "桥接请求必须提供当前位置。")
         scope = replace(scope, position=position, consultation_id=business_id)
-        patient = scope.consultation_patient_ref or scope.patient_ref or ""
+        target = consultation_inputs(inputs).get("patientphone", "")
+        patient = scope.patient_ref or ""
+        if target:
+            patient = fingerprint([patient, target])
         context = (
             fingerprint([position, business_id, patient]) if kind == "consultation_room" else ""
         )
@@ -141,7 +161,6 @@ class ConversationSelector:
                 authorization_scope=scope.scope_hash,
                 agent_kind=kind,
                 consultation_context=context,
-                authorized_patient_binding=patient if kind == "consultation_room" else "",
                 consultation_id=business_id,
                 position=position,
                 origin_default_conversation_id=origin,

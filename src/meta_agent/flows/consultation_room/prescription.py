@@ -30,7 +30,7 @@ from typing import Any
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
-from .access import ConsultationClient, fetch_details
+from .client import ConsultationClient, fetch_details
 from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,

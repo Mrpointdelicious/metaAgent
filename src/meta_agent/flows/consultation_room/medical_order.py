@@ -18,7 +18,7 @@ from typing import Any
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 
-from .access import ConsultationClient
+from .client import ConsultationClient
 from .invite_doctor import parse_disease
 from .medical_record import (
     MEDICAL_INFO_URL,
