@@ -32,9 +32,13 @@ class TrustedScope:
     patient_id: str | None = None
     role: str = "patient"
     space_id: str | None = None
+    # 用户当前所在位置（前端 inputs.pos，如「一楼 入口」），仅供上下文/场景定位，不参与身份隔离。
+    position: str | None = None
     scene_version: int | None = None
     iretour_patient_id: str | None = None
     project_patient_id: str | None = None
+    # 身份解析失败时的用户可读说明（如"查无患者"）；None 表示身份正常或无需解析。
+    identity_note: str | None = None
 
     @property
     def scope_hash(self) -> str:
@@ -91,7 +95,8 @@ def trusted_scope_from_inputs(
     role = str(inputs.get("role") or "patient")
     if role not in {"patient", "clinician", "operator"}:
         raise ValueError("role无效")
-    space = _first_value(inputs, ("space_id", "spaceId"))
+    space = _first_value(inputs, ("space_id", "spaceId", "spaceid"))
+    position = _first_value(inputs, ("pos", "position"))
     version = _first_value(inputs, ("scene_version", "sceneVersion"))
     if version is not None and (isinstance(version, bool) or not str(version).isdigit()):
         raise ValueError("scene_version必须是非负整数")
@@ -103,6 +108,7 @@ def trusted_scope_from_inputs(
         patient_id=patient_id,
         role=role,
         space_id=str(space).strip() if space is not None else None,
+        position=str(position).strip() if position is not None else None,
         scene_version=int(version) if version is not None else None,
         iretour_patient_id=tour_id,
         project_patient_id=project_id,

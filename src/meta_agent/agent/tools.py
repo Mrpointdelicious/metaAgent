@@ -171,7 +171,9 @@ TOOL_SPECS = {
     "search_doctors": (
         EmptyArgs,
         "查询当前空间在线医生并处理挂号/选择医生。用户询问在线医生、要求挂号、或选择医生"
-        "（如'选第一个''挂姚雄'）时调用本工具；它会返回在线医生名单，并在用户明确选择时生成挂号指令。",
+        "（如'选第一个''挂姚雄'）时调用本工具；它会返回在线医生名单，并在用户明确选择时生成挂号指令。"
+        "注意：'确认挂号''取消挂号''确认叫号''取消叫号''取号''签到'是界面按钮指令，"
+        "不调用本工具，改走场景指令解析工具（resolve_scene_instruction）。",
     ),
     "navigate_scene": (
         SceneArgs,
@@ -179,7 +181,7 @@ TOOL_SPECS = {
     ),
     "resolve_scene_instruction": (
         EmptyArgs,
-        "解析当前用户话术中的场景操作指令（如'去二楼''打开个人中心''切换视角'等），返回匹配到的场景指令编码；支持一句多个动作。",
+        "解析当前用户话术中的场景操作指令（如'去二楼''打开个人中心''切换视角''打开问诊记录''打开就诊记录''打开训练报告''确认挂号''取消挂号''确认叫号'等），返回匹配到的场景指令编码或记录/报告页面链接；支持一句多个动作。",
     ),
     "query_hospital_operations": (
         HospitalRequest,
@@ -193,6 +195,10 @@ TOOL_SPECS = {
         "请用户确认，不要猜编号。查机构运营数据前先调用，用返回的编号。",
     ),
     "search_knowledge": (KnowledgeArgs, "检索已批准的康复或产品资料，可用于解释与一般建议。"),
+    "search_company_knowledge": (
+        EmptyArgs,
+        "检索企业知识库富文本并依据内容回答，无匹配时回退通用知识。知识库标识与凭证由系统注入。",
+    ),
     "open_chat_history": (
         EmptyArgs,
         "打开或查看历史对话记录（聊天记录）。用户说“打开对话记录”“查看对话记录”“看聊天记录”等时"
@@ -233,8 +239,12 @@ def tool_allowed(ctx, name):
             return False
         return ctx.settings.doctors_enabled
     if name == "search_company_knowledge":
-        return bool((ctx.record.raw_inputs or {}).get("companykb"))
-    return name == "search_knowledge"
+        return ctx.settings.knowledge_backend == "original" and bool(
+            (ctx.record.raw_inputs or {}).get("companykb")
+        )
+    if name == "search_knowledge":
+        return ctx.settings.knowledge_backend == "maxkb"
+    return False
 
 
 def available_tools(ctx, tools):

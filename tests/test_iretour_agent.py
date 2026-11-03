@@ -99,7 +99,9 @@ def test_tour_history_paging_and_selected_session_keep_identity_and_evidence():
 
 
 def test_disabled_tour_reports_are_hidden_but_readers_and_go_reports_remain():
-    ctx = SimpleNamespace(scope=SCOPE, settings=AppTestSettings())
+    ctx = SimpleNamespace(
+        scope=SCOPE, settings=AppTestSettings(), record=SimpleNamespace(raw_inputs={})
+    )
     names = {tool.name for tool in available_tools(ctx, build_tools())}
     assert not names & IRETOUR_REPORT_ENDPOINTS
     assert {

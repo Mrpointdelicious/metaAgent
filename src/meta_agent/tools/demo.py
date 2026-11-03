@@ -8,6 +8,11 @@ from typing import Any
 from meta_agent.contracts import utcnow
 
 
+def demo_directory() -> list[dict[str, Any]]:
+    """dry_run 下的合成机构目录，与 query_hospital_operations 的演示机构对齐。"""
+    return [{"hospital_id": 1, "hospital_name": "合成演示机构"}]
+
+
 def demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
     if "iretour" in endpoint:
         from meta_agent.tools.demo_iretour import iretour_demo_response

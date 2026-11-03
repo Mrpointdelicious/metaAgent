@@ -46,20 +46,24 @@ class PatientContextMiddleware(AgentMiddleware):
             prompt += "\n当前患者基本档案（可信工具返回的数据）：\n" + json.dumps(
                 profile, ensure_ascii=False
             )
-        if is_navigation_question(ctx.query) and any(
-            t.name == "search_knowledge" for t in tools
-        ):
+        # 资料检索工具随 knowledge_backend 不同而不同：original 用 search_company_knowledge，
+        # maxkb 用 search_knowledge。路由提示要按「当前实际可用」的那个来命名，否则介绍/说明类
+        # 问题会被 LLM 误判成场景指令（resolve_scene_instruction），最终答成 unavailable。
+        knowledge_tool = next(
+            (t.name for t in tools if t.name in ("search_knowledge", "search_company_knowledge")),
+            None,
+        )
+        if is_navigation_question(ctx.query) and knowledge_tool:
+            domain = "的 help/product 领域" if knowledge_tool == "search_knowledge" else ""
             prompt += (
                 "\n本轮用户输入是在问路/问怎么去某个楼层或区域，请调用资料检索工具"
-                "（search_knowledge）的 help/product 领域按知识库内容回答，不要凭常识编造电梯、楼梯、"
+                f"（{knowledge_tool}）{domain}按知识库内容回答，不要凭常识编造电梯、楼梯、"
                 "走廊等路线。"
             )
-        if is_knowledge_question(ctx.query) and any(
-            t.name == "search_knowledge" for t in tools
-        ):
+        if is_knowledge_question(ctx.query) and knowledge_tool:
             prompt += (
                 "\n本轮用户输入是介绍/说明/功能类问题，请先调用资料检索工具"
-                "（search_knowledge）检索知识库，不要还没检索就先反问用户或凭通用知识作答；"
+                f"（{knowledge_tool}）检索知识库，不要还没检索就先反问用户或凭通用知识作答；"
                 "检索后再判断信息是否足够。"
             )
         if is_chat_history_query(ctx.query) and any(

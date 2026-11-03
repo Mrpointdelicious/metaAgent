@@ -226,7 +226,7 @@ def classify_instruction(user_input: str) -> str:
     if not text:
         return "3"
 
-    # 1. 含时间 或 修改病历 → 2（暂不处理，回落现有场景匹配）
+    # 1. 含时间 或 修改病历 → 2（走登录→查报告/病历/问诊记录）
     start_time, _ = extract_time_range(text)
     if start_time:
         return "2"

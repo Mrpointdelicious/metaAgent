@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 # 与后端 DoctorToolsService 保持一致的硬编码地址/账号
 LOGIN_URL = "http://www.ga-robot.com/webyun/api/Login/Login"
 QUERY_URL = "http://192.168.8.71:4000/api/users"
-LOGIN_PHONE = "15932910402"
-LOGIN_PASSWORD = "25d55ad283aa400af464c76d713c07ad"
 TIMEOUT = 15  # 秒，对应 C# RequestTimeoutSeconds
 
 # 输出契约常量（与患者工具参考实现保持一致）
@@ -178,7 +176,10 @@ async def _login(client: httpx.AsyncClient, ctx: RunContext) -> tuple[str, str]:
     try:
         resp = await client.post(
             LOGIN_URL,
-            json={"Phone": LOGIN_PHONE, "Password": LOGIN_PASSWORD},
+            json={
+                "Phone": ctx.settings.webyun_login_phone,
+                "Password": ctx.settings.webyun_login_password.get_secret_value(),
+            },
             timeout=TIMEOUT,
         )
     except httpx.TimeoutException:

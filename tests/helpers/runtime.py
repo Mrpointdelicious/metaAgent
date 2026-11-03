@@ -6,9 +6,13 @@
 import asyncio
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from urllib.parse import urlsplit
+
+import httpx
 
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import IntentDecision
+from meta_agent.domains.doctors import LOGIN_URL, QUERY_URL
 from meta_agent.infrastructure.container import create_container
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.tools.demo import demo_response
@@ -49,6 +53,21 @@ class Backend:
         self.entered = {}
         self.cancelled = []
         self.artifact_ok = True
+        self.directory_entries = None
+        self.doctor_count = 0
+        self.client = httpx.AsyncClient(transport=httpx.MockTransport(self._doctor_handler))
+
+    def _doctor_handler(self, request):
+        # 在线医生直连上游的合成响应：登录拿 token，再按 doctor_count 返回医生列表。
+        if request.url.path == urlsplit(LOGIN_URL).path:
+            return httpx.Response(200, json={"token": "synthetic-token"})
+        if request.url.path == urlsplit(QUERY_URL).path:
+            data = [
+                {"name": f"合成医生{i + 1}", "phone": f"1380000000{i}"}
+                for i in range(self.doctor_count)
+            ]
+            return httpx.Response(200, json={"message": "", "data": data})
+        return httpx.Response(404, json={})
 
     async def post(self, endpoint, payload):
         self.calls.append((endpoint, deepcopy(payload)))
@@ -76,6 +95,13 @@ class Backend:
     async def artifact_available(self, url):
         return self.artifact_ok
 
+    async def directory(self):
+        if self.directory_entries is not None:
+            return deepcopy(self.directory_entries)
+        from meta_agent.tools.demo import demo_directory
+
+        return demo_directory()
+
 
 def request(query, rid="r1", *, scope=None, conversation="c1"):
     return ApplicationRequest(
@@ -101,6 +127,7 @@ async def runtime(**settings):
     try:
         yield container, backend
     finally:
+        await backend.client.aclose()
         await container.close()
 
 

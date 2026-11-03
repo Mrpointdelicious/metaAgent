@@ -5,6 +5,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -184,9 +185,7 @@ def test_compaction_keeps_explicit_truncation_and_prescription_name():
 
 
 @pytest.mark.parametrize("project_key", ["projectPatientId", "project_patient_id"])
-def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
-    monkeypatch, project_key
-):
+def test_project_api_does_not_require_robot_mapping(monkeypatch, project_key):
     async def check():
         monkeypatch.setattr(
             "meta_agent.infrastructure.container.create_planner_model",
@@ -199,7 +198,6 @@ def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
             app.state.container = c
             payload = {
                 "query": "查我的病历",
-                "request_id": "native-agent",
                 "user": "actor",
                 "inputs": {project_key: "3799"},
                 "response_mode": "blocking",
@@ -211,28 +209,20 @@ def test_project_native_api_does_not_require_robot_mapping_and_reuses_request(
             ) as client:
                 response = await client.post("/v1/chat", json=payload)
                 body = response.json()
-                assert response.status_code == 200 and body["status"] == "succeeded"
-                assert body["metrics"]["orchestration_mode"] == "agent"
+                assert response.status_code == 200 and body["event"] == "message"
+                assert body["mode"] == "chat"
                 assert "resolve_patient_identity" not in [name for name, _ in backend.calls]
-                count = len(backend.calls)
-                again = (await client.post("/v1/chat", json=payload)).json()
-                assert again["reused"] and again["run_id"] == body["run_id"]
-                assert len(backend.calls) == count
-                events = body["events"]
-                assert events[0]["type"] == "accepted" and events[-1]["type"] == "completed"
-                assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
                 access = {"user": "actor", "inputs": {"projectPatientId": "3799"}}
-                path = f"/v1/runs/{body['run_id']}/status"
-                assert (await client.post(path, json=access)).status_code == 200
+                path = f"/v1/runs/{body['task_id']}/status"
+                status = (await client.post(path, json=access)).json()
+                assert status["metrics"]["orchestration_mode"] == "agent"
                 access["inputs"]["projectPatientId"] = "3780"
                 assert (await client.post(path, json=access)).status_code == 404
                 mixed = {
                     **payload,
-                    "request_id": "mixed",
                     "inputs": {project_key: "3799", "patientId": "999"},
                 }
                 assert (await client.post("/v1/chat", json=mixed)).status_code == 422
-                assert len(backend.calls) == count
 
     asyncio.run(check())
 
@@ -314,5 +304,137 @@ def test_single_agent_can_finish_at_last_budgeted_model_call(monkeypatch):
             assert run.record.metrics["llm_calls"] == 2
             assert run.record.status == "succeeded"
             assert "病历" in answers(run.record)
+
+    asyncio.run(check())
+
+
+def test_scope_for_reads_requesterphone_as_phone():
+    # 回归：前端字段名是 requesterphone（带 er），旧代码只读 requestphone 导致 phone=None、
+    # 身份解析不触发、患者类工具被 tool_allowed 禁用（症状"训练服务不可用"）。
+    async def check():
+        from meta_agent.api.routes import scope_for
+
+        calls = []
+
+        class FakeIdentityClient:
+            async def resolve_patient_identity(self, *, project_patient_id=None, phone=None):
+                calls.append({"project_patient_id": project_patient_id, "phone": phone})
+                return {
+                    "project_patient_id": 3799,
+                    "robot_patient_id": 461,
+                    "binding_status": "resolved",
+                }
+
+        container = SimpleNamespace(
+            ai_webapi_client=FakeIdentityClient(),
+            settings=SimpleNamespace(orchestration_mode="agent", default_tenant_id="default"),
+        )
+        request_ = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=container)))
+
+        scope = await scope_for({"requesterphone": "15800000005"}, "actor", request_)
+        assert calls and calls[0]["phone"] == "15800000005"
+        assert scope.project_patient_id == "3799"
+
+    asyncio.run(check())
+
+
+def test_scope_for_soft_fails_when_identity_unresolved():
+    # 回归：查无患者（身份解析失败）不应 422 拖垮非患者类问答（指令/知识/挂号），
+    # 而应以「无患者身份」继续，患者类工具由 tool_allowed 禁用。
+    async def check():
+        from meta_agent.api.routes import scope_for
+
+        class FakeIdentityClient:
+            async def resolve_patient_identity(self, *, project_patient_id=None, phone=None):
+                raise DomainError(
+                    "identity_unresolved", "没有找到唯一对应的患者。", outcome="clarification"
+                )
+
+        container = SimpleNamespace(
+            ai_webapi_client=FakeIdentityClient(),
+            settings=SimpleNamespace(orchestration_mode="agent", default_tenant_id="default"),
+        )
+        request_ = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=container)))
+
+        scope = await scope_for({"requesterphone": "15932910402"}, "actor", request_)
+        assert scope.project_patient_id is None
+        assert scope.patient_id is None
+        assert scope.identity_note  # 携带"查无患者"说明，供 agent 如实回答
+
+    asyncio.run(check())
+
+
+def test_scope_for_identity_doctor_maps_to_clinician_role():
+    # 回归：前端用 inputs.identity 标注"患者"/"医生"；医生号只作登录人，不拿去解析患者身份。
+    async def check():
+        from meta_agent.api.routes import scope_for
+
+        calls = []
+
+        class FakeIdentityClient:
+            async def resolve_patient_identity(self, *, project_patient_id=None, phone=None):
+                calls.append(phone)
+                raise DomainError(
+                    "identity_unresolved", "没有找到唯一对应的患者。", outcome="clarification"
+                )
+
+        container = SimpleNamespace(
+            ai_webapi_client=FakeIdentityClient(),
+            settings=SimpleNamespace(orchestration_mode="agent", default_tenant_id="default"),
+        )
+        request_ = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(container=container)))
+
+        scope = await scope_for(
+            {"identity": "医生", "requesterphone": "15932910402"}, "actor", request_
+        )
+        assert scope.role == "clinician"  # identity="医生" 映射为 clinician
+        assert calls == []  # 医生自己的号只作登录人，不再拿去解析患者身份
+        assert scope.project_patient_id is None
+        assert scope.identity_note is None  # 医生无患者身份是正常态，不注入误导性提示
+
+    asyncio.run(check())
+
+
+def test_clinician_role_cannot_register_doctors():
+    # 回归：医生角色不能挂号——search_doctors 对医生禁用，答复为固定拒绝话术
+    # 「你是医生身份，无法进行挂号」，不产出 [DoctorRecommend:] 挂号指令。
+    async def check():
+        async with runtime() as (c, backend):
+            backend.doctor_count = 1
+            activate(
+                c,
+                [
+                    tool_call("search_doctors"),
+                    AIMessage("你是医生身份，无法进行挂号。"),
+                ],
+            )
+            doctor = TrustedScope("tenant", "doctor-actor", role="clinician", space_id="space")
+            run = await c.application.execute(request("帮我挂号", scope=doctor))
+            assert "search_doctors" not in [name for name, _ in backend.calls]
+            assert any(r.code == "tool_not_allowed" for r in run.record.results.values())
+            assert "你是医生身份，无法进行挂号" in answers(run.record)
+
+    asyncio.run(check())
+
+
+def test_command_segment_emitted_at_tool_return():
+    # 回归：指令段（[DoctorRecommend:] 等）在工具返回时作为独立 answer_part 实时下发，
+    # 早于最终 [Answer:] 答复；post_process 不再把指令段拼进最终答复。
+    async def check():
+        async with runtime() as (c, backend):
+            backend.doctor_count = 1
+            activate(c, [tool_call("search_doctors"), AIMessage("已为您挂号。")])
+            run = await c.application.execute(request("帮我挂号"))
+            answer_events = [e for e in run.record.events if e.type == "answer_part"]
+            command = next(
+                (e for e in answer_events if e.payload["text"].startswith("[DoctorRecommend:]")),
+                None,
+            )
+            final = next(
+                (e for e in answer_events if e.payload["text"].startswith("[Answer:]")), None
+            )
+            assert command is not None and final is not None
+            assert answer_events.index(command) < answer_events.index(final)
+            assert "[DoctorRecommend:]" not in final.payload["text"]
 
     asyncio.run(check())

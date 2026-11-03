@@ -21,14 +21,13 @@ from urllib.parse import quote
 import httpx
 
 from meta_agent.application.context import RunContext
+from meta_agent.config import get_settings
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec
 from meta_agent.domains.chat_history import is_chat_history_query
 from meta_agent.domains.instruction_classify import classify_instruction, extract_time_range, scale_to_room
 
 VERSION_URL = "http://192.168.8.160/back/version"
 QUERY_URL = "http://192.168.8.160/back/query"
-API_KEY = "7a4453a4e27b91cbf3e28d554d2127e8"
-API_TOKEN = "kfxsb15PUvaaj6rP"
 TIMEOUT = 15  # 秒
 
 # 量表/训练意图分流用到的问诊记录与医嘱接口（ga-robot，无需鉴权）。
@@ -41,8 +40,6 @@ NO_TRAINING_TASK_MSG = "暂无线上训练任务，您可去挂号进行就诊�
 
 # result 2（查报告/病历/问诊记录）用到的登录与查询接口。
 LOGIN_URL = "http://www.ga-robot.com/webyun/api/Login/Login"
-LOGIN_PHONE = "15932910402"
-LOGIN_PASSWORD = "25d55ad283aa400af464c76d713c07ad"
 GET_USER_ROLE_URL = "http://192.168.8.71:8085/webyun/api/SysUserInfo/GetUserIdAndRole"
 GET_ALL_PLANS_URL = "http://192.168.8.71:8085/webyun/api/SysPlan/GetAllPlans"
 GET_CONSULT_RECORDS_URL = "http://192.168.8.71:8085/webyun/api/SysMedical/GetOnlineConsultationRecordsByDoctor"
@@ -72,7 +69,13 @@ PREFIX_TO_TYPE = {
 
 # 前缀剥离词（顺序与 C# PrefixWords 一致，靠前优先）
 # 注意：不剥离“取消”“确认”。它们不是通用动作动词，而是反义语义标记。
-PREFIX_WORDS = ["打开", "关闭", "去", "前往", "进入", "回到", "退回", "带我去", "带我", "帮我"]
+# “我要去/我想去/想去/要去”是“我+意愿+去”的导航说法，须与“带我去”一样把动词前缀剥掉，
+# 否则“我要去三楼”整句无法与点位名“三楼训练区”做子串命中（“带我去三楼”却能命中）。
+PREFIX_WORDS = [
+    "打开", "关闭", "去", "前往", "进入", "回到", "退回",
+    "带我去", "我要去", "我想去", "想去", "要去",
+    "带我", "帮我",
+]
 
 # 同义词展开（顺序与 C# SynonymWords 一致）
 SYNONYMS = [
@@ -93,6 +96,10 @@ ACTION_ALIASES = [
     ("叫号取消", "拒绝叫号"),
     ("放大屏幕", "屏幕放大"),
     ("视角切换", "切换视角"),
+    # 训练报告/就诊记录 与 问诊记录 同属记录页（就诊记录=问诊记录）：
+    # 打开训练报告、打开就诊记录 与 打开问诊记录 都打开「问诊记录」页。
+    ("打开训练报告", "问诊记录"),
+    ("打开就诊记录", "问诊记录"),
 ]
 
 # ---- 拆动作连词/标点（把一句多动作拆成多个 source_text）----
@@ -120,10 +127,15 @@ except Exception:
 
 async def _post(client: httpx.AsyncClient, url: str, payload: dict[str, Any]) -> Any:
     """POST 上游接口，带 apikey/apitoken 头，返回解析后的 JSON。"""
+    settings = get_settings()
     resp = await client.post(
         url,
         json=payload,
-        headers={"apikey": API_KEY, "apitoken": API_TOKEN, "Content-Type": "application/json"},
+        headers={
+            "apikey": settings.scene_backend_api_key,
+            "apitoken": settings.scene_backend_api_token.get_secret_value(),
+            "Content-Type": "application/json",
+        },
         timeout=TIMEOUT,
     )
     resp.raise_for_status()
@@ -256,6 +268,11 @@ _COMMAND_VERBS = ("打开", "关闭", "切换", "前往", "进入", "回到", "�
 # 可独立成指令的动词：投屏、返回、退回（无需带目标，单独也能下指令）。
 _STANDALONE_VERBS = ("投屏", "返回", "退回")
 
+# 不带通用动作前缀（打开/关闭/去…）的场景动作指令，患者可语音触发；
+# 「查看医嘱」是场景里的查看医嘱按钮（指令），属「查看=查数据」规则的例外；
+# 其余动作按钮（填写医嘱、AI推荐、医生叫号、结束问诊取消等）为医生端，不纳入识别。
+_SCENE_ACTION_COMMANDS = ("结束问诊", "邀请医生", "屏幕放大", "查看医嘱")
+
 # 界面按钮指令：确认/取消/拒绝/同意 + 挂号/叫号/取号/签到（如“确认挂号”“取消叫号”）。
 # 注意：单独的“挂号”“我要挂号”是预约请求，应走在线医生工具，不算场景按钮指令。
 _BUTTON_ACTIONS = ("确认", "取消", "拒绝", "同意")
@@ -379,12 +396,15 @@ def is_command_query(query: str) -> bool:
     # 动作别名（取消挂号→挂号返回、放大屏幕→屏幕放大…）→ 指令。
     if any(frm in q for frm, _ in ACTION_ALIASES):
         return True
+    # 无通用动作前缀的动作指令（结束问诊/邀请医生/屏幕放大）→ 指令。
+    if any(cmd in q for cmd in _SCENE_ACTION_COMMANDS):
+        return True
     # 界面按钮指令（确认挂号/取消叫号/拒绝叫号…）→ 指令。
     if any((a + t) in q for a in _BUTTON_ACTIONS for t in _BUTTON_TARGETS):
         return True
-    # 「带我去 / 带我」是明确导航指令（带我去三楼 / 带我过去）；单独出现也算指令，
-    # 交给 resolve_scene_instruction 结合上一轮找回目标。
-    if q.startswith("带我去") or q.startswith("带我"):
+    # 「带我去 / 带我 / 我要去 / 我想去 / 想去 / 要去」是明确导航指令（带我去三楼 /
+    # 我要去三楼 / 带我过去）；单独出现也算指令，交给 resolve_scene_instruction 结合上一轮找回目标。
+    if q.startswith(("带我去", "带我", "我要去", "我想去", "想去", "要去")):
         return True
     # 剥掉礼貌前缀后，以强指令动词开头 → 指令。
     stripped = q
@@ -949,12 +969,15 @@ def _web_contract(url: str, msg: str) -> dict[str, Any]:
 
 
 async def _login_token(ctx: RunContext) -> str:
-    """固定服务账号登录（Phone 固定 LOGIN_PHONE），取 JWT token。"""
+    """固定服务账号登录（Phone/Password 来自 settings.webyun_*），取 JWT token。"""
     client = ctx.backend.client
     try:
         resp = await client.post(
             LOGIN_URL,
-            json={"Phone": LOGIN_PHONE, "Password": LOGIN_PASSWORD},
+            json={
+                "Phone": ctx.settings.webyun_login_phone,
+                "Password": ctx.settings.webyun_login_password.get_secret_value(),
+            },
             timeout=TIMEOUT,
         )
         resp.raise_for_status()
