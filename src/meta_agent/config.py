@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     """MetaAgent 的强类型运行配置。"""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", ".env.local"),
         env_prefix="META_AGENT__",
         env_file_encoding="utf-8",
         case_sensitive=False,
@@ -28,7 +28,22 @@ class Settings(BaseSettings):
     service_version: str = "1.0.0"
     app_env: Literal["development", "test", "production"] = "development"
     log_level: str = "INFO"
+    # 结构化 JSON 日志落盘目录；为空时仅输出到 stdout（终端 / Docker 日志）。
+    # 配置后会在该目录下按 log_file_name 写滚动文件，便于事后排查。
+    log_dir: str = ""
+    log_file_name: str = "meta_agent.log"
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
+    log_backup_count: int = Field(default=5, ge=0, le=100)
     service_bearer_token: str = ""
+    # 第二个前端的独立 Bearer Token（可选）；命中后按 secondary 客户端处理，
+    # 工具可见性受 secondary_excluded_tools 约束（默认去掉挂号）。
+    service_bearer_token_secondary: str = ""
+    # secondary 客户端禁用的工具名集合（默认去掉挂号 search_doctors）。
+    secondary_excluded_tools: list[str] = Field(default_factory=lambda: ["search_doctors"])
+    # 允许跨域访问的前端来源（Origin）。浏览器直连本服务时，据此返回 CORS 头；
+    # 默认 "*" 放行所有来源。生产环境建议收敛为具体前端地址，JSON 数组格式，
+    # 如 ["https://metaverse.example.com"]。
+    cors_allow_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     ai_webapi_base_url: str = "http://host.docker.internal:5043/api/ai/patients/tools"
     ai_webapi_bearer_token: str = ""
@@ -40,10 +55,16 @@ class Settings(BaseSettings):
     agent_model_timeout_seconds: float = Field(default=30, gt=0, le=120)
     agent_tool_output_tokens: int = Field(default=3000, ge=512, le=8000)
     agent_history_tokens: int = Field(default=8000, ge=1024, le=20000)
+    # 自定义 Agent 系统提示词；为空时使用内置 SYSTEM_PROMPT。
+    # 设置后整体替换内置提示词，便于不重建镜像就调整回答边界/风格。
+    agent_system_prompt: str = ""
 
     persistence_backend: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str = ""
     auto_setup_persistence: bool = False
+    # postgres 连接超时（秒）。Windows Docker 下 postgres 磁盘 IO 慢、checkpoint 高峰时
+    # 单连接握手可达 2s+，启动并发建多个连接时 5s 会不够导致 ConnectionTimeout 启动失败。
+    postgres_connect_timeout_seconds: int = Field(default=30, ge=5, le=120)
     evidence_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     default_tenant_id: str = "default"
 
@@ -101,7 +122,10 @@ class Settings(BaseSettings):
     model_context_tokens: int = Field(default=32768, ge=4096)
     answer_mode: Literal["template", "llm_select"] = "template"
     answer_model: str = "deepseek:deepseek-chat"
-    conversation_ttl_seconds: int = Field(default=86400, ge=60, le=86400)
+    conversation_ttl_seconds: int = Field(default=604800, ge=60, le=31536000)
+    # 会话历史持久化的最大轮数（每轮 = 用户问 + 助手答各一条）。/v1/messages 读这份数据，
+    # 之前硬编码 6 轮导致历史会话只显示最近几条；读取端的 agent 上下文仍各自截断，不受此影响。
+    conversation_turn_limit: int = Field(default=100, ge=1, le=500)
     cache_ttl_seconds: int = Field(default=300, ge=0, le=300)
     doctor_ttl_seconds: int = Field(default=30, ge=0, le=30)
     run_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
@@ -115,9 +139,29 @@ class Settings(BaseSettings):
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
     knowledge_corpus_path: str = ""
+    # 多知识源统一契约（knowledge-search-v1）；非空时 search_knowledge 优先走此接入。
     knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
+    # 兼容旧配置名；知识检索统一使用 search_knowledge，不再启用独立企业问答。
+    knowledge_backend: Literal["maxkb"] = "maxkb"
     knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
+    # rag-portfolio 接入：health 全局文献 + 按 spaceId 选择的医院 help/product。
+    portfolio_enabled: bool = False
+    portfolio_base_url: str = "http://rag-portfolio-api:8000"
+    portfolio_token: SecretStr = SecretStr("")
+    portfolio_kb_ids: list[str] = Field(default_factory=list)
+    portfolio_space_kb_ids: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    portfolio_help_token: SecretStr = SecretStr("")
+    portfolio_timeout_seconds: float = Field(default=20, gt=0, le=40)
+    portfolio_top_k: int = Field(default=5, ge=1, le=20)
+    portfolio_context_tokens: int = Field(default=4000, ge=128, le=16000)
+    portfolio_scene_catalog_enabled: bool = False
+    portfolio_scene_catalog_ttl_seconds: float = Field(default=30, ge=1, le=300)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
+    # 制品 URL 反代前缀归一化：后端返回的 image_url 用内部路径 /api/ai/...，
+    # 而公开入口是 AI_WEBAPI_*_BASE_URL 里的 /aiwebapi/ai/...（差一个反代前缀）。
+    # 非空时把 image_url 首段路径 /api/ 替换为该前缀（如 aiwebapi），使 [Cweb] 展示
+    # 和 artifact_available 可用性检查都指向公开地址；留空则不重写（原样透传）。
+    ai_webapi_artifact_path_prefix: str = ""
     # 患者姓名是否装入 LLM 上下文（关闭=姓名不装填，仅白名单其余字段；开启后仍受
     # “不得提及患者姓名”提示词约束）。默认关闭，联调阶段保持 false。
     patient_brief_include_name: bool = False
@@ -126,6 +170,12 @@ class Settings(BaseSettings):
     irecog_reports_enabled: bool = False
     assessment_reports_enabled: bool = False
     ai_webapi_hospital_base_url: str = ""
+    # 医院运营接口可单独指向另一套后端（如 5043），其鉴权 token 与此字段覆盖；
+    # 为空时沿用 ai_webapi_bearer_token。
+    ai_webapi_hospital_bearer_token: str = ""
+    # webyun 直连业务接口的固定服务账号（场景指令 / 医生 / 问诊房间共用的登录凭据）。
+    webyun_login_phone: str = ""
+    webyun_login_password: SecretStr = SecretStr("")
 
     @classmethod
     def settings_customise_sources(

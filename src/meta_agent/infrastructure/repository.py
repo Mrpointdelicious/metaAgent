@@ -12,6 +12,7 @@ from pydantic import Field
 from meta_agent.config import Settings
 from meta_agent.contracts import (
     ConversationState,
+    DomainError,
     FactView,
     RunRecord,
     StrictModel,
@@ -158,9 +159,16 @@ class Repository:
     async def save_conversation(self, thread_id: str, memory: ConversationState) -> None:
         memory.updated_at = utcnow()
         # A turn may contain a large answer; retention never stores full tool JSON.
+        # 保留完整会话历史（上限 conversation_turn_limit 轮），供 /v1/messages 返回；
+        # agent 上下文窗口在读取端（parser/context）自行截断，不依赖这里的持久化轮数。
+        # 只截断 user/assistant 文本，保留 created_at 等其余字段。
         memory.turns = [
-            {"user": t.get("user", "")[:2000], "assistant": t.get("assistant", "")[:2000]}
-            for t in memory.turns[-6:]
+            {
+                **t,
+                "user": str(t.get("user", ""))[:2000],
+                "assistant": str(t.get("assistant", ""))[:2000],
+            }
+            for t in memory.turns[-self.settings.conversation_turn_limit :]
         ]
         await self.put(
             "conversations",
@@ -169,6 +177,60 @@ class Repository:
             memory.model_dump(mode="json"),
             self.settings.conversation_ttl_seconds,
         )
+
+    async def save_conversation_index(
+        self,
+        user: str,
+        conversation_id: str,
+        thread_id: str,
+        inputs: dict[str, Any],
+        name: str,
+    ) -> None:
+        """维护 user -> 会话 的索引；created_at / name 仅首次写入时确定。"""
+        now = utcnow().timestamp()
+        existing = await self.get("conversation_index", user, conversation_id)
+        if existing:
+            if existing["thread_id"] != thread_id:
+                raise DomainError("conversation_binding_changed", "会话归属不能修改。")
+            meta = {
+                **existing,
+                "thread_id": thread_id,
+                "inputs": inputs,
+                "updated_at": now,
+            }
+        else:
+            meta = {
+                "conversation_id": conversation_id,
+                "thread_id": thread_id,
+                "name": (name or "新对话")[:50],
+                "inputs": inputs,
+                "status": "normal",
+                "created_at": now,
+                "updated_at": now,
+            }
+        await self.put(
+            "conversation_index",
+            user,
+            conversation_id,
+            meta,
+            self.settings.conversation_ttl_seconds,
+        )
+
+    async def conversation_meta(self, user: str, conversation_id: str) -> dict[str, Any] | None:
+        return await self.get("conversation_index", user, conversation_id)
+
+    async def list_conversations(self, user: str, limit: int = 1000) -> list[dict[str, Any]]:
+        items = await self.store.asearch(
+            self.namespace("conversation_index", user),
+            filter={"expires_at": {"$gt": utcnow().timestamp()}},
+            limit=limit,
+        )
+        metas: list[dict[str, Any]] = []
+        for item in items:
+            value = item.value.get("value") if isinstance(item.value, dict) else None
+            if isinstance(value, dict):
+                metas.append(value)
+        return metas
 
     async def save_run(self, record: RunRecord) -> None:
         async with self._run_locks.hold(record.run_id):

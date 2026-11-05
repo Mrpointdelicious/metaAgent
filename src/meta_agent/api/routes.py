@@ -4,11 +4,13 @@
 """
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from meta_agent.adapters.dify import DifyEventAdapter
 from meta_agent.api.schemas import (
     ChatRequest,
     DifyChatRequest,
@@ -17,9 +19,11 @@ from meta_agent.api.schemas import (
     RunAccessRequest,
 )
 from meta_agent.api.security import require_service_identity
+from meta_agent.application.conversations import owner_key
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
-from meta_agent.contracts import DomainError, RunRecord, fingerprint
-from meta_agent.events.dify import DifyEventAdapter
+from meta_agent.contracts import DomainError, RunRecord
+from meta_agent.domains.routing import route_from_inputs
+from meta_agent.events.dify import DifyEventAdapter as SettledDifyAdapter
 from meta_agent.events.stream import NativeEventAdapter
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
 
@@ -28,8 +32,13 @@ router = APIRouter()
 
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
+        inputs = dict(payload.inputs)
+        if route_from_inputs(inputs).name == "consultation_room":
+            # Existing clinical lookup parameters do not establish patient v2 identity.
+            for key in ("patientphone", "patientPhone", "patient_phone"):
+                inputs.pop(key, None)
         scope = trusted_scope_from_inputs(
-            dict(payload.inputs),
+            inputs,
             payload.user,
             request.app.state.container.settings.default_tenant_id,
         )
@@ -37,6 +46,9 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
                 scope
             )
+        client = getattr(getattr(request, "state", None), "client", None)
+        if client:
+            scope = replace(scope, client_id=client.name)
         return scope
     except DomainError as exc:
         raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
@@ -66,17 +78,26 @@ async def start_chat(payload: NativeChatRequest, request: Request):
     if len(payload.query) > container.settings.max_query_length:
         raise HTTPException(422, "query 超过本轮长度限制")
     scope = await scope_for(payload, request)
-    conversation = (
-        payload.conversation_id
-        or "conversation_" + fingerprint([scope.scope_hash, payload.request_id])[:24]
-    )
+    conversation = payload.conversation_id
     try:
         run = await container.application.start(
-            ApplicationRequest(payload.query, scope, conversation, payload.request_id)
+            ApplicationRequest(
+                payload.query,
+                scope,
+                conversation,
+                payload.request_id,
+                raw_inputs=dict(payload.inputs),
+                client=getattr(getattr(request, "state", None), "client", None),
+                protocol="dify" if isinstance(payload, DifyChatRequest) else "native",
+            )
         )
     except DomainError as exc:
         raise HTTPException(
-            409 if exc.code == "idempotency_conflict" else 422,
+            409
+            if exc.code == "idempotency_conflict"
+            else 404
+            if exc.code == "conversation_not_found"
+            else 422,
             {"code": exc.code, "message": exc.message},
         ) from exc
     return run, scope
@@ -116,7 +137,7 @@ async def chat(payload: ChatRequest, request: Request):
 @router.post("/compat/dify/v1/chat-messages", dependencies=[Depends(require_service_identity)])
 async def dify_chat(payload: DifyChatRequest, request: Request):
     run, scope = await start_chat(payload, request)
-    adapter = DifyEventAdapter()
+    adapter = SettledDifyAdapter()
     if run.reused:
         return JSONResponse(
             adapter.message(run.record, reused=True),
@@ -124,7 +145,7 @@ async def dify_chat(payload: DifyChatRequest, request: Request):
         )
     if payload.response_mode == "streaming":
         return StreamingResponse(
-            dify_stream(run, request),
+            stream_dify(run, request),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -137,11 +158,19 @@ async def dify_chat(payload: DifyChatRequest, request: Request):
     except asyncio.CancelledError:
         await request.app.state.container.application.cancel(scope.scope_hash, run.record.run_id)
         raise
-    return JSONResponse(adapter.message(run.record))
+    body = adapter.message(run.record)
+    commands = [e.payload["command_code"] for e in run.record.events if e.type == "action_ready"]
+    if commands:
+        body["answer"] = "".join(commands) + body["answer"]
+    return JSONResponse(body)
 
 
-async def dify_stream(run: ApplicationRun, request: Request):
-    adapter = DifyEventAdapter()
+async def stream_dify(run: ApplicationRun, request: Request):
+    adapter = DifyEventAdapter(run.record)
+    application = request.app.state.container.application
+    incremental = (
+        bool(application.agent_runtime) or run.record.metrics.get("branch") == "consultation_room"
+    )
     exhausted = False
     try:
         while True:
@@ -153,10 +182,17 @@ async def dify_stream(run: ApplicationRun, request: Request):
             if event is None:
                 exhausted = True
                 break
-        # Native answer revisions replace prior text; Dify messages append text.
-        # Publish the settled answer once, after draining progress and tool events.
-        for frame in adapter.frames(run.record):
-            yield adapter.encode(frame)
+            # Planned answers can replace earlier revisions. Publish their settled
+            # projection once; consultation/agent answers are final event payloads.
+            if incremental:
+                frame = adapter.encode(event)
+                if frame:
+                    yield frame
+                await run.emitter.mark_dispatched(event)
+        if not incremental:
+            settled = SettledDifyAdapter()
+            for frame in settled.frames(run.record):
+                yield settled.encode(frame)
     finally:
         if not exhausted:
 
@@ -167,6 +203,9 @@ async def dify_stream(run: ApplicationRun, request: Request):
                 await run.emitter.disconnect()
 
             await asyncio.shield(terminate())
+
+
+dify_stream = stream_dify
 
 
 async def stream(run: ApplicationRun, request: Request):
@@ -208,6 +247,122 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")
     return snapshot(record)
+
+
+async def conversation_history(payload, request, conversation_id="", limit=20, cursor=""):
+    scope = await scope_for(payload, request)
+    repository = request.app.state.container.repository
+    selector = request.app.state.container.application.conversations
+    limit = max(1, min(limit, 100))
+    if not conversation_id:
+        metas = await repository.list_conversations(owner_key(scope), limit=1000)
+        visible = []
+        for meta in metas:
+            binding = await selector.get(scope, meta["conversation_id"])
+            if binding and binding.authorization_scope == scope.scope_hash:
+                visible.append({**meta, "agent_kind": binding.agent_kind})
+        visible.sort(key=lambda m: m["updated_at"], reverse=True)
+        if cursor:
+            index = next((i for i, m in enumerate(visible) if m["conversation_id"] == cursor), None)
+            visible = visible[index + 1 :] if index is not None else []
+        return {
+            "limit": limit,
+            "has_more": len(visible) > limit,
+            "data": [
+                {
+                    "id": m["conversation_id"],
+                    "name": m["name"],
+                    "inputs": m["inputs"],
+                    "status": "normal",
+                    "agent_kind": m["agent_kind"],
+                    "created_at": int(m["created_at"]),
+                    "updated_at": int(m["updated_at"]),
+                }
+                for m in visible[:limit]
+            ],
+        }
+    binding = await selector.get(scope, conversation_id)
+    if not binding or binding.authorization_scope != scope.scope_hash:
+        raise HTTPException(404, "会话不存在或不属于当前作用域")
+    scope = replace(
+        scope, agent_kind=binding.agent_kind, consultation_context=binding.consultation_context
+    )
+    memory = await repository.conversation(scope.thread_id(conversation_id))
+    rows = [
+        {
+            "id": f"{conversation_id}:{i}",
+            "conversation_id": conversation_id,
+            "query": turn["user"],
+            "answer": turn["assistant"],
+            "inputs": {},
+            "created_at": turn.get("created_at", int(binding.created_at) + i),
+            "feedback": None,
+            "retriever_resources": [],
+            "message_files": [],
+        }
+        for i, turn in enumerate(memory.turns)
+    ]
+    rows.reverse()
+    if cursor:
+        index = next((i for i, row in enumerate(rows) if row["id"] == cursor), None)
+        rows = rows[index + 1 :] if index is not None else []
+    return {"limit": limit, "has_more": len(rows) > limit, "data": rows[:limit]}
+
+
+@router.get("/v1/conversations", dependencies=[Depends(require_service_identity)])
+async def list_conversations(
+    user: str,
+    request: Request,
+    last_id: str = "",
+    limit: int = 20,
+    tenant_id: str = "",
+    role: str = "patient",
+):
+    inputs = {"role": role}
+    if tenant_id:
+        inputs["tenant_id"] = tenant_id
+    return await conversation_history(
+        RunAccessRequest(user=user, inputs=inputs), request, limit=limit, cursor=last_id
+    )
+
+
+@router.get("/v1/messages", dependencies=[Depends(require_service_identity)])
+async def list_messages(
+    user: str,
+    conversation_id: str,
+    request: Request,
+    limit: int = 20,
+    first_id: str = "",
+    last_id: str = "",
+    tenant_id: str = "",
+    role: str = "patient",
+):
+    inputs = {"role": role}
+    if tenant_id:
+        inputs["tenant_id"] = tenant_id
+    return await conversation_history(
+        RunAccessRequest(user=user, inputs=inputs),
+        request,
+        conversation_id,
+        limit,
+        first_id or last_id,
+    )
+
+
+@router.post("/v1/conversations/query", dependencies=[Depends(require_service_identity)])
+async def query_conversations(payload: RunAccessRequest, request: Request, limit: int = 20):
+    return await conversation_history(payload, request, limit=limit)
+
+
+@router.post("/v1/messages/query", dependencies=[Depends(require_service_identity)])
+async def query_messages(
+    payload: RunAccessRequest,
+    request: Request,
+    conversation_id: str,
+    limit: int = 20,
+    first_id: str = "",
+):
+    return await conversation_history(payload, request, conversation_id, limit, first_id)
 
 
 @router.post("/compat/dify/v1/workflows/run", dependencies=[Depends(require_service_identity)])

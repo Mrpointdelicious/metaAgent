@@ -19,6 +19,7 @@ from meta_agent.config import Settings
 from meta_agent.contracts import DomainError
 from meta_agent.execution.dispatcher import DomainDispatcher
 from meta_agent.execution.scheduler import TaskScheduler
+from meta_agent.flows import register_flows
 from meta_agent.graph.runtime import build_runtime_graph
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
@@ -87,7 +88,9 @@ async def create_container(settings: Settings) -> ServiceContainer:
 
             if not settings.postgres_dsn:
                 raise RuntimeError("PostgreSQL 持久化缺少 META_AGENT__POSTGRES_DSN")
-            dsn = make_conninfo(settings.postgres_dsn, connect_timeout=5)
+            dsn = make_conninfo(
+                settings.postgres_dsn, connect_timeout=settings.postgres_connect_timeout_seconds
+            )
             lease = await stack.enter_async_context(
                 await AsyncConnection.connect(dsn, autocommit=True)
             )
@@ -149,6 +152,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
         )
         if not agent_runtime:
             application.graph = graph
+        register_flows(application)
         container = ServiceContainer(
             settings,
             graph,

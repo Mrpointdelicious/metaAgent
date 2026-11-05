@@ -61,7 +61,7 @@ def test_memory_retains_six_turns_and_latest_record():
             for i in range(8):
                 await c.application.execute(request("你好", f"greet-{i}"))
             memory = await c.repository.conversation(req.scope.thread_id(req.conversation_id))
-            assert len(memory.turns) == 6
+            assert len(memory.turns) == 9
             assert memory.current_record.session_ref == "synthetic-session"
             assert all(t["assistant"] for t in memory.turns)
 

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from meta_agent.api.routes import router
 from meta_agent.config import Settings, get_settings
@@ -20,7 +21,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        configure_logging(resolved_settings.log_level)
+        configure_logging(
+            resolved_settings.log_level,
+            log_dir=resolved_settings.log_dir,
+            log_file_name=resolved_settings.log_file_name,
+            log_max_bytes=resolved_settings.log_max_bytes,
+            log_backup_count=resolved_settings.log_backup_count,
+        )
         issues = resolved_settings.production_issues()
         if issues:
             raise RuntimeError("；".join(issues))
@@ -35,6 +42,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="MetaAgent Rehabilitation Orchestration Service",
         version=resolved_settings.service_version,
         lifespan=lifespan,
+    )
+    # 浏览器前端直连本服务时，按配置的 Origin 返回 CORS 头，避免跨域请求被浏览器拦截。
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=resolved_settings.cors_allow_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
     application.include_router(router)
     return application

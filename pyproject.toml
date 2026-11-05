@@ -33,6 +33,11 @@ llm-deepseek = [
     "langchain-deepseek>=1.1,<2.0",
 ]
 
+[tool.uv]
+# 国内网络下默认走阿里云镜像，与 Dockerfile 的 UV_DEFAULT_INDEX 保持一致，
+# 避免本机 uv lock / uv add 重新按 pypi.org 生成锁，导致 Docker --locked 构建报「锁需要更新」。
+index-url = "https://mirrors.aliyun.com/pypi/simple/"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/meta_agent"]
 
@@ -46,3 +51,8 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Preserve the source business prompts verbatim; normal Python checks still apply.
+"src/meta_agent/agent/context.py" = ["E501"]
+"src/meta_agent/flows/consultation_room/prompts.py" = ["E501"]

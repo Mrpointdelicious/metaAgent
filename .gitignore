@@ -12,6 +12,7 @@ htmlcov/
 dist/
 build/
 .idea/
+.vscode/
 
 # Local evaluation evidence: patient data, Excel workbooks and report artifacts.
 /outputs/
@@ -26,3 +27,21 @@ build/
 /docs/dify-integration-v1/
 /docs/freeze-v1.0/
 /docs/implementation-v1/
+
+# 运行时日志与本地证据（可能含患者数据）
+/logs/
+
+# 本地打包产物与归档（Docker 镜像 tar / zip / Office 临时锁文件）
+*.tar
+*.zip
+~$*.docx
+
+# 参考快照（另一版本的完整代码副本，内含自身 .env 密钥，不入主仓库）
+/metaAgent-main/
+
+# MaxKB 已发布资料目录（由 generate_maxkb_catalog.py 生成，体积 17MB，不入库）
+/maxkb/catalog.json
+
+# 本地设计文档（不随代码提交）
+/平台新增AI功能设计文档.html
+/平台新增AI功能设计文档.md

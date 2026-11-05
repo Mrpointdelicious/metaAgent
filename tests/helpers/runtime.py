@@ -49,6 +49,8 @@ class Backend:
         self.entered = {}
         self.cancelled = []
         self.artifact_ok = True
+        self.doctor_count = 0
+        self.directory_entries = [{"hospital_id": 1, "hospital_name": "合成医院"}]
 
     async def post(self, endpoint, payload):
         self.calls.append((endpoint, deepcopy(payload)))
@@ -70,13 +72,19 @@ class Backend:
                 return attach_synthetic_scope(
                     deepcopy(value(payload) if callable(value) else value), payload
                 )
-            return attach_synthetic_scope(demo_response(endpoint, payload), payload)
+            body = demo_response(endpoint, payload)
+            if endpoint == "search_doctors":
+                body["data"]["count"] = self.doctor_count
+            return attach_synthetic_scope(body, payload)
         except asyncio.CancelledError:
             self.cancelled.append(endpoint)
             raise
 
     async def artifact_available(self, url):
         return self.artifact_ok
+
+    async def directory(self):
+        return deepcopy(self.directory_entries)
 
 
 def request(query, rid="r1", *, scope=None, conversation="c1"):

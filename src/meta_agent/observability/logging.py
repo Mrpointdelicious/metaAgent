@@ -6,7 +6,35 @@
 import json
 import logging
 from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any
+
+SAFE_FIELDS = frozenset(
+    {
+        "step",
+        "method",
+        "status",
+        "http_status",
+        "error",
+        "error_type",
+        "endpoint",
+        "code",
+        "tool",
+        "tools",
+        "count",
+        "category",
+        "success",
+        "has_token",
+        "has_result",
+        "call",
+        "tool_calls",
+        "llm_calls",
+        "elapsed_ms",
+        "answer_length",
+        "stage",
+    }
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -23,18 +51,52 @@ class JsonFormatter(logging.Formatter):
             value = getattr(record, key, None)
             if value is not None:
                 payload[key] = value
+        fields = getattr(record, "fields", None)
+        if isinstance(fields, dict):
+            payload.update(
+                {
+                    key: value
+                    for key, value in fields.items()
+                    if key in SAFE_FIELDS and isinstance(value, (str, int, float, bool, type(None)))
+                }
+            )
         if record.exc_info:
             payload["error_type"] = record.exc_info[0].__name__ if record.exc_info[0] else "unknown"
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def configure_logging(level: str) -> None:
-    """配置根日志器；调用方不得把患者数据放入日志消息。"""
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
+def configure_logging(
+    level: str,
+    *,
+    log_dir: str = "",
+    log_file_name: str = "meta_agent.log",
+    log_max_bytes: int = 10 * 1024 * 1024,
+    log_backup_count: int = 5,
+) -> None:
+    """配置根日志器；调用方不得把患者数据放入日志消息。
+
+    log_dir 为空时仅输出 stdout；配置后额外写滚动 JSON 文件（meta_agent.log / .1 / .2…），
+    便于事后按 run_id / event_type 排查。
+    """
+    formatter = JsonFormatter()
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(_handler(logging.StreamHandler(), formatter))
+    if log_dir:
+        directory = Path(log_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            directory / log_file_name,
+            maxBytes=log_max_bytes,
+            backupCount=log_backup_count,
+            encoding="utf-8",
+        )
+        root.addHandler(_handler(file_handler, formatter))
     root.setLevel(level.upper())
     for name in ("httpx", "httpx2", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+
+
+def _handler(handler: logging.Handler, formatter: logging.Formatter) -> logging.Handler:
+    handler.setFormatter(formatter)
+    return handler

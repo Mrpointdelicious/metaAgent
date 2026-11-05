@@ -97,6 +97,7 @@ Capability = Literal[
     "irecog.execute",
     "assessment.execute",
     "hospital.query",
+    "hospital.directory",
     "irego.execute",
     "rehab.overview",
     "rehab.history",
@@ -107,8 +108,11 @@ Capability = Literal[
     "rehab.trend_report",
     "scene.resolve",
     "scene.dispatch",
+    "scene.instruction",
     "doctors.search",
     "knowledge.search",
+    "knowledge.company",
+    "chat.history",
     "answer.compose",
 ]
 
@@ -184,9 +188,19 @@ class HospitalRequest(StrictModel):
     section: Literal[
         "all", "overview", "consultation", "rooms", "assessment_training", "records", "analysis"
     ] = "all"
+    # 相对日期窗口由代码按 Asia/Shanghai 计算；date_mode="range" 时才使用 start_date/end_date。
+    date_mode: (
+        Literal[
+            "this_month", "last_month", "last_7_days", "last_30_days", "today", "yesterday", "range"
+        ]
+        | None
+    ) = None
     start_date: str | None = None
     end_date: str | None = None
-    output_mode: Literal["analysis", "report", "analysis_and_report"] = "analysis"
+    output_mode: Literal["analysis", "report", "analysis_and_report"] = Field(
+        default="analysis",
+        description=("用户要求报表图片时用 analysis_and_report；否则用 analysis。"),
+    )
     analysis_depth: Literal["summary", "standard"] = "standard"
 
 
@@ -422,14 +436,34 @@ class RecordAnchor(StrictModel):
 
 
 class ConversationState(StrictModel):
-    turns: list[dict[str, str]] = Field(default_factory=list)
+    # 每条 turn 存 {"user","assistant","created_at"}；created_at 为 unix 秒（int），
+    # 供 /v1/messages 按真实时间排序 + 游标分页。旧数据无 created_at 由读取端按列表顺序合成。
+    turns: list[dict[str, Any]] = Field(default_factory=list)
     agent_messages: list[dict[str, Any]] = Field(default_factory=list)
     current_record: RecordAnchor | None = None
     history_page: int = 1
     history_seen: bool = False
     history_domain: Literal["irego", "iretour", "irecog", "assessment"] = "irego"
+    # 上一轮任务分类（consultation_room 分支的 LLM 分类器写入，供下一轮多轮延续判断）。
+    previous_category: str = ""
+    # Dify 风格的会话变量：键值对，跨轮次持久化，供各分支 / 子流程读写。
+    # 值须为 JSON 可序列化类型（字符串 / 数字 / 布尔 / 列表 / 字典 / null）。
+    variables: dict[str, Any] = Field(default_factory=dict)
     pending_goals: list[Goal] = Field(default_factory=list)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    # --- 会话变量读写（对齐 Dify 的 conversation variables） ---
+    def set_variable(self, key: str, value: Any) -> None:
+        """写入一个会话变量。"""
+        self.variables[key] = value
+
+    def get_variable(self, key: str, default: Any = None) -> Any:
+        """读取一个会话变量，不存在时返回 default。"""
+        return self.variables.get(key, default)
+
+    def remove_variable(self, key: str) -> None:
+        """删除一个会话变量。"""
+        self.variables.pop(key, None)
 
 
 class RunRecord(StrictModel):
@@ -447,6 +481,9 @@ class RunRecord(StrictModel):
     goal_statuses: dict[str, OutcomeStatus] = Field(default_factory=dict)
     action_delivery: dict[str, ActionDeliveryStatus] = Field(default_factory=dict)
     metrics: dict[str, Any] = Field(default_factory=dict)
+    # 可信网关传入的原始 inputs（患者身份之外的透传字段，如 doctorId/tenantId/deviceId 等），
+    # 供后续业务判断或取数消费；不参与作用域或幂等计算。
+    raw_inputs: dict[str, Any] = Field(default_factory=dict)
 
 
 class DomainError(RuntimeError):

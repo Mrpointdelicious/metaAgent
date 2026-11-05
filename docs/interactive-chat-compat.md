@@ -1,5 +1,9 @@
 # 交互聊天接口兼容
 
+当前代码行为以 [Agent/main 整合接入说明](agent-main-integration.md) 为准。
+以下为历史迁移记录；旧手机号身份及未隔离会话不能直接用于新版本。
+
+
 工具及知识库迁移提交 `81507d3` 已快进合入本地 main，并保留 master 的 `7249dce`、`0620db1`。
 本次在服务端适配已有 `interactive.py`；启动脚本、交互脚本及实际环境配置内容保持不变。
 
@@ -17,7 +21,7 @@
 ```json
 {
   "user": "interactive-cli",
-  "inputs": {"projectPatientId": "3799"},
+  "inputs": {"pos": "大厅"},
   "query": "你好",
   "conversation_id": "",
   "response_mode": "blocking"
@@ -39,14 +43,7 @@
 
 ## 手机号与交互脚本
 
-`patientphone`、`patientPhone`、`patient_phone` 都会通过同一患者身份解析接口转换为可信患者身份。
-多个别名值不一致时返回 422；项目患者编号与手机号的互斥校验仍由身份解析接口执行。
-问题文本中的患者编号或手机号不会被当作身份输入。
-
-```powershell
-python interactive.py http://localhost:8080 -i 3799 -v
-python interactive.py http://localhost:8080 -i phone:13800000000 -v
-```
+患者接口使用 `patient_identity` + `identity_context_token`；旧患者编号/手机号别名返回 422。
 
 服务令牌仍通过 `-t`、既有进程变量或已有 `.env` 读取。Docker 端口映射部署时可将地址改为
 `http://localhost:5080`。`new` 创建新会话，`exit` 结束交互；`-v` 使用返回的 task ID 获取原生状态及指标。
@@ -65,8 +62,8 @@ python interactive.py http://localhost:8080 -i phone:13800000000 -v
 ## 范围
 
 这是文本聊天和现有状态/取消接口的兼容实现。`files=[]` 可接受，非空附件返回 422。
-Workflow、会话列表和历史消息查询尚未提供。
-旧脚本可透传的 `pos`、`requestphone`、`companykb`、`apikey`、`apitoken` 不会启用额外的问诊或病历写入流程。
+Workflow 尚未提供；会话列表和历史消息查询已接入，按当前作用域校验。
+`pos` 中连续的“问诊房间”触发独立问诊 Flow；临床操作仍须服务端参与关系授权。
 知识源和凭据通过服务端 `.env` 配置，旧输入字段不会覆盖这些配置。
 
 回归包含原生协议、三条兼容入口、会话和幂等行为、身份别名、流式错误/断线，以及使用未修改

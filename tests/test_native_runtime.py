@@ -229,19 +229,12 @@ def test_guard_uses_doctor_query_result(count):
                 ]
             )
             backend.overrides["navigate_scene"] = scene_response
-            backend.overrides["search_doctors"] = {
-                "status": 200,
-                "data": {
-                    "count": count,
-                    "doctorNames": "合成医生" if count else "",
-                    "command": "[DoctorRecommend:]123",
-                },
-            }
+            backend.doctor_count = count
             run = await c.application.execute(request(query))
             assert len([e for e in run.record.events if e.type == "action_ready"]) == count
             assert "DoctorRecommend" not in answers(run.record)
             if not count:
-                assert [n for n, _ in tool_calls(backend)] == ["search_doctors"]
+                assert [name for name, _ in tool_calls(backend)] == ["search_doctors"]
 
     asyncio.run(check())
 

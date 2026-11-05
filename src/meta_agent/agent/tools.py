@@ -5,7 +5,6 @@
 
 import asyncio
 import json
-import re
 import time
 from contextvars import ContextVar
 
@@ -17,6 +16,7 @@ from meta_agent.agent.schemas import (
     AssessmentReportArgs,
     AssessmentSessionArgs,
     AssessmentTrendArgs,
+    DirectoryArgs,
     EmptyArgs,
     GoHistoryArgs,
     GoReportTrendArgs,
@@ -37,19 +37,19 @@ from meta_agent.agent.schemas import (
 )
 from meta_agent.contracts import (
     DomainError,
-    Goal,
     HospitalRequest,
     RecordAnchor,
     TaskResult,
     TaskSpec,
     utcnow,
 )
+from meta_agent.domains.chat_history import ChatHistoryAdapter
 from meta_agent.domains.doctors import DoctorAdapter
 from meta_agent.domains.facts import aware_date
 from meta_agent.domains.hospital import HospitalAdapter
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
-from meta_agent.domains.scene import SceneAdapter, source_text
+from meta_agent.domains.scene_instruction import SceneInstructionAdapter
 from meta_agent.integrations.knowledge import tool_schema as knowledge_tool_schema
 from meta_agent.tools.ai_webapi import (
     ASSESSMENT_REPORT_ENDPOINTS,
@@ -60,7 +60,12 @@ from meta_agent.tools.ai_webapi import (
 CURRENT_RUN: ContextVar = ContextVar("single_agent_run")
 LAYER_TOOLS = {"get_patient_profile", "get_patient_consultation", "get_patient_rehab"}
 
+BASIC_COMMAND_TOOLS = frozenset({"search_knowledge", "resolve_scene_instruction", "navigate_scene"})
+
 TOOL_SPECS = {
+    "resolve_scene_instruction": (EmptyArgs, "预览本轮场景指令的匹配结果，不交付动作。"),
+    "open_chat_history": (EmptyArgs, "打开当前用户已授权的聊天历史页面。"),
+    "query_hospital_directory": (DirectoryArgs, "为运营人员查询可信机构目录。"),
     "get_patient_profile": (
         EmptyArgs,
         "查询当前患者基本档案及自述既往史，不含就诊病历。通常已有小摘要，可按需刷新。",
@@ -170,6 +175,14 @@ TOOL_SPECS = {
 
 
 def tool_allowed(ctx, name):
+    if getattr(ctx, "client", None) and name in ctx.client.excluded_tools:
+        return False
+    if name == "open_chat_history":
+        return True
+    if name == "resolve_scene_instruction":
+        return ctx.settings.scene_enabled
+    if name == "query_hospital_directory":
+        return ctx.scope.role == "operator"
     if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
         return False
     if name in IRECOG_REPORT_ENDPOINTS and not ctx.settings.irecog_reports_enabled:
@@ -185,7 +198,7 @@ def tool_allowed(ctx, name):
     if name == "navigate_scene":
         return ctx.settings.scene_enabled and ctx.settings.scene_actions_enabled
     if name == "search_doctors":
-        return ctx.settings.doctors_enabled
+        return ctx.settings.doctors_enabled and ctx.scope.role != "clinician"
     return name == "search_knowledge"
 
 
@@ -213,9 +226,11 @@ def available_tools(ctx, tools):
     return selected
 
 
-def build_tools():
+def build_tools(tool_names=None):
     tools = []
     for name, (schema, description) in TOOL_SPECS.items():
+        if tool_names is not None and name not in tool_names:
+            continue
 
         async def invoke(_name=name, **kwargs):
             return json.dumps(
@@ -331,6 +346,18 @@ async def _read(ctx, name, args):
 
 
 async def _adapter(ctx, name, args, tid):
+    if name == "resolve_scene_instruction":
+        return await SceneInstructionAdapter().execute(
+            spec(ctx, name, tid, "scene.resolve", args), {"target": ctx.query}, ctx, dispatch=False
+        )
+    if name == "open_chat_history":
+        return await ChatHistoryAdapter().execute(
+            spec(ctx, name, tid, "knowledge.search", args), args, ctx
+        )
+    if name == "query_hospital_directory":
+        return await HospitalAdapter().directory(
+            spec(ctx, name, tid, "hospital.directory", args), args, ctx
+        )
     if name == "search_doctors":
         return await DoctorAdapter().execute(
             spec(ctx, name, tid, "doctors.search", args), args, ctx
@@ -343,22 +370,11 @@ async def _adapter(ctx, name, args, tid):
         return await HospitalAdapter().execute(
             spec(ctx, name, tid, "hospital.query", args), args, ctx
         )
-    if not ctx.settings.scene_actions_enabled or not ctx.scope.space_id:
-        raise DomainError("scene_actions_disabled", "当前场景动作未启用。", outcome="unsupported")
-    if source_text(args["target"]) not in source_text(ctx.query):
-        raise DomainError(
-            "scene_request_mismatch", "场景动作须来自本轮用户原话。", outcome="clarification"
-        )
-    phrases = [x.strip() for x in re.split(r"[，,；;]", args["target"]) if x.strip()]
-    ids = [f"scene_{tid}_{i}" for i in range(len(phrases))]
-    for gid, phrase in zip(ids, phrases, strict=True):
-        ctx.goals[gid] = Goal(goal_id=gid, kind="scene_action", domain="scene", query_span=phrase)
-    adapter = SceneAdapter()
-    result = await adapter.execute(spec(ctx, name, tid, "scene.resolve", args, ids), args, ctx)
-    ctx.record.results[tid] = result
-    for gid, ref in result.outputs.get("action_ref", {}).items():
-        await adapter.dispatch(spec(ctx, name, tid, "scene.dispatch", {}, [gid]), ref, ctx)
-    return result
+    return await SceneInstructionAdapter().execute(
+        spec(ctx, name, tid, "scene.resolve", args),
+        args,
+        ctx,
+    )
 
 
 async def _read_report(ctx, name, args):
@@ -399,6 +415,9 @@ async def invoke_tool(ctx, name, args):
                 "tool_not_allowed", "当前身份或配置未启用这项工具。", outcome="unsupported"
             )
         if name in {
+            "resolve_scene_instruction",
+            "open_chat_history",
+            "query_hospital_directory",
             "search_doctors",
             "search_knowledge",
             "query_hospital_operations",

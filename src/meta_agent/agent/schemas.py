@@ -14,6 +14,10 @@ class EmptyArgs(StrictModel):
     pass
 
 
+class DirectoryArgs(StrictModel):
+    name: str | None = Field(default=None, max_length=100)
+
+
 class PatientPageArgs(StrictModel):
     page_number: int = Field(default=1, ge=1, le=100000)
     page_size: int = Field(default=5, ge=1, le=20)
@@ -154,3 +158,22 @@ class SceneArgs(StrictModel):
 class KnowledgeArgs(StrictModel):
     query: str = Field(min_length=1, max_length=4000)
     domain: Literal["health", "product", "help"] = "health"
+    source: str | None = Field(default=None, max_length=100)
+    subqueries: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+        description="同领域组合问题可拆为最多4个独立检索问题；非空时替代query执行。每轮总计最多4个问题，每领域最多2次检索。",
+    )
+
+
+class HealthKnowledgeArgs(KnowledgeArgs):
+    """The portfolio deployment currently publishes health literature only."""
+
+    query: str = Field(min_length=1, max_length=2000)
+    domain: Literal["health"] = "health"
+
+
+class SpaceKnowledgeArgs(KnowledgeArgs):
+    """Hospital knowledge is selected from the trusted current space."""
+
+    query: str = Field(min_length=1, max_length=2000)

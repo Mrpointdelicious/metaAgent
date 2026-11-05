@@ -320,9 +320,7 @@ def test_blocking_request_cancellation_stops_the_application(model):
 
 
 @pytest.mark.parametrize("identity", ["project_user_id:3799", "login_name:000007"])
-def test_v2_interactive_script_can_chat_and_fetch_verbose_status(
-    settings, monkeypatch, identity
-):
+def test_v2_interactive_script_can_chat_and_fetch_verbose_status(settings, monkeypatch, identity):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(

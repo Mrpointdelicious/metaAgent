@@ -43,6 +43,12 @@ class TrustedScope:
     identity_context_token: str = field(default="", repr=False, compare=False)
     patient_ref: str | None = None
     scope_fingerprint: str | None = None
+    position: str | None = None
+    identity_note: str | None = None
+    client_id: str = "primary"
+    agent_kind: str = "default"
+    consultation_context: str = ""
+    consultation_id: str = ""
 
     @property
     def has_patient(self) -> bool:
@@ -66,6 +72,7 @@ class TrustedScope:
                 self.current_business_id if self.data_scope == "current_tenant" else None,
                 self.patient_ref,
                 self.scope_fingerprint,
+                self.client_id,
             ],
             ensure_ascii=False,
             separators=(",", ":"),
@@ -73,7 +80,17 @@ class TrustedScope:
         return sha256(material.encode()).hexdigest()
 
     def thread_id(self, conversation_id: str) -> str:
-        return sha256(json.dumps([self.scope_hash, conversation_id]).encode()).hexdigest()
+        return sha256(
+            json.dumps(
+                [
+                    "conversation-v2",
+                    self.scope_hash,
+                    self.agent_kind,
+                    self.consultation_context,
+                    conversation_id,
+                ]
+            ).encode()
+        ).hexdigest()
 
     def patient_payload(self, arguments: dict, conversation_id: str = "") -> dict:
         if not self.patient_identity or not self.identity_context_token or self.role != "patient":
@@ -156,7 +173,12 @@ def trusted_scope_from_inputs(
     if LEGACY_PATIENT_KEYS.intersection(inputs):
         raise ValueError("旧患者身份格式已移除，请传 patient_identity 和 identity_context_token")
     tenant = str(inputs.get("tenant_id", inputs.get("tenantId", default_tenant_id))).strip()
-    role = inputs.get("role", "patient")
+    role = inputs.get(
+        "role",
+        {"医生": "clinician", "doctor": "clinician", "患者": "patient"}.get(
+            inputs.get("identity"), "patient"
+        ),
+    )
     if not tenant or not end_user_id.strip() or role not in {"patient", "clinician", "operator"}:
         raise ValueError("可信用户、租户或角色无效")
     identity = inputs.get("patient_identity")
@@ -189,4 +211,5 @@ def trusted_scope_from_inputs(
         business,
         scope,
         token,
+        position=str(inputs.get("pos") or "").strip(),
     )

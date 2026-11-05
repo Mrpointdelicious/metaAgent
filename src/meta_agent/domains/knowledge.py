@@ -78,6 +78,12 @@ class KnowledgeAdapter:
             from meta_agent.domains.remote_knowledge import RemoteKnowledgeAdapter
 
             return await RemoteKnowledgeAdapter().execute(task, args, ctx)
+        if ctx.settings.portfolio_enabled and (
+            args["domain"] == "health" or ctx.settings.portfolio_space_kb_ids
+        ):
+            from meta_agent.domains.portfolio import PortfolioKnowledgeAdapter
+
+            return await PortfolioKnowledgeAdapter().execute(task, args, ctx)
         path = Path(ctx.settings.knowledge_corpus_path)
         try:
             if not path.is_file() or path.stat().st_size > 10_000_000:

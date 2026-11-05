@@ -1,5 +1,8 @@
 # MetaAgent
 
+当前 Agent/main 整合版本的入口、会话隔离和部署条件见
+[整合接入说明](docs/agent-main-integration.md)。下文历史部署记录不表示本次已切换线上服务。
+
 ## 单 Agent 与三层患者工具（2026-10）
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
