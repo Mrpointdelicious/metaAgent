@@ -249,12 +249,20 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     return snapshot(record)
 
 
-async def conversation_history(payload, request, conversation_id="", limit=20, cursor=""):
+async def conversation_history(
+    payload, request, conversation_id="", limit=20, cursor="", *, infer_role=False
+):
     scope = await scope_for(payload, request)
     repository = request.app.state.container.repository
     selector = request.app.state.container.application.conversations
+    if infer_role:
+        try:
+            scope = await selector.history_scope(scope, conversation_id)
+        except DomainError as exc:
+            raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     limit = max(1, min(limit, 100))
     if not conversation_id:
+        await selector.migrate_history(scope)
         metas = await repository.list_conversations(owner_key(scope), limit=1000)
         visible = []
         for meta in metas:
@@ -281,7 +289,7 @@ async def conversation_history(payload, request, conversation_id="", limit=20, c
                 for m in visible[:limit]
             ],
         }
-    binding = await selector.get(scope, conversation_id)
+    binding = await selector.lookup(scope, conversation_id)
     if not binding or binding.authorization_scope != scope.scope_hash:
         raise HTTPException(404, "会话不存在或不属于当前作用域")
     scope = replace(
@@ -316,13 +324,22 @@ async def list_conversations(
     last_id: str = "",
     limit: int = 20,
     tenant_id: str = "",
-    role: str = "patient",
+    role: str | None = None,
+    identity: str | None = None,
 ):
-    inputs = {"role": role}
+    inputs = {}
+    if role is not None:
+        inputs["role"] = role
+    if identity is not None:
+        inputs["identity"] = identity
     if tenant_id:
         inputs["tenant_id"] = tenant_id
     return await conversation_history(
-        RunAccessRequest(user=user, inputs=inputs), request, limit=limit, cursor=last_id
+        RunAccessRequest(user=user, inputs=inputs),
+        request,
+        limit=limit,
+        cursor=last_id,
+        infer_role=role is None and identity is None,
     )
 
 
@@ -335,9 +352,14 @@ async def list_messages(
     first_id: str = "",
     last_id: str = "",
     tenant_id: str = "",
-    role: str = "patient",
+    role: str | None = None,
+    identity: str | None = None,
 ):
-    inputs = {"role": role}
+    inputs = {}
+    if role is not None:
+        inputs["role"] = role
+    if identity is not None:
+        inputs["identity"] = identity
     if tenant_id:
         inputs["tenant_id"] = tenant_id
     return await conversation_history(
@@ -346,6 +368,7 @@ async def list_messages(
         conversation_id,
         limit,
         first_id or last_id,
+        infer_role=role is None and identity is None,
     )
 
 

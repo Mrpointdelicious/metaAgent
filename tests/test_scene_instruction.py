@@ -184,3 +184,41 @@ def test_matched_command_does_not_become_delivered_when_transport_fails():
             assert result["data"]["dispatches"][0]["code"] == "delivery_failed"
 
     asyncio.run(check())
+
+
+def test_server_version_is_bound_to_evidence_and_rechecked_before_dispatch():
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            ctx = context(container, "打开个人中心")
+            ctx.scope = replace(ctx.scope, scene_version=None)
+            backend.overrides["navigate_scene"] = scene_body([ctx.query], version=23)
+            result = await invoke_tool(ctx, "resolve_scene_instruction", {})
+            assert result["status"] == "succeeded" and not ctx.record.action_delivery
+            assert ctx.scope.scene_version == 23
+            assert "expectedSceneVersion" not in backend.calls[0][1]
+            stored = next(iter(ctx.record.results.values()))
+            gid, ref = next(iter(stored.outputs["action_ref"].items()))
+            evidence = await ctx.repository.evidence(ctx.scope.scope_hash, stored.evidence_ids[0])
+            assert evidence.payload["data"]["version"] == 23
+            ctx.scope = replace(ctx.scope, scene_version=24)
+            with pytest.raises(Exception, match="刷新当前场景版本"):
+                await SceneAdapter().dispatch(
+                    spec(ctx, "navigate_scene", "d", "scene.dispatch", {}, [gid]), ref, ctx
+                )
+            assert not ctx.record.action_delivery
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("version", [None, -1, True, "7"])
+def test_missing_or_invalid_server_version_cannot_authorize_action(version):
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            ctx = context(container, "打开个人中心")
+            ctx.scope = replace(ctx.scope, scene_version=None)
+            backend.overrides["navigate_scene"] = scene_body([ctx.query], version=version)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": ctx.query})
+            assert result["code"] == "invalid_contract"
+            assert ctx.scope.scene_version is None and not ctx.record.action_delivery
+
+    asyncio.run(check())

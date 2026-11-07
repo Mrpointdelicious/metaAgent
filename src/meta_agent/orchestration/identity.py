@@ -167,6 +167,22 @@ LEGACY_PATIENT_KEYS = frozenset(
 )
 
 
+def space_id_from_inputs(inputs: dict[str, Any]) -> str | None:
+    """Normalize existing gateway aliases without silently selecting another space."""
+    values = set()
+    for key in ("space_id", "spaceId", "spaceid"):
+        value = inputs.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            raise ValueError("空间标识必须是字符串")
+        if value.strip():
+            values.add(value.strip())
+    if len(values) > 1:
+        raise ValueError("spaceid、spaceId、space_id 必须指向同一空间")
+    return next(iter(values), None)
+
+
 def trusted_scope_from_inputs(
     inputs: dict[str, Any], end_user_id: str, default_tenant_id: str
 ) -> TrustedScope:
@@ -175,9 +191,12 @@ def trusted_scope_from_inputs(
     tenant = str(inputs.get("tenant_id", inputs.get("tenantId", default_tenant_id))).strip()
     role = inputs.get(
         "role",
-        {"医生": "clinician", "doctor": "clinician", "患者": "patient"}.get(
-            inputs.get("identity"), "patient"
-        ),
+        {
+            "医生": "clinician",
+            "doctor": "clinician",
+            "clinician": "clinician",
+            "患者": "patient",
+        }.get(inputs.get("identity"), "patient"),
     )
     if not tenant or not end_user_id.strip() or role not in {"patient", "clinician", "operator"}:
         raise ValueError("可信用户、租户或角色无效")
@@ -200,13 +219,13 @@ def trusted_scope_from_inputs(
     version = inputs.get("scene_version", inputs.get("sceneVersion"))
     if version is not None and (isinstance(version, bool) or not str(version).isdigit()):
         raise ValueError("scene_version 必须是非负整数")
-    space = inputs.get("space_id", inputs.get("spaceId"))
+    space = space_id_from_inputs(inputs)
     return TrustedScope(
         tenant,
         end_user_id.strip(),
         identity,
         role,
-        str(space).strip() if space is not None else None,
+        space,
         int(version) if version is not None else None,
         business,
         scope,

@@ -4,6 +4,7 @@
 """
 
 import re
+from dataclasses import replace
 from typing import Any
 
 from meta_agent.application.context import RunContext
@@ -70,6 +71,10 @@ class SceneAdapter:
                 raise DomainError("invalid_command", "动作编码不符合已注册的目录协议。")
             if command["status"] != "matched" and command.get("result") is not None:
                 raise DomainError("ambiguous_executable", "不明确的指令不能携带可执行编码。")
+        # Bind the server-resolved version to this run; dispatch still checks the
+        # same space/version/evidence instead of skipping its safety checks.
+        if ctx.scope.scene_version is None:
+            ctx.scope = replace(ctx.scope, scene_version=data["version"])
         evidence = await ctx.repository.save_evidence(
             ctx.scope.scope_hash, "navigate_scene", ctx.record.request_id, body, "commands-array-v1"
         )

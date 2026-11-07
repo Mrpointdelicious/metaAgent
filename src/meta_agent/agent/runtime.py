@@ -23,11 +23,10 @@ from meta_agent.agent.tools import (
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.contracts import DomainError, utcnow
+from meta_agent.domains.business_routing import classify_business_query
 from meta_agent.domains.chat_history import is_chat_history_query
 from meta_agent.domains.scene_instruction import (
-    is_command_query,
     is_knowledge_question,
-    is_mixed_command_query,
     is_navigation_question,
 )
 
@@ -51,6 +50,10 @@ class PatientContextMiddleware(AgentMiddleware):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
         tools = available_tools(ctx, request.tools)
+        route = classify_business_query(ctx.query)
+        if route.scene:
+            # A preview can never satisfy an explicit request to execute an action.
+            tools = [tool for tool in tools if tool.name != "resolve_scene_instruction"]
         base_prompt = ctx.system_prompt or ctx.settings.agent_system_prompt or SYSTEM_PROMPT
         prompt = base_prompt + f"\n当前时间：{utcnow().isoformat()}。"
         profile = ctx.record.metrics.get("patient_profile_context")
@@ -77,23 +80,12 @@ class PatientContextMiddleware(AgentMiddleware):
                 "\n本轮用户输入是打开/查看历史对话记录，请调用打开历史对话记录工具"
                 "（open_chat_history），不要调用场景指令解析工具，也不要自行拼网址。"
             )
-        elif is_mixed_command_query(ctx.query) and any(
-            t.name == "resolve_scene_instruction" for t in tools
-        ):
-            prompt += (
-                "\n本轮用户输入同时包含场景指令和其他请求，请分别处理、不要遗漏："
-                "场景指令部分调用场景指令解析工具（resolve_scene_instruction）；"
-                "其余请求（如“查报告”“查患者信息”等）调用对应工具单独处理并回答。"
-                "不要自行拼网址，也不要自行判断场景指令是否存在。"
-            )
-        elif is_command_query(ctx.query) and any(
-            t.name == "resolve_scene_instruction" for t in tools
-        ):
-            prompt += (
-                "\n本轮用户输入已判定为场景指令，请调用场景指令解析工具"
-                "（resolve_scene_instruction），并按返回的 patient_message 直接回复，"
-                "不要自行判断该指令是否存在。"
-            )
+        if route.scene:
+            if any(t.name == "navigate_scene" for t in tools):
+                prompt += "\n" + route.guidance()
+                prompt += "\n将本轮原话中的动作片段作为target；场景版本由服务端解析，无需追问用户。"
+            else:
+                prompt += "\n本轮场景执行工具未启用，请如实说明无法下发动作，不把预览当作执行。"
         if (
             ctx.llm_budget.calls >= ctx.llm_budget.maximum
             or ctx.tool_calls >= ctx.settings.max_tool_calls

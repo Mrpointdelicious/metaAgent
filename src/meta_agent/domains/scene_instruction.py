@@ -57,27 +57,21 @@ class SceneCommandResolver:
             raise DomainError(
                 "scene_unavailable", "当前空间场景服务不可用。", outcome="unavailable"
             )
-        if ctx.scope.scene_version is None:
-            raise DomainError(
-                "scene_version_required", "请先确认当前场景版本。", outcome="clarification"
-            )
         parser = SceneIntentParser()
         target = parser.parse(args["target"], ctx)
-        body = await ctx.call(
-            "navigate_scene",
-            {
-                "target": target,
-                "spaceId": ctx.scope.space_id,
-                "expectedSceneVersion": ctx.scope.scene_version,
-            },
-        )
+        payload = {"target": target, "spaceId": ctx.scope.space_id}
+        if ctx.scope.scene_version is not None:
+            payload["expectedSceneVersion"] = ctx.scope.scene_version
+        body = await ctx.call("navigate_scene", payload)
         data = numeric_envelope(body)
         commands = data.get("commands")
         if not isinstance(commands, list):
             raise DomainError("invalid_contract", "场景服务未返回指令数组。")
         if data.get("spaceId") != ctx.scope.space_id:
             raise DomainError("scene_scope_mismatch", "场景目录与当前空间不一致。")
-        if type(data.get("version")) is not int or data["version"] != ctx.scope.scene_version:
+        if type(data.get("version")) is not int or data["version"] < 0:
+            raise DomainError("invalid_contract", "场景服务未返回有效版本。")
+        if ctx.scope.scene_version is not None and data["version"] != ctx.scope.scene_version:
             raise DomainError(
                 "scene_version_mismatch", "场景版本已变化，请刷新后重试。", outcome="clarification"
             )

@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     postgres_connect_timeout_seconds: int = Field(default=30, ge=5, le=120)
     evidence_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
     default_tenant_id: str = "default"
+    # 旧会话索引未记录接入方。仅声明原接入方后才迁移可核验的普通会话。
+    legacy_conversation_client: Literal["", "primary", "secondary"] = ""
 
     # LLM / Planner
     planner_mode: Literal[
