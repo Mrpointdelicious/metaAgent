@@ -28,6 +28,6 @@ def route_from_inputs(raw_inputs: dict[str, Any]) -> Branch:
     pos = raw_inputs.get("pos", "")
     if not isinstance(pos, str):
         raise ValueError("pos 必须是字符串")
-    if "问诊房间" in pos.strip():
+    if "问诊" in pos.strip():
         return Branch(name="consultation_room")
     return Branch(name="default")
