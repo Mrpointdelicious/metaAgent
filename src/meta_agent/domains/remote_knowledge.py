@@ -9,8 +9,7 @@ from jsonschema import Draft202012Validator, ValidationError
 from meta_agent.contracts import DomainError, TaskResult
 from meta_agent.domains.facts import FactBuilder
 from meta_agent.integrations.knowledge import (
-    KnowledgeAccessDenied,
-    KnowledgeContractError,
+    KnowledgeServiceError,
     search,
     tool_schema,
 )
@@ -19,6 +18,10 @@ from meta_agent.integrations.knowledge import (
 class RemoteKnowledgeAdapter:
     async def execute(self, task, args, ctx):
         sources = ctx.settings.knowledge_sources
+        if not sources:
+            raise DomainError(
+                "knowledge_source_unavailable", "知识检索服务尚未配置。", outcome="unavailable"
+            )
         try:
             Draft202012Validator(tool_schema(sources)).validate(args)
         except ValidationError as exc:
@@ -62,11 +65,12 @@ class RemoteKnowledgeAdapter:
                     request_id=str(ctx.record.request_id),
                     max_bytes=ctx.settings.max_tool_response_bytes,
                 )
-        except KnowledgeAccessDenied as exc:
+        except KnowledgeServiceError as exc:
             raise DomainError(
-                "knowledge_access_denied",
-                "当前身份无权访问该知识范围。",
-                outcome="unsupported",
+                "knowledge_access_denied" if exc.denied else "knowledge_unavailable",
+                "当前身份无权访问该知识范围。" if exc.denied else "知识检索暂不可用，请稍后重试。",
+                outcome="unsupported" if exc.denied else "unavailable",
+                retryable=exc.retryable and not exc.denied,
             ) from exc
         except httpx.HTTPStatusError as exc:
             denied = exc.response.status_code == 403
@@ -76,14 +80,14 @@ class RemoteKnowledgeAdapter:
                 outcome="unsupported" if denied else "unavailable",
                 retryable=exc.response.status_code in (429, 502, 503, 504),
             ) from exc
-        except httpx.RequestError as exc:
+        except (httpx.RequestError, TimeoutError) as exc:
             raise DomainError(
                 "knowledge_unavailable",
                 "知识检索暂不可用，请稍后重试。",
                 outcome="unavailable",
                 retryable=True,
             ) from exc
-        except (ValueError, ValidationError, KnowledgeContractError) as exc:
+        except (ValueError, ValidationError) as exc:
             raise DomainError(
                 "knowledge_unavailable", "知识检索暂不可用，请稍后重试。", outcome="unavailable"
             ) from exc

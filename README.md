@@ -231,24 +231,27 @@ Agent Checkpoint 保存该次运行的模型消息和裁剪后的工具消息；
 重启后重复请求返回保守的中断快照，不自动重发动作或制品。
 运行时依赖、令牌和可信身份对象不进入 Checkpoint。
 
-## 知识语料
+## 知识服务
 
-当前 `search_knowledge` 使用 `KnowledgeAdapter → 本地 approved JSON corpus → BM25`，
-仍是简化实现。Dify RAG、独立 RAG Service、Hybrid Retrieval 和 Reranker 均未接入。
+`search_knowledge` 统一通过 `knowledge-search-v1` 调用外部知识服务。
+MetaAgent 只维护连接、鉴权、可信空间、调用预算、响应校验和证据引用；
+分块、文档标签、楼层筛选、召回和重排由 MaxKB 原生知识库与工作流负责。
+原生 MaxKB 管理 API 直连、本地 BM25、Portfolio `/v1/retrieve` 和目录同步已移除。
 
-`KNOWLEDGE_CORPUS_PATH` 指向本地 JSON。格式由
-[domains/knowledge.py](src/meta_agent/domains/knowledge.py) 中的
-`Corpus`、`Document`、`Section` 定义：顶层 `schema_version="1.0"` 和 `documents`，
-文档包含领域、版本、来源、审批信息及分节文本。
-只有 `approved=true` 且填写 `approved_by` 的对应领域资料参与检索。
-使用中文二元片段和英文词的 BM25，并在无结果时执行一次确定性同义替换补检索，
-返回原文和 `doc_id@version#section_id`。语料不可用或没有匹配时返回 unavailable。
-文献文件夹中的研究论文不会自动成为已批准的患者知识库。
+使用 `.env.example` 中的 `META_AGENT__KNOWLEDGE_SOURCES` 配置接入；空列表表示尚未配置，
+不会自动改用其他知识源。`transport=maxkb-workflow` 复用 MaxKB 应用 API，
+把确定性 Reply 模板输出校验为 v1 证据；无需另建检索服务或编写 MaxKB Python 工具。
+配置、迁移和探测命令见 [MaxKB 接入说明](docs/maxkb-knowledge-search-v1.md)，
+原生配置见 [工作流部署说明](deployment/maxkb/README.md)，
+实施范围和验证结果见 [MaxKB 召回方案](docs/maxkb-retrieval-improvement-plan.md)。
+资料拆分、节点配置、Reply 输出及逐步示例见 [MaxKB 原生召回实现与过程示例](docs/maxkb-native-retrieval-implementation.md)。
+完整安装、联网、发布、接入和备份步骤见 [MaxKB 部署手册](docs/maxkb-deployment-guide.md)，包含现有定制挂载与纯官方验证方式的区分。
 
 ## 已知限制
 
 - 当前只支持单 worker、单副本；跨实例租约与事件回放不在 v1 范围内。
-- Knowledge backend 仍为本地 approved JSON corpus + BM25，尚不是生产级知识服务。
+- MaxKB 原生方案已在本地验证，尚未切换业务服务；当前模板覆盖单院一至五楼及界面操作，
+  医疗文献、设备资料和复杂位置推断需另行配置与验收。
 - 自动测试不验收临床诊断或康复建议的医学正确性。
 - 受历史上下文预算及证据时效影响，部分结构化训练结果可能在后续轮重新查询。
 - Dify 展示已通过原生 API 接入，兼容入口未启用；正式 Dify RAG 留给独立 `feature/knowledge-dify`。

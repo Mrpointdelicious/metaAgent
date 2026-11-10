@@ -175,7 +175,7 @@ def capability_specs(settings: Settings) -> dict[str, CapabilitySpec]:
         CapabilitySpec(
             "knowledge.search",
             KnowledgeArgs,
-            enabled=bool(settings.knowledge_sources or settings.knowledge_corpus_path),
+            enabled=bool(settings.knowledge_sources),
         ),
         CapabilitySpec("answer.compose", EmptyArgs),
     ]

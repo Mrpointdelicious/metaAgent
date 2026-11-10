@@ -1,0 +1,1611 @@
+{
+  "nodes": [
+    {
+      "id": "base-node",
+      "type": "base-node",
+      "x": 360,
+      "y": 300,
+      "properties": {
+        "stepName": "base-node",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "name": "MetaAgent 原生知识检索",
+          "desc": "Native tags, knowledge search and reranking; knowledge-search-v1 evidence output.",
+          "prologue": ""
+        },
+        "api_input_field_list": [
+          {
+            "field": "domain",
+            "label": "domain",
+            "type": "string",
+            "required": true
+          },
+          {
+            "field": "space_id",
+            "label": "space_id",
+            "type": "string",
+            "required": true
+          },
+          {
+            "field": "max_context_tokens",
+            "label": "max_context_tokens",
+            "type": "number",
+            "required": true
+          },
+          {
+            "field": "request_id",
+            "label": "request_id",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "user_input_field_list": []
+      }
+    },
+    {
+      "id": "start-node",
+      "type": "start-node",
+      "x": 780,
+      "y": 300,
+      "properties": {
+        "stepName": "start-node",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "question",
+              "value": "question"
+            }
+          ],
+          "globalFields": [
+            {
+              "label": "domain",
+              "value": "domain"
+            },
+            {
+              "label": "space_id",
+              "value": "space_id"
+            },
+            {
+              "label": "max_context_tokens",
+              "value": "max_context_tokens"
+            },
+            {
+              "label": "request_id",
+              "value": "request_id"
+            },
+            {
+              "label": "chat_id",
+              "value": "chat_id"
+            },
+            {
+              "label": "document_scope",
+              "value": "document_scope"
+            },
+            {
+              "label": "floor_1",
+              "value": "floor_1"
+            },
+            {
+              "label": "floor_2",
+              "value": "floor_2"
+            },
+            {
+              "label": "floor_3",
+              "value": "floor_3"
+            },
+            {
+              "label": "floor_4",
+              "value": "floor_4"
+            },
+            {
+              "label": "floor_5",
+              "value": "floor_5"
+            }
+          ]
+        },
+        "node_data": {}
+      }
+    },
+    {
+      "id": "scope-guard",
+      "type": "condition-node",
+      "x": 1200,
+      "y": 300,
+      "properties": {
+        "stepName": "scope-guard",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "allowed",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "global",
+                    "space_id"
+                  ],
+                  "compare": "eq",
+                  "value": "replace-with-business-space-id"
+                },
+                {
+                  "field": [
+                    "global",
+                    "domain"
+                  ],
+                  "compare": "regex",
+                  "value": "help|product"
+                }
+              ]
+            },
+            {
+              "id": "denied",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "allowed",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "denied",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "denied",
+      "type": "reply-node",
+      "x": 1620,
+      "y": 300,
+      "properties": {
+        "stepName": "denied",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "answer",
+              "value": "answer"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reply_type": "custom",
+          "is_result": true,
+          "content": "{\"error\":{\"code\":\"knowledge_access_denied\",\"retryable\":false},\"request_id\":{{ global.request_id|tojson }}}"
+        }
+      }
+    },
+    {
+      "id": "topic",
+      "type": "condition-node",
+      "x": 2040,
+      "y": 300,
+      "properties": {
+        "stepName": "topic",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "floor",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?:[一二三四五六七八九十百零两0-9]+\\s*[楼层]|\\d+\\s*[fF]).*"
+                }
+              ]
+            },
+            {
+              "id": "help",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?:按钮|按键|麦克风|键盘|跳跃|奔跑|视角|设置|屏幕|界面|社交岛).*"
+                }
+              ]
+            },
+            {
+              "id": "scene",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "floor",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "help",
+            "height": 100
+          },
+          {
+            "index": 2,
+            "id": "scene",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "scene-published",
+      "type": "search-document-node",
+      "x": 360,
+      "y": 820,
+      "properties": {
+        "stepName": "scene-published",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "document_list",
+              "value": "document_list"
+            },
+            {
+              "label": "knowledge_list",
+              "value": "knowledge_list"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "knowledge_id_list": [
+            "00000000-0000-4000-8000-000000000001"
+          ],
+          "search_mode": "custom",
+          "search_scope_type": "custom",
+          "search_condition_type": "AND",
+          "search_condition_list": [
+            {
+              "key": "release",
+              "compare": "eq",
+              "value": "published"
+            },
+            {
+              "key": "space_id",
+              "compare": "eq",
+              "value": "replace-with-business-space-id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "help-published",
+      "type": "search-document-node",
+      "x": 780,
+      "y": 820,
+      "properties": {
+        "stepName": "help-published",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "document_list",
+              "value": "document_list"
+            },
+            {
+              "label": "knowledge_list",
+              "value": "knowledge_list"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "knowledge_id_list": [
+            "00000000-0000-4000-8000-000000000002"
+          ],
+          "search_mode": "custom",
+          "search_scope_type": "custom",
+          "search_condition_type": "AND",
+          "search_condition_list": [
+            {
+              "key": "release",
+              "compare": "eq",
+              "value": "published"
+            },
+            {
+              "key": "space_id",
+              "compare": "eq",
+              "value": "replace-with-business-space-id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "help-scope",
+      "type": "variable-assign-node",
+      "x": 1200,
+      "y": 820,
+      "properties": {
+        "stepName": "help-scope",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "document_scope",
+              "fields": [
+                "global",
+                "document_scope"
+              ],
+              "type": "string",
+              "source": "referencing",
+              "reference": [
+                "help-published",
+                "document_list"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "reset-floors",
+      "type": "variable-assign-node",
+      "x": 1620,
+      "y": 820,
+      "properties": {
+        "stepName": "reset-floors",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_1",
+              "fields": [
+                "global",
+                "floor_1"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "__none__"
+            },
+            {
+              "name": "floor_2",
+              "fields": [
+                "global",
+                "floor_2"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "__none__"
+            },
+            {
+              "name": "floor_3",
+              "fields": [
+                "global",
+                "floor_3"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "__none__"
+            },
+            {
+              "name": "floor_4",
+              "fields": [
+                "global",
+                "floor_4"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "__none__"
+            },
+            {
+              "name": "floor_5",
+              "fields": [
+                "global",
+                "floor_5"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "__none__"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-1",
+      "type": "condition-node",
+      "x": 2040,
+      "y": 820,
+      "properties": {
+        "stepName": "floor-1",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?<![零一二三四五六七八九十百0-9])(?:1\\s*(?:楼|层|f)|一\\s*[楼层]).*"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-1",
+      "type": "variable-assign-node",
+      "x": 360,
+      "y": 1340,
+      "properties": {
+        "stepName": "set-1",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_1",
+              "fields": [
+                "global",
+                "floor_1"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-2",
+      "type": "condition-node",
+      "x": 780,
+      "y": 1340,
+      "properties": {
+        "stepName": "floor-2",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?<![零一二三四五六七八九十百0-9])(?:2\\s*(?:楼|层|f)|二\\s*[楼层]).*"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-2",
+      "type": "variable-assign-node",
+      "x": 1200,
+      "y": 1340,
+      "properties": {
+        "stepName": "set-2",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_2",
+              "fields": [
+                "global",
+                "floor_2"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-3",
+      "type": "condition-node",
+      "x": 1620,
+      "y": 1340,
+      "properties": {
+        "stepName": "floor-3",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?<![零一二三四五六七八九十百0-9])(?:3\\s*(?:楼|层|f)|三\\s*[楼层]).*"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-3",
+      "type": "variable-assign-node",
+      "x": 2040,
+      "y": 1340,
+      "properties": {
+        "stepName": "set-3",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_3",
+              "fields": [
+                "global",
+                "floor_3"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-4",
+      "type": "condition-node",
+      "x": 360,
+      "y": 1860,
+      "properties": {
+        "stepName": "floor-4",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?<![零一二三四五六七八九十百0-9])(?:4\\s*(?:楼|层|f)|四\\s*[楼层]).*"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-4",
+      "type": "variable-assign-node",
+      "x": 780,
+      "y": 1860,
+      "properties": {
+        "stepName": "set-4",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_4",
+              "fields": [
+                "global",
+                "floor_4"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "4"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-5",
+      "type": "condition-node",
+      "x": 1200,
+      "y": 1860,
+      "properties": {
+        "stepName": "floor-5",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?<![零一二三四五六七八九十百0-9])(?:5\\s*(?:楼|层|f)|五\\s*[楼层]).*"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "set-5",
+      "type": "variable-assign-node",
+      "x": 1620,
+      "y": 1860,
+      "properties": {
+        "stepName": "set-5",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "floor_5",
+              "fields": [
+                "global",
+                "floor_5"
+              ],
+              "type": "string",
+              "source": "custom",
+              "value": "5"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "has-floor",
+      "type": "condition-node",
+      "x": 2040,
+      "y": 1860,
+      "properties": {
+        "stepName": "has-floor",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "yes",
+              "type": "IF",
+              "condition": "or",
+              "conditions": [
+                {
+                  "field": [
+                    "global",
+                    "floor_1"
+                  ],
+                  "compare": "not_eq",
+                  "value": "__none__"
+                },
+                {
+                  "field": [
+                    "global",
+                    "floor_2"
+                  ],
+                  "compare": "not_eq",
+                  "value": "__none__"
+                },
+                {
+                  "field": [
+                    "global",
+                    "floor_3"
+                  ],
+                  "compare": "not_eq",
+                  "value": "__none__"
+                },
+                {
+                  "field": [
+                    "global",
+                    "floor_4"
+                  ],
+                  "compare": "not_eq",
+                  "value": "__none__"
+                },
+                {
+                  "field": [
+                    "global",
+                    "floor_5"
+                  ],
+                  "compare": "not_eq",
+                  "value": "__none__"
+                }
+              ]
+            },
+            {
+              "id": "no",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "yes",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "no",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "floor-documents",
+      "type": "search-document-node",
+      "x": 360,
+      "y": 2380,
+      "properties": {
+        "stepName": "floor-documents",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "document_list",
+              "value": "document_list"
+            },
+            {
+              "label": "knowledge_list",
+              "value": "knowledge_list"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "knowledge_id_list": [],
+          "search_mode": "custom",
+          "search_scope_type": "referencing",
+          "search_scope_source": "document",
+          "search_scope_reference": [
+            "scene-published",
+            "document_list"
+          ],
+          "search_condition_type": "OR",
+          "search_condition_list": [
+            {
+              "key": "floor",
+              "compare": "eq",
+              "value": "{{ global.floor_1 }}"
+            },
+            {
+              "key": "floor",
+              "compare": "eq",
+              "value": "{{ global.floor_2 }}"
+            },
+            {
+              "key": "floor",
+              "compare": "eq",
+              "value": "{{ global.floor_3 }}"
+            },
+            {
+              "key": "floor",
+              "compare": "eq",
+              "value": "{{ global.floor_4 }}"
+            },
+            {
+              "key": "floor",
+              "compare": "eq",
+              "value": "{{ global.floor_5 }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "floor-scope",
+      "type": "variable-assign-node",
+      "x": 780,
+      "y": 2380,
+      "properties": {
+        "stepName": "floor-scope",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "document_scope",
+              "fields": [
+                "global",
+                "document_scope"
+              ],
+              "type": "string",
+              "source": "referencing",
+              "reference": [
+                "floor-documents",
+                "document_list"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "missing-target",
+      "type": "condition-node",
+      "x": 1200,
+      "y": 2380,
+      "properties": {
+        "stepName": "missing-target",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "branch_name",
+              "value": "branch_name"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "branch": [
+            {
+              "id": "gap",
+              "type": "IF",
+              "condition": "and",
+              "conditions": [
+                {
+                  "field": [
+                    "start-node",
+                    "question"
+                  ],
+                  "compare": "regex",
+                  "value": "(?is).*(?:这里|那里|这层|本层|当前楼层|[一二三四五六七八九十百零两0-9]+\\s*[楼层]|\\d+\\s*f).*"
+                }
+              ]
+            },
+            {
+              "id": "general",
+              "type": "ELSE",
+              "condition": "and",
+              "conditions": []
+            }
+          ]
+        },
+        "branch_condition_list": [
+          {
+            "index": 0,
+            "id": "gap",
+            "height": 100
+          },
+          {
+            "index": 1,
+            "id": "general",
+            "height": 100
+          }
+        ]
+      }
+    },
+    {
+      "id": "target-gap",
+      "type": "reply-node",
+      "x": 1620,
+      "y": 2380,
+      "properties": {
+        "stepName": "target-gap",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "answer",
+              "value": "answer"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reply_type": "custom",
+          "is_result": true,
+          "content": "{{ {\"status\":\"no_evidence\",\"context\":\"\",\"sources\":[], \"gaps\":[\"请明确楼层，或该楼层尚无已发布资料。\"],\"trace_id\":global.chat_id}|tojson }}"
+        }
+      }
+    },
+    {
+      "id": "general-scope",
+      "type": "variable-assign-node",
+      "x": 2040,
+      "y": 2380,
+      "properties": {
+        "stepName": "general-scope",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [],
+          "globalFields": []
+        },
+        "node_data": {
+          "variable_list": [
+            {
+              "name": "document_scope",
+              "fields": [
+                "global",
+                "document_scope"
+              ],
+              "type": "string",
+              "source": "referencing",
+              "reference": [
+                "scene-published",
+                "document_list"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "search",
+      "type": "search-knowledge-node",
+      "x": 360,
+      "y": 2900,
+      "properties": {
+        "stepName": "search",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "paragraph_list",
+              "value": "paragraph_list"
+            },
+            {
+              "label": "data",
+              "value": "data"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "knowledge_id_list": [],
+          "search_scope_type": "referencing",
+          "search_scope_source": "document",
+          "search_scope_reference": [
+            "global",
+            "document_scope"
+          ],
+          "knowledge_setting": {
+            "top_n": 12,
+            "similarity": 0.25,
+            "search_mode": "blend",
+            "max_paragraph_char_number": 12000
+          },
+          "question_reference_address": [
+            "start-node",
+            "question"
+          ],
+          "show_knowledge": false
+        }
+      }
+    },
+    {
+      "id": "evidence",
+      "type": "reranker-node",
+      "x": 780,
+      "y": 2900,
+      "properties": {
+        "stepName": "Evidence",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "result_list",
+              "value": "result_list"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reranker_setting": {
+            "top_n": 4,
+            "similarity": 0.1,
+            "max_paragraph_char_number": 12000
+          },
+          "question_reference_address": [
+            "start-node",
+            "question"
+          ],
+          "reranker_model_id": "00000000-0000-4000-8000-000000000003",
+          "reranker_model_id_type": "custom",
+          "reranker_reference_list": [
+            [
+              "search",
+              "paragraph_list"
+            ]
+          ],
+          "show_knowledge": false
+        }
+      }
+    },
+    {
+      "id": "reply",
+      "type": "reply-node",
+      "x": 1200,
+      "y": 2900,
+      "properties": {
+        "stepName": "reply",
+        "width": 340,
+        "height": 300,
+        "condition": "OR",
+        "config": {
+          "fields": [
+            {
+              "label": "answer",
+              "value": "answer"
+            }
+          ],
+          "globalFields": []
+        },
+        "node_data": {
+          "reply_type": "custom",
+          "is_result": true,
+          "content": "{# Native Reply node: format retrieved paragraphs, without an answering model. #}\n{% set state = namespace(context='', sources=[], truncated=false) %}\n{% set budget = [global.max_context_tokens|int, 16000]|min %}\n{% for item in Evidence.result_list %}\n  {% set p = item.get('metadata', item) %}\n  {% set text = p.get('content', '') %}\n  {% if text and state.sources|length < 4 %}\n    {% set sid = 'S' ~ (state.sources|length + 1) %}\n    {% set title = p.get('document_name', '') or p.get('title', '') or 'MaxKB document' %}\n    {% set locator = p.get('title', '') or ('paragraph ' ~ p.get('id', '')) %}\n    {% set ref = 'maxkb://' ~ p.get('knowledge_id', '') ~ '/' ~ p.get('document_id', '') ~ '/' ~ p.get('id', '') ~ '@' ~ p.get('update_time', '') %}\n    {% set source = {'id':sid, 'title':title, 'locator':locator, 'ref':ref} %}\n    {% set header = '\\n[' ~ sid ~ '] ' ~ title ~ ' · ' ~ locator ~ '\\n' %}\n    {% set cost = (state.context ~ header).encode('utf-8')|length + ((state.sources + [source])|tojson)|length %}\n    {% set remaining = budget - cost %}\n    {% if remaining > 0 %}\n      {% if text.encode('utf-8')|length > remaining %}\n        {% set text = text[:remaining // 4] %}\n        {% set state.truncated = true %}\n      {% endif %}\n      {% if text|trim %}\n        {% set state.context = state.context ~ header ~ text %}\n        {% set state.sources = state.sources + [source] %}\n      {% endif %}\n    {% else %}\n      {% set state.truncated = true %}\n    {% endif %}\n  {% endif %}\n{% endfor %}\n{% set status = 'no_evidence' if not state.sources else ('partial' if state.truncated else 'ok') %}\n{% set gaps = ['上下文预算不足，请缩小问题范围。'] if state.truncated else ([] if state.sources else ['当前范围未找到足够的已发布证据。']) %}\n{{ {'status':status, 'context':state.context, 'sources':state.sources, 'gaps':gaps, 'trace_id':global.chat_id}|tojson }}\n"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-0",
+      "type": "app-edge",
+      "sourceNodeId": "start-node",
+      "targetNodeId": "scope-guard",
+      "sourceAnchorId": "start-node_right",
+      "targetAnchorId": "scope-guard_left"
+    },
+    {
+      "id": "edge-1",
+      "type": "app-edge",
+      "sourceNodeId": "scope-guard",
+      "targetNodeId": "denied",
+      "sourceAnchorId": "scope-guard_denied_right",
+      "targetAnchorId": "denied_left"
+    },
+    {
+      "id": "edge-2",
+      "type": "app-edge",
+      "sourceNodeId": "scope-guard",
+      "targetNodeId": "topic",
+      "sourceAnchorId": "scope-guard_allowed_right",
+      "targetAnchorId": "topic_left"
+    },
+    {
+      "id": "edge-3",
+      "type": "app-edge",
+      "sourceNodeId": "topic",
+      "targetNodeId": "scene-published",
+      "sourceAnchorId": "topic_floor_right",
+      "targetAnchorId": "scene-published_left"
+    },
+    {
+      "id": "edge-4",
+      "type": "app-edge",
+      "sourceNodeId": "topic",
+      "targetNodeId": "scene-published",
+      "sourceAnchorId": "topic_scene_right",
+      "targetAnchorId": "scene-published_left"
+    },
+    {
+      "id": "edge-5",
+      "type": "app-edge",
+      "sourceNodeId": "topic",
+      "targetNodeId": "help-published",
+      "sourceAnchorId": "topic_help_right",
+      "targetAnchorId": "help-published_left"
+    },
+    {
+      "id": "edge-6",
+      "type": "app-edge",
+      "sourceNodeId": "help-published",
+      "targetNodeId": "help-scope",
+      "sourceAnchorId": "help-published_right",
+      "targetAnchorId": "help-scope_left"
+    },
+    {
+      "id": "edge-7",
+      "type": "app-edge",
+      "sourceNodeId": "help-scope",
+      "targetNodeId": "search",
+      "sourceAnchorId": "help-scope_right",
+      "targetAnchorId": "search_left"
+    },
+    {
+      "id": "edge-8",
+      "type": "app-edge",
+      "sourceNodeId": "scene-published",
+      "targetNodeId": "reset-floors",
+      "sourceAnchorId": "scene-published_right",
+      "targetAnchorId": "reset-floors_left"
+    },
+    {
+      "id": "edge-9",
+      "type": "app-edge",
+      "sourceNodeId": "floor-1",
+      "targetNodeId": "set-1",
+      "sourceAnchorId": "floor-1_yes_right",
+      "targetAnchorId": "set-1_left"
+    },
+    {
+      "id": "edge-10",
+      "type": "app-edge",
+      "sourceNodeId": "floor-1",
+      "targetNodeId": "floor-2",
+      "sourceAnchorId": "floor-1_no_right",
+      "targetAnchorId": "floor-2_left"
+    },
+    {
+      "id": "edge-11",
+      "type": "app-edge",
+      "sourceNodeId": "set-1",
+      "targetNodeId": "floor-2",
+      "sourceAnchorId": "set-1_right",
+      "targetAnchorId": "floor-2_left"
+    },
+    {
+      "id": "edge-12",
+      "type": "app-edge",
+      "sourceNodeId": "floor-2",
+      "targetNodeId": "set-2",
+      "sourceAnchorId": "floor-2_yes_right",
+      "targetAnchorId": "set-2_left"
+    },
+    {
+      "id": "edge-13",
+      "type": "app-edge",
+      "sourceNodeId": "floor-2",
+      "targetNodeId": "floor-3",
+      "sourceAnchorId": "floor-2_no_right",
+      "targetAnchorId": "floor-3_left"
+    },
+    {
+      "id": "edge-14",
+      "type": "app-edge",
+      "sourceNodeId": "set-2",
+      "targetNodeId": "floor-3",
+      "sourceAnchorId": "set-2_right",
+      "targetAnchorId": "floor-3_left"
+    },
+    {
+      "id": "edge-15",
+      "type": "app-edge",
+      "sourceNodeId": "floor-3",
+      "targetNodeId": "set-3",
+      "sourceAnchorId": "floor-3_yes_right",
+      "targetAnchorId": "set-3_left"
+    },
+    {
+      "id": "edge-16",
+      "type": "app-edge",
+      "sourceNodeId": "floor-3",
+      "targetNodeId": "floor-4",
+      "sourceAnchorId": "floor-3_no_right",
+      "targetAnchorId": "floor-4_left"
+    },
+    {
+      "id": "edge-17",
+      "type": "app-edge",
+      "sourceNodeId": "set-3",
+      "targetNodeId": "floor-4",
+      "sourceAnchorId": "set-3_right",
+      "targetAnchorId": "floor-4_left"
+    },
+    {
+      "id": "edge-18",
+      "type": "app-edge",
+      "sourceNodeId": "floor-4",
+      "targetNodeId": "set-4",
+      "sourceAnchorId": "floor-4_yes_right",
+      "targetAnchorId": "set-4_left"
+    },
+    {
+      "id": "edge-19",
+      "type": "app-edge",
+      "sourceNodeId": "floor-4",
+      "targetNodeId": "floor-5",
+      "sourceAnchorId": "floor-4_no_right",
+      "targetAnchorId": "floor-5_left"
+    },
+    {
+      "id": "edge-20",
+      "type": "app-edge",
+      "sourceNodeId": "set-4",
+      "targetNodeId": "floor-5",
+      "sourceAnchorId": "set-4_right",
+      "targetAnchorId": "floor-5_left"
+    },
+    {
+      "id": "edge-21",
+      "type": "app-edge",
+      "sourceNodeId": "floor-5",
+      "targetNodeId": "set-5",
+      "sourceAnchorId": "floor-5_yes_right",
+      "targetAnchorId": "set-5_left"
+    },
+    {
+      "id": "edge-22",
+      "type": "app-edge",
+      "sourceNodeId": "floor-5",
+      "targetNodeId": "has-floor",
+      "sourceAnchorId": "floor-5_no_right",
+      "targetAnchorId": "has-floor_left"
+    },
+    {
+      "id": "edge-23",
+      "type": "app-edge",
+      "sourceNodeId": "set-5",
+      "targetNodeId": "has-floor",
+      "sourceAnchorId": "set-5_right",
+      "targetAnchorId": "has-floor_left"
+    },
+    {
+      "id": "edge-24",
+      "type": "app-edge",
+      "sourceNodeId": "reset-floors",
+      "targetNodeId": "floor-1",
+      "sourceAnchorId": "reset-floors_right",
+      "targetAnchorId": "floor-1_left"
+    },
+    {
+      "id": "edge-25",
+      "type": "app-edge",
+      "sourceNodeId": "has-floor",
+      "targetNodeId": "floor-documents",
+      "sourceAnchorId": "has-floor_yes_right",
+      "targetAnchorId": "floor-documents_left"
+    },
+    {
+      "id": "edge-26",
+      "type": "app-edge",
+      "sourceNodeId": "floor-documents",
+      "targetNodeId": "floor-scope",
+      "sourceAnchorId": "floor-documents_right",
+      "targetAnchorId": "floor-scope_left"
+    },
+    {
+      "id": "edge-27",
+      "type": "app-edge",
+      "sourceNodeId": "floor-scope",
+      "targetNodeId": "search",
+      "sourceAnchorId": "floor-scope_right",
+      "targetAnchorId": "search_left"
+    },
+    {
+      "id": "edge-28",
+      "type": "app-edge",
+      "sourceNodeId": "has-floor",
+      "targetNodeId": "missing-target",
+      "sourceAnchorId": "has-floor_no_right",
+      "targetAnchorId": "missing-target_left"
+    },
+    {
+      "id": "edge-29",
+      "type": "app-edge",
+      "sourceNodeId": "missing-target",
+      "targetNodeId": "target-gap",
+      "sourceAnchorId": "missing-target_gap_right",
+      "targetAnchorId": "target-gap_left"
+    },
+    {
+      "id": "edge-30",
+      "type": "app-edge",
+      "sourceNodeId": "missing-target",
+      "targetNodeId": "general-scope",
+      "sourceAnchorId": "missing-target_general_right",
+      "targetAnchorId": "general-scope_left"
+    },
+    {
+      "id": "edge-31",
+      "type": "app-edge",
+      "sourceNodeId": "general-scope",
+      "targetNodeId": "search",
+      "sourceAnchorId": "general-scope_right",
+      "targetAnchorId": "search_left"
+    },
+    {
+      "id": "edge-32",
+      "type": "app-edge",
+      "sourceNodeId": "search",
+      "targetNodeId": "evidence",
+      "sourceAnchorId": "search_right",
+      "targetAnchorId": "evidence_left"
+    },
+    {
+      "id": "edge-33",
+      "type": "app-edge",
+      "sourceNodeId": "evidence",
+      "targetNodeId": "reply",
+      "sourceAnchorId": "evidence_right",
+      "targetAnchorId": "reply_left"
+    }
+  ]
+}

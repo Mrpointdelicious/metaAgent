@@ -1,0 +1,44 @@
+# Reproduce the existing deployment. Prepare both historical override files first.
+# This creates a NEW data volume by default; it does not attach the old MetaRag volume.
+name: maxkb-native
+
+services:
+  maxkb:
+    image: registry.fit2cloud.com/maxkb/maxkb:v2.10.7-lts@sha256:5ffdafc7956a472ea59ef6820aec5c965282d37c1875109378abae1cbbc2b067
+    ports:
+      - "${MAXKB_BIND_IP:-127.0.0.1}:${MAXKB_PORT:-18081}:8080"
+    environment:
+      MAXKB_CORE_WORKER: "1"
+      MAXKB_LOCAL_MODEL_HOST_WORKER: "1"
+      MAXKB_DB_MAX_OVERFLOW: "10"
+      OMP_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - maxkb_data:/opt/maxkb
+      - type: bind
+        source: ${MAXKB_EMBEDDING_FILE:-./runtime/provider_embedding.py}
+        target: /opt/maxkb-app/apps/models_provider/impl/aliyun_bai_lian_model_provider/model/embedding.py
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MAXKB_START_FILE:-./runtime/start-maxkb.sh}
+        target: /usr/bin/start-maxkb.sh
+        read_only: true
+        bind:
+          create_host_path: false
+    mem_limit: ${MAXKB_MEMORY:-4g}
+    cpus: ${MAXKB_CPUS:-2}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/admin/', timeout=5)"]
+      interval: 15s
+      timeout: 8s
+      start_period: 180s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  maxkb_data:
+    name: ${MAXKB_DATA_VOLUME:-maxkb_native_data}

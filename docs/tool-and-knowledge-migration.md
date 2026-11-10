@@ -23,8 +23,11 @@ META_AGENT__ASSESSMENT_REPORTS_ENABLED=false
 
 ## 在 .env 配置知识源
 
-需要直接使用现有 MaxKB 时，可配置 `protocol=maxkb`，详见
-[MaxKB 原生 API 直连](maxkb-direct.md)。该模式在 Agent 内直接调用 MaxKB，不需要额外桥接容器。
+MaxKB 统一使用 `protocol=knowledge-search-v1`；原生管理 API 直连已退出。
+当前部署配置与迁移步骤以 [MaxKB 接入说明](maxkb-knowledge-search-v1.md) 为准。
+MaxKB 推荐使用 `transport=maxkb-workflow` 复用原生应用 API，已在本地完成楼层和操作说明验证。
+以下多知识源示例展示 `transport=http` 的通用 HTTP 契约，不代表对应地址已经部署，
+也不要求为 MaxKB 额外部署示例中的 `rag-portfolio-api`。
 
 将以下配置加入部署使用的 `.env`，替换真实地址和凭据；`KNOWLEDGE_SOURCES` 的 JSON 必须写在一行：
 
@@ -49,12 +52,13 @@ HOSPITAL_KNOWLEDGE_TOKEN=replace-with-hospital-service-token
 `timeout_seconds` 可按源设置，默认 20 秒，并受整轮及工具超时约束。
 修改环境配置后重启服务或重建容器进程；运行中的进程不会自动重载配置。
 
-`META_AGENT__KNOWLEDGE_SOURCES=[]` 保留原本的本地批准语料模式，由 `KNOWLEDGE_CORPUS_PATH` 指定文件。
-配置远程源后优先使用远程契约；无证据、权限拒绝或故障不会静默切换到另一个源或本地语料。
+`META_AGENT__KNOWLEDGE_SOURCES=[]` 表示知识服务尚未配置。
+本地批准语料与旧 Portfolio 回退已移除；无证据、权限拒绝或故障不会切换知识源。
 
 ## 接口与边界
 
-按源配置的 URL 发送 POST，使用 `Authorization: Bearer <token>` 和请求追踪头 `X-Request-ID`：
+按源配置的 URL 发送 POST，使用 `Authorization: Bearer <token>` 和请求追踪头 `X-Request-ID`。
+以下是通用 HTTP 模式；原生工作流模式只转换 HTTP 包装层，字段映射见接入说明。
 
 ```json
 {
@@ -85,13 +89,14 @@ HOSPITAL_KNOWLEDGE_TOKEN=replace-with-hospital-service-token
 知识检索共用现有工具调用预算及并发限制，不自动重试，不跟随重定向。
 跨轮重新检索已发布知识，不将仍在 TTL 内的上轮知识结果当作本轮有效证据。
 
-本次只迁移统一接口客户端，不迁移 MaxKB、旧 Portfolio `/v1/retrieve` 实现、索引、重排、场景目录同步或提示词/事件框架重构。
+初次迁移只迁移统一接口客户端，不迁移旧 Portfolio `/v1/retrieve` 实现、索引、重排、场景目录同步或提示词/事件框架重构。
+2026 年 11 月补充了 MaxKB 原生工作流部署配置；召回逻辑继续留在 MaxKB，详见 [召回方案](maxkb-retrieval-improvement-plan.md)。
 `main.py`、`interactive.py`、`.env`、`.env.local` 保持原样；原有依赖锁定版本及阿里云镜像保留。
 Dockerfile 测试阶段追加复制交互脚本，供真实 HTTP 客户端回归使用，运行阶段及镜像源配置保持不变。
 `uv.lock` 只增加契约校验所需依赖，`.env.example` 与 README 增补配置说明。
 交互客户端的服务端兼容已独立实现，详见 [交互聊天接口兼容](interactive-chat-compat.md)。
 
-## 验证
+## 2026 年 10 月迁移时的验证记录
 
 - 本地完整回归：221 项通过，1 项因未配置 `META_AGENT_TEST_POSTGRES_DSN` 跳过。
 - 原有 Dockerfile 的 test 镜像构建通过；容器内回归同样为 221 项通过、1 项跳过。

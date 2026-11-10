@@ -275,10 +275,11 @@ class PlanCompiler:
                 else:
                     add([gid], "doctors.search")
             elif g.kind == "knowledge_query":
-                if g.domain not in {"health", "product", "help"} or not (
-                    self.settings.knowledge_sources or self.settings.knowledge_corpus_path
+                if (
+                    g.domain not in {"health", "product", "help"}
+                    or not self.settings.knowledge_sources
                 ):
-                    result.dispositions[gid] = ("unavailable", "尚无已批准的对应知识语料。")
+                    result.dispositions[gid] = ("unavailable", "知识检索服务尚未配置。")
                 else:
                     add([gid], "knowledge.search", {"query": g.query_span, "domain": g.domain})
             elif g.kind in {

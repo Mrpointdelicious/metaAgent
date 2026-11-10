@@ -155,7 +155,7 @@ def test_selects_independent_provider_and_preserves_verifiable_evidence(monkeypa
         ("timeout", "knowledge_unavailable"),
     ],
 )
-def test_provider_failure_does_not_switch_source_or_use_local_corpus(monkeypatch, mode, expected):
+def test_provider_failure_does_not_switch_source_or_retry(monkeypatch, mode, expected):
     async def check():
         seen = []
 
@@ -181,7 +181,7 @@ def test_provider_failure_does_not_switch_source_or_use_local_corpus(monkeypatch
             return httpx.Response(200, json=value)
 
         mock_http(monkeypatch, handle)
-        ctx = context(max_tool_response_bytes=4096, knowledge_corpus_path="must-not-be-read.json")
+        ctx = context(max_tool_response_bytes=4096)
         if mode in {"partial", "empty"}:
             result = await KnowledgeAdapter().execute(
                 SimpleNamespace(task_id="search"), {"query": "问题"}, ctx
@@ -207,6 +207,9 @@ def test_provider_failure_does_not_switch_source_or_use_local_corpus(monkeypatch
         {"query": "q", "scope": {"space_id": "other"}},
         {"query": "q", "source": "not-configured"},
         {"query": "q", "domain": "help", "source": "medical"},
+        {"query": "q", "floor": 2},
+        {"query": "q", "pos": "三楼"},
+        {"query": "q", "kb_ids": ["scene-kb"], "top_k": 4},
     ],
 )
 def test_model_cannot_override_scope_or_use_an_unconfigured_source(monkeypatch, args):
@@ -371,5 +374,105 @@ def test_remote_knowledge_is_refreshed_next_turn_even_before_evidence_ttl():
         payload = json.loads(result[-1].content)
         assert payload["status"] == "expired"
         assert "old evidence" not in result[-1].content
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "legacy",
+    [
+        {"knowledge_corpus_path": "retired-corpus.json"},
+        {"portfolio_enabled": True},
+        {"portfolio_scene_catalog_enabled": True},
+    ],
+)
+def test_legacy_retrieval_configuration_requires_explicit_migration(legacy):
+    with pytest.raises(ValidationError, match="knowledge-search-v1"):
+        Settings(_env_file=None, **legacy)
+
+
+def test_native_maxkb_configuration_is_rejected_before_any_network():
+    with pytest.raises(ValidationError):
+        Settings(
+            _env_file=None,
+            knowledge_sources=[
+                {
+                    **SOURCES[2],
+                    "protocol": "maxkb",
+                    "maxkb": {"password": "old-secret"},
+                }
+            ],
+        )
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, knowledge_sources=[{**SOURCES[2], "maxkb": {}}])
+
+
+def test_unconfigured_adapter_reports_unavailable_without_http(monkeypatch):
+    async def check():
+        mock_http(monkeypatch, lambda req: pytest.fail("No source must mean no HTTP request"))
+        ctx = context()
+        ctx.settings.knowledge_sources = []
+        with pytest.raises(DomainError) as error:
+            await KnowledgeAdapter().execute(SimpleNamespace(task_id="search"), {"query": "q"}, ctx)
+        assert error.value.code == "knowledge_source_unavailable"
+        assert ctx.tool_calls == 0
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("query", ["介绍二楼", "2F 有哪些房间", "二楼和三楼对比", "从二楼到三楼"])
+def test_client_keeps_query_context_and_provider_order_without_floor_routing(monkeypatch, query):
+    async def check():
+        seen = []
+        value = response()
+        value["context"] = "服务端已整理的二楼与三楼对比原文。" * 160
+        value["sources"] = [
+            {"id": f"S{i}", "title": "资料", "locator": f"段落 {i}", "ref": f"version#p{i}"}
+            for i in (7, 2, 6, 1, 5, 3, 4)
+        ]
+
+        def handle(req):
+            seen.append(req)
+            return httpx.Response(200, json=value)
+
+        mock_http(monkeypatch, handle)
+        ctx = context()
+        ctx.business_inputs = {"pos": "三楼", "patient_id": "must-not-be-sent"}
+        result = await KnowledgeAdapter().execute(
+            SimpleNamespace(task_id="search"), {"query": query, "domain": "product"}, ctx
+        )
+        assert len(seen) == 1
+        assert seen[0].method == "POST"
+        assert json.loads(seen[0].content) == {
+            "query": query,
+            "domain": "product",
+            "scope": {"space_id": "hospital-a"},
+            "limits": {"max_context_tokens": 4000},
+        }
+        assert seen[0].headers["X-Request-ID"] == ctx.record.request_id
+        assert result.facts[0].fact.value == value["context"]
+        assert result.outputs["doc_refs"] == [s["ref"] for s in value["sources"]]
+        assert await ctx.repository.verify_facts(ctx.scope.scope_hash, result.facts)
+
+    asyncio.run(check())
+
+
+def test_total_http_deadline_is_bounded_and_not_retried(monkeypatch):
+    async def check():
+        seen = []
+
+        async def slow(req):
+            seen.append(req)
+            await asyncio.sleep(1)
+            return httpx.Response(200, json=response())
+
+        mock_http(monkeypatch, slow)
+        ctx = context()
+        ctx.settings.knowledge_sources[0].timeout_seconds = 0.02
+        with pytest.raises(DomainError) as error:
+            await KnowledgeAdapter().execute(SimpleNamespace(task_id="search"), {"query": "q"}, ctx)
+        assert error.value.code == "knowledge_unavailable"
+        assert error.value.retryable
+        assert len(seen) == 1
 
     asyncio.run(check())

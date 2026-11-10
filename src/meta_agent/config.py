@@ -7,7 +7,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from meta_agent.integrations.knowledge import KnowledgeSourceConfig
@@ -140,24 +140,15 @@ class Settings(BaseSettings):
     scene_enabled: bool = True
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
-    knowledge_corpus_path: str = ""
-    # 多知识源统一契约（knowledge-search-v1）；非空时 search_knowledge 优先走此接入。
+    # search_knowledge 仅使用统一契约；空列表表示尚未接通知识服务。
     knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
-    # 兼容旧配置名；知识检索统一使用 search_knowledge，不再启用独立企业问答。
+    # 兼容旧部署的占位配置，不再决定知识检索的实现。
     knowledge_backend: Literal["maxkb"] = "maxkb"
     knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
-    # rag-portfolio 接入：health 全局文献 + 按 spaceId 选择的医院 help/product。
+    # 仅用于发现尚未迁移的旧配置，不再启用任何本地/Portfolio 检索逻辑。
+    knowledge_corpus_path: str = ""
     portfolio_enabled: bool = False
-    portfolio_base_url: str = "http://rag-portfolio-api:8000"
-    portfolio_token: SecretStr = SecretStr("")
-    portfolio_kb_ids: list[str] = Field(default_factory=list)
-    portfolio_space_kb_ids: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
-    portfolio_help_token: SecretStr = SecretStr("")
-    portfolio_timeout_seconds: float = Field(default=20, gt=0, le=40)
-    portfolio_top_k: int = Field(default=5, ge=1, le=20)
-    portfolio_context_tokens: int = Field(default=4000, ge=128, le=16000)
     portfolio_scene_catalog_enabled: bool = False
-    portfolio_scene_catalog_ttl_seconds: float = Field(default=30, ge=1, le=300)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
     # 制品 URL 反代前缀归一化：后端返回的 image_url 用内部路径 /api/ai/...，
     # 而公开入口是 AI_WEBAPI_*_BASE_URL 里的 /aiwebapi/ai/...（差一个反代前缀）。
@@ -203,18 +194,6 @@ class Settings(BaseSettings):
                                 token = file_values.get(name, file_values.get(name.lower()))
                                 if token:
                                     item = {**item, "token_env": "", "token": token}
-                            native = item.get("maxkb")
-                            if isinstance(native, dict):
-                                native = dict(native)
-                                for field in ("username", "password"):
-                                    name = native.get(field + "_env", "")
-                                    if name and name not in os.environ and not native.get(field):
-                                        secret = file_values.get(
-                                            name, file_values.get(name.lower())
-                                        )
-                                        if secret:
-                                            native.update({field + "_env": "", field: secret})
-                                item = {**item, "maxkb": native}
                         resolved.append(item)
                     values = {**values, "knowledge_sources": resolved}
                 return values
@@ -234,6 +213,20 @@ class Settings(BaseSettings):
         if len({source.id for source in sources}) != len(sources):
             raise ValueError("knowledge source IDs must be unique")
         return sources
+
+    @model_validator(mode="after")
+    def reject_retired_knowledge_backends(self):
+        if (
+            self.knowledge_corpus_path
+            or self.portfolio_enabled
+            or self.portfolio_scene_catalog_enabled
+        ):
+            raise ValueError(
+                "Local corpus and Portfolio retrieval have been retired; "
+                "remove KNOWLEDGE_CORPUS_PATH/PORTFOLIO_* and configure "
+                "KNOWLEDGE_SOURCES with knowledge-search-v1"
+            )
+        return self
 
     def runtime_issues(self) -> list[str]:
         issues = []
