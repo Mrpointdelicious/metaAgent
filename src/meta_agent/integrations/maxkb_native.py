@@ -22,7 +22,10 @@ from meta_agent.integrations.knowledge import (
 
 DOMAIN_TYPES = {
     "health": {"clinical_kb", "rehab_kb"},
-    "help": {"sop_kb"},
+    # help 域纳入 scene_kb：楼层/科室/场景介绍只发布在场景库，而模型对
+    # 「介绍X楼」这类问题常选 help；不纳入则该类内容永远检索不到
+    # （2026-11-11 线上「介绍二楼」失败即此原因，三楼是因 sop_kb 恰有一份副本才侥幸命中）。
+    "help": {"sop_kb", "scene_kb"},
     "product": {"scene_kb", "hospital_kb", "device_kb", "sop_kb", "technical_kb"},
 }
 
@@ -203,7 +206,7 @@ async def search(source, payload, *, request_id, max_bytes):
                         meta["knowledge_id"] != knowledge_id
                         or hit["document_id"] != meta["document_id"]
                         or doc["knowledge_id"] != knowledge_id
-                        or doc.get("space_id") != space
+                        or space not in (doc.get("space_ids") or [doc.get("space_id")])
                         or doc.get("scope_kind") != "space"
                         or doc.get("knowledge_type") != route["knowledge_type"]
                         or hit["content"] != meta["text"]

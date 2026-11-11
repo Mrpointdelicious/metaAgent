@@ -6,6 +6,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -25,6 +26,7 @@ KB = "11111111-1111-4111-8111-111111111111"
 DOC = "22222222-2222-4222-8222-222222222222"
 PARAGRAPH = "33333333-3333-4333-8333-333333333333"
 SPACE = "医院A"
+SPACE_B = "d23735f8-9ad9-4546-9093-685b1b14592c"
 TEXT = "电脑端按空格键跳跃，按 Shift 键奔跑。"
 
 
@@ -175,6 +177,38 @@ def test_scope_denial_happens_before_login(source_data, monkeypatch, space):
     seen = mock_native(monkeypatch)
     with pytest.raises(KnowledgeAccessDenied):
         invoke(source_data, scope={} if space is None else {"space_id": space})
+    assert not seen
+
+
+def multi_space(data):
+    """把 fixture 快照改造成多 space 共享形态：routes 每个 space 一条，documents 带 space_ids。"""
+    path = Path(data["maxkb"]["catalog_path"])
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["routes"] = [
+        {**route, "space_id": space} for space in (SPACE, SPACE_B) for route in value["routes"]
+    ]
+    for document in value["documents"].values():
+        document["space_ids"] = [SPACE, SPACE_B]
+    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+    path.write_bytes(raw)
+    data["maxkb"]["catalog_sha256"] = hashlib.sha256(raw).hexdigest()
+    data["maxkb"]["allowed_space_ids"] = [SPACE, SPACE_B]
+    return data
+
+
+def test_multi_space_tenant_reads_the_same_knowledge(source_data, monkeypatch):
+    mock_native(monkeypatch)
+    value = invoke(multi_space(source_data), scope={"space_id": SPACE_B})
+    assert value["status"] == "ok" and TEXT in value["context"]
+
+
+def test_space_allowed_but_absent_from_catalog_yields_no_evidence(source_data, monkeypatch):
+    """白名单放行但快照里没有该 space 的路由时必须空结果，且不得发请求。"""
+    seen = mock_native(monkeypatch)
+    data = multi_space(source_data)
+    data["maxkb"]["allowed_space_ids"] = [SPACE, SPACE_B, "未登记院区"]
+    value = invoke(data, scope={"space_id": "未登记院区"})
+    assert value["status"] == "no_evidence" and not value["sources"]
     assert not seen
 
 
