@@ -10,6 +10,7 @@ import pytest
 
 from meta_agent.agent.tools import invoke_tool, spec
 from meta_agent.domains.scene import SceneAdapter
+from meta_agent.domains.scene_instruction import SceneIntentParser
 from meta_agent.events.dify import DifyEventAdapter
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
@@ -220,5 +221,60 @@ def test_missing_or_invalid_server_version_cannot_authorize_action(version):
             result = await invoke_tool(ctx, "navigate_scene", {"target": ctx.query})
             assert result["code"] == "invalid_contract"
             assert ctx.scope.scene_version is None and not ctx.record.action_delivery
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("我想回四楼", "去四楼"),
+        ("我想去四楼", "去四楼"),
+        ("带我回四楼", "去四楼"),
+        ("帮我回四楼", "去四楼"),
+        ("我要回四楼", "去四楼"),
+        ("请回四楼", "去四楼"),
+        ("回四楼", "去四楼"),
+        ("回社交岛", "去社交岛"),
+        ("回到入口", "回到入口"),
+        ("返回四楼", "返回四楼"),
+        ("带我去四楼", "去四楼"),
+        ("去二楼", "去二楼"),
+        ("打开个人中心", "打开个人中心"),
+        ("切换视角", "切换视角"),
+    ],
+)
+def test_canonicalize_normalizes_colloquial_motion_phrases(raw, expected):
+    assert SceneIntentParser().canonicalize(raw) == expected
+
+
+def test_colloquial_return_phrase_matches_after_canonicalization():
+    """「我想回四楼」原话透传会 unmatched，归一成「去四楼」后应命中点位。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "我想回四楼"
+            backend.overrides["navigate_scene"] = scene_body(["去四楼"])
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "succeeded"
+            assert backend.calls[0][1]["target"] == "去四楼"
+            assert len(ctx.record.action_delivery) == 1
+
+    asyncio.run(check())
+
+
+def test_canonicalization_keeps_unmatched_when_destination_unknown():
+    """归一后目的地仍不在目录里时保持 unmatched，不凭空造动作。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "我想回九十九楼"
+            backend.overrides["navigate_scene"] = scene_body(["去九十九楼"], statuses=["unmatched"])
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "partial"
+            assert backend.calls[0][1]["target"] == "去九十九楼"
+            assert not ctx.record.action_delivery
 
     asyncio.run(check())

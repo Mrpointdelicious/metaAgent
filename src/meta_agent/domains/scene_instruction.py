@@ -15,6 +15,9 @@ from meta_agent.domains.scene import SceneAdapter, numeric_envelope, source_text
 
 
 class SceneIntentParser:
+    # 口语前缀（敬语/意愿/带路），AI_WebApi 指令匹配器不识别，归一时剥掉。
+    _WISH_PREFIX = re.compile(r"^(?:请|麻烦|帮我|我想|我想要|我要|带我)+")
+
     def parse(self, target, ctx):
         if not target.strip() or source_text(target) not in source_text(ctx.query):
             raise DomainError(
@@ -25,6 +28,25 @@ class SceneIntentParser:
                 "scene_intent_uncertain", "请明确希望执行的动作。", outcome="clarification"
             )
         return target
+
+    def canonicalize(self, target: str) -> str:
+        """把「我想回四楼」这类口语归一成匹配器支持的「去四楼」。
+
+        AI_WebApi 只认「去X / 带我去X / 回到X / 返回X」，不认「回X」和
+        带「我想/我要/帮我/带我」前缀的变体。这里只做确定性改写：
+        剥掉前缀 + 把独立的「回」换成「去」。改写只删前缀、换一个字，
+        剩余部分仍是 parse() 已验证的原话片段，不破坏来源校验。
+        无需改写时原样返回（保持与既有「原话透传」行为一致）。
+        """
+        raw = source_text(target)
+        core = self._WISH_PREFIX.sub("", raw) or raw
+        if core.startswith("回") and not core.startswith(("回到", "返回")):
+            rewritten = "去" + core[1:]
+        else:
+            rewritten = core
+        if rewritten == raw:
+            return target
+        return rewritten
 
     def spans(self, target, commands):
         normalized, offset, spans = source_text(target), 0, []
@@ -59,7 +81,8 @@ class SceneCommandResolver:
             )
         parser = SceneIntentParser()
         target = parser.parse(args["target"], ctx)
-        payload = {"target": target, "spaceId": ctx.scope.space_id}
+        canonical = parser.canonicalize(target)
+        payload = {"target": canonical, "spaceId": ctx.scope.space_id}
         if ctx.scope.scene_version is not None:
             payload["expectedSceneVersion"] = ctx.scope.scene_version
         body = await ctx.call("navigate_scene", payload)
@@ -82,7 +105,7 @@ class SceneCommandResolver:
                 code="scene_catalog_unavailable",
                 message="当前没有可用场景点位或可解析指令。",
             )
-        spans = parser.spans(target, commands)
+        spans = parser.spans(canonical, commands)
         ids = [f"{task.task_id}_scene_{i}" for i in range(len(spans))]
         for gid, span in zip(ids, spans, strict=True):
             ctx.goals[gid] = Goal(goal_id=gid, kind="scene_action", domain="scene", query_span=span)
