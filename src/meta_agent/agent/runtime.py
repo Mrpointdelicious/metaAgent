@@ -63,7 +63,7 @@ class PatientContextMiddleware(AgentMiddleware):
             )
         knowledge_tool = next((t.name for t in tools if t.name == "search_knowledge"), None)
         if is_navigation_question(ctx.query) and knowledge_tool:
-            domain = "的 help/product 领域" if knowledge_tool == "search_knowledge" else ""
+            domain = "的 product 领域（场景库）" if knowledge_tool == "search_knowledge" else ""
             prompt += (
                 "\n本轮用户输入是在问路/问怎么去某个楼层或区域，请调用资料检索工具"
                 f"（{knowledge_tool}）{domain}按知识库内容回答，不要凭常识编造电梯、楼梯、"
@@ -74,6 +74,8 @@ class PatientContextMiddleware(AgentMiddleware):
                 "\n本轮用户输入是介绍/说明/功能类问题，请先调用资料检索工具"
                 f"（{knowledge_tool}）检索知识库，不要还没检索就先反问用户或凭通用知识作答；"
                 "检索后再判断信息是否足够。"
+                "涉及楼层、科室、布局、场景、医院环境介绍时，必须选 product 领域"
+                "（场景库 scene_kb），不要选 help。"
             )
         if is_chat_history_query(ctx.query) and any(t.name == "open_chat_history" for t in tools):
             prompt += (

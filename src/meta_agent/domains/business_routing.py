@@ -57,7 +57,7 @@ class BusinessRoute:
         hints = []
         if self.navigation_question:
             hints.append(
-                "用户在问路而非要求移动；检索help/product资料说明路线，不编造电梯、楼梯或点位。"
+                "用户在问路而非要求移动；检索product资料（场景库）说明路线，不编造电梯、楼梯或点位。"
             )
         elif self.knowledge:
             hints.append("介绍、说明、是什么、怎么用等问题先检索知识资料；依据原文和真实来源回答。")

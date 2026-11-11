@@ -147,7 +147,9 @@ def parse_medical_data(body: Any) -> dict[str, Any]:
 def parse_user_role(arg1: Any) -> dict[str, str]:
     """从 GetUserIdAndRole 响应中提取 UserId / TenantId。"""
     data = json.loads(arg1) if isinstance(arg1, str) else arg1
-    inner = data.get("data", {}) if isinstance(data, dict) else {}
+    # 注意：接口可能返回 "data": null，dict.get 的默认值只在 key 缺失时生效，需显式判型
+    inner = data.get("data") if isinstance(data, dict) else None
+    inner = inner if isinstance(inner, dict) else {}
     return {
         "UserId": str(inner.get("UserId", "")),
         "TenantId": str(inner.get("TenantId", "")),
