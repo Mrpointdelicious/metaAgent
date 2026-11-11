@@ -85,15 +85,26 @@ def post_process(
     # 实时下发（见 agent.tools.invoke_tool），此处不再拼进最终答复。
     command = ""
     if not command:
-        # 打开历史对话记录：legacy_web 即 "[web]<url>"，前置到答复前；
-        # 答复文本用工具的 patient_message（不采纳 LLM 可能拼出的网址/多余话术）。
-        for item in collected:
-            raw = item.get("raw") or {}
-            if item.get("tool") == "open_chat_history":
-                command = raw.get("legacy_web") or ""
-                if command:
+        # 打开历史对话记录：legacy_web 即 "[web]<url>"，前置到答复前。
+        # 单意图（本轮只成功打开了对话记录）时用工具固定短句覆盖答复，
+        # 不采纳 LLM 可能拼出的网址/多余话术；
+        # 多意图（还有其他成功的工具结果，如场景导航、知识检索）时保留 LLM
+        # 答复，只前置 [web]，不能把其他意图的回答覆盖掉。
+        history_item = next(
+            (item for item in collected if item.get("tool") == "open_chat_history"),
+            None,
+        )
+        if history_item is not None:
+            raw = history_item.get("raw") or {}
+            command = raw.get("legacy_web") or ""
+            if command:
+                has_other_results = any(
+                    item.get("tool") not in {"open_chat_history", "get_patient_profile"}
+                    and item.get("status") in {"succeeded", "partial"}
+                    for item in collected
+                )
+                if not has_other_results:
                     answer = raw.get("patient_message") or answer
-                break
     # 生成报表：报告图片链接前置为 [Cweb]（工具返回啥就输出啥，不改写）；
     # 有 [Cweb] 就必须有 [web] 页面地址（拼 user/space 生成），二者成对输出；
     # 答复用品读短句覆盖 LLM 长答复，避免把 markdown 图片或多余话术塞进最终答复。
