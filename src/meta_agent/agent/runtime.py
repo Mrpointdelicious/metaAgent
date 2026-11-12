@@ -6,6 +6,7 @@
 import inspect
 import json
 import logging
+import re
 from typing import Any
 
 from langchain.agents import create_agent
@@ -19,6 +20,7 @@ from meta_agent.agent.tools import (
     available_tools,
     build_tools,
     invoke_tool,
+    tool_allowed,
 )
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
@@ -193,6 +195,7 @@ class SingleAgentRuntime:
             emit_answer=emit_answer,
             enrich_profile=True,
             system_prompt=None,
+            scene_fallback=True,
         )
 
     async def execute_sub(
@@ -212,6 +215,7 @@ class SingleAgentRuntime:
             emit_answer=emit_answer,
             enrich_profile=False,
             system_prompt=system_prompt,
+            scene_fallback=False,
         )
 
     async def _run(
@@ -223,6 +227,7 @@ class SingleAgentRuntime:
         emit_answer: bool,
         enrich_profile: bool,
         system_prompt: str | None,
+        scene_fallback: bool = False,
     ) -> str | None:
         """单 Agent 循环核心，主代理与子代理共用，仅 graph / goal_id / 提示词 / 档案装填不同。
 
@@ -275,6 +280,8 @@ class SingleAgentRuntime:
             if not isinstance(answer, str) or not answer.strip():
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
             answer = model_text(answer)
+            if scene_fallback:
+                answer = await self._deliver_scene_action(ctx, answer)
             processor = ctx.answer_post_processor
             if processor is not None:
                 processed = processor(answer, ctx)
@@ -323,3 +330,54 @@ class SingleAgentRuntime:
             return answer
         finally:
             CURRENT_RUN.reset(token)
+
+    # 模型没执行动作时常见的道歉话术，用于判断答复是否可被导航结果替换。
+    _SCENE_APOLOGY = re.compile(
+        "没认出来|没听懂|没识别|没带您|没给您带|无法带您|无法为您|抱歉|对不起|没找到|查不到"
+    )
+
+    async def _deliver_scene_action(self, ctx, answer: str) -> str:
+        """模型漏调场景工具时，按原话确定性补执行一次（不改上游匹配器）。
+
+        AI_WebApi 只认有限话术（「去X/带我去X/回到X/返回X」），
+        ``SceneIntentParser.canonicalize`` 已把「回X/我想X/帮我X」归一；
+        但多轮上下文里模型可能整轮不调工具、只回道歉话术。此处不再依赖
+        模型决策：原话整句交给场景工具（AI_WebApi 自己拆句），成功下发后
+        用确定性话术替换道歉，避免「明明能执行却只道歉」。
+        """
+        if ctx.record.action_delivery or not classify_business_query(ctx.query).scene:
+            return answer
+        if not tool_allowed(ctx, "navigate_scene"):
+            return answer
+        try:
+            await invoke_tool(ctx, "navigate_scene", {"target": ctx.query})
+        except DomainError as exc:
+            logger.info(
+                "scene fallback skipped",
+                extra={
+                    "run_id": ctx.record.run_id,
+                    "event_type": "scene_fallback_skipped",
+                    "fields": {"code": exc.code},
+                },
+            )
+            return answer
+        if not ctx.record.action_delivery:
+            return answer
+        names = [
+            action.get("matchName")
+            for result in ctx.record.results.values()
+            for action in (result.outputs.get("actions") or {}).values()
+            if action.get("status") == "matched" and action.get("matchName")
+        ]
+        logger.info(
+            "scene fallback delivered",
+            extra={
+                "run_id": ctx.record.run_id,
+                "event_type": "scene_fallback_delivered",
+                "fields": {"actions": len(ctx.record.action_delivery), "names": names[:3]},
+            },
+        )
+        notice = f"好的，这就带您去{names[0]}。" if names else "好的，已经为您带路。"
+        if self._SCENE_APOLOGY.search(answer):
+            return notice
+        return answer if notice in answer else f"{answer}\n{notice}"
