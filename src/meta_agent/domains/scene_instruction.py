@@ -14,6 +14,20 @@ from meta_agent.domains.business_routing import classify_business_query
 from meta_agent.domains.scene import SceneAdapter, numeric_envelope, source_text
 
 
+# 「退回上一个场景」是浏览历史语义，AI_WebApi 场景目录里没有这类点位（实测
+# 「回/返回/退回/后退 + 上一个场景」「上一步」全部 unmatched）。识别这类话术
+# 是为了给出确定性的“暂不支持”引导，而不是把它误当作「去X」或让模型空道歉。
+_HISTORY_BACK = re.compile(
+    r"(?:返回|退回|后退|回到|回|退)(?:到)?(?:上一个|上一|上个|前一个|刚才那个)"
+    r"(?:场景|页面|界面|屏幕|地方)?|上一步"
+)
+
+
+def is_history_back(text: str) -> bool:
+    """判断是否“退回上一个场景/上一步”这类历史回退话术。"""
+    return bool(_HISTORY_BACK.search(source_text(text)))
+
+
 class SceneIntentParser:
     # 口语前缀（敬语/意愿/带路），AI_WebApi 指令匹配器不识别，归一时剥掉。
     _WISH_PREFIX = re.compile(r"^(?:请|麻烦|帮我|我想|我想要|我要|带我)+")
@@ -39,6 +53,9 @@ class SceneIntentParser:
         无需改写时原样返回（保持与既有「原话透传」行为一致）。
         """
         raw = source_text(target)
+        if is_history_back(raw):
+            # 「回上一个场景」不是「去X」，改写会改变语义，原样交给上层判定。
+            return target
         core = self._WISH_PREFIX.sub("", raw) or raw
         if core.startswith("回") and not core.startswith(("回到", "返回")):
             rewritten = "去" + core[1:]
@@ -81,6 +98,13 @@ class SceneCommandResolver:
             )
         parser = SceneIntentParser()
         target = parser.parse(args["target"], ctx)
+        if is_history_back(ctx.query):
+            # 场景目录没有“上一个场景”点位，任何措辞都会 unmatched；直接给确定性澄清。
+            raise DomainError(
+                "scene_history_back_unsupported",
+                "目前还不支持退回上一个场景；请告诉用户直接说想去哪里，例如「带我去四楼」。",
+                outcome="clarification",
+            )
         canonical = parser.canonicalize(target)
         payload = {"target": canonical, "spaceId": ctx.scope.space_id}
         if ctx.scope.scene_version is not None:

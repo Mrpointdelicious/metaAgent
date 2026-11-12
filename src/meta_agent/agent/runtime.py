@@ -28,6 +28,7 @@ from meta_agent.contracts import DomainError, utcnow
 from meta_agent.domains.business_routing import classify_business_query
 from meta_agent.domains.chat_history import is_chat_history_query
 from meta_agent.domains.scene_instruction import (
+    is_history_back,
     is_knowledge_question,
     is_navigation_question,
 )
@@ -345,6 +346,20 @@ class SingleAgentRuntime:
         模型决策：原话整句交给场景工具（AI_WebApi 自己拆句），成功下发后
         用确定性话术替换道歉，避免「明明能执行却只道歉」。
         """
+        if is_history_back(ctx.query):
+            # 场景目录没有“上一个场景”点位，重试无意义；给确定性引导而不是让模型道歉。
+            logger.info(
+                "scene history back unsupported",
+                extra={
+                    "run_id": ctx.record.run_id,
+                    "event_type": "scene_history_back_unsupported",
+                    "fields": {},
+                },
+            )
+            return (
+                "目前还不支持退回上一个场景。"
+                "您直接说想去哪儿——比如「带我去四楼」或「回社交岛」——我马上给您带路。"
+            )
         if ctx.record.action_delivery or not classify_business_query(ctx.query).scene:
             return answer
         if not tool_allowed(ctx, "navigate_scene"):

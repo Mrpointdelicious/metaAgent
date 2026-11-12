@@ -10,7 +10,7 @@ import pytest
 
 from meta_agent.agent.tools import invoke_tool, spec
 from meta_agent.domains.scene import SceneAdapter
-from meta_agent.domains.scene_instruction import SceneIntentParser
+from meta_agent.domains.scene_instruction import SceneIntentParser, is_history_back
 from meta_agent.events.dify import DifyEventAdapter
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
@@ -275,6 +275,54 @@ def test_canonicalization_keeps_unmatched_when_destination_unknown():
             result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
             assert result["status"] == "partial"
             assert backend.calls[0][1]["target"] == "去九十九楼"
+            assert not ctx.record.action_delivery
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "phrase,expected",
+    [
+        ("回上一个场景", True),
+        ("返回上一个场景", True),
+        ("退回上一个场景", True),
+        ("退回上一步", True),
+        ("上一步", True),
+        ("回到上一场景", True),
+        ("回四楼", False),
+        ("带我去四楼", False),
+        ("我想回四楼", False),
+        ("回到四楼", False),
+        ("返回四楼", False),
+        ("介绍四楼", False),
+        ("我回病房拿个东西", False),
+    ],
+)
+def test_history_back_phrases_are_recognized(phrase, expected):
+    """「退回上一个场景」是浏览历史语义，场景目录里没有对应点位，需单独识别。"""
+
+    assert is_history_back(phrase) is expected
+
+
+def test_canonicalize_keeps_history_back_phrases_unchanged():
+    """归一化不能把「回上一个场景」改写成「去上一个场景」，那会改变语义。"""
+
+    parser = SceneIntentParser()
+    for phrase in ["回上一个场景", "返回上一个场景", "退回上一个场景"]:
+        assert parser.canonicalize(phrase) == phrase
+
+
+def test_history_back_request_is_rejected_without_calling_backend():
+    """历史回退不请求 AI_WebApi（必然 unmatched），直接给澄清，不伪造动作。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "退回上一个场景"
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "clarification"
+            assert result["code"] == "scene_history_back_unsupported"
+            assert backend.calls == []
             assert not ctx.record.action_delivery
 
     asyncio.run(check())

@@ -121,3 +121,19 @@ def test_unmatched_fallback_keeps_the_original_answer():
             assert APOLOGY in answers(run.record)
 
     asyncio.run(check())
+
+
+def test_history_back_gets_deterministic_guidance():
+    """「退回上一个场景」AI_WebApi 无对应点位，兜底给出确定性引导，不空道歉、不误动作。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (c, backend):
+            activate(c, [AIMessage(APOLOGY)])
+            run = await c.application.execute(request("退回上一个场景"))
+            text = answers(run.record)
+            assert "目前还不支持退回上一个场景" in text
+            assert "大爷" not in text
+            assert not run.record.action_delivery
+            assert [name for name, _ in backend.calls if name == "navigate_scene"] == []
+
+    asyncio.run(check())
