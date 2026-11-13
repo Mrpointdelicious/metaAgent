@@ -29,6 +29,16 @@ class PatientIdentity(StrictModel):
         return value
 
 
+def hospital_ops_allowed(settings: Any, role: str) -> bool:
+    """医院运营数据（含机构目录）的角色门控。
+
+    默认对所有角色开放（产品要求患者也能查）；把
+    `hospital_ops_open_to_all_roles` 设为 false 可回滚为仅 operator 可见。
+    机构目录是运营查询的前置（要拿 hospital_id），必须与查询同口径。
+    """
+    return bool(getattr(settings, "hospital_ops_open_to_all_roles", True)) or role == "operator"
+
+
 @dataclass(frozen=True, slots=True)
 class TrustedScope:
     tenant_id: str

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from meta_agent.contracts import DomainError, HospitalRequest, TaskResult, utcnow
 from meta_agent.domains.facts import FactBuilder, aware_date, pointer_part
 from meta_agent.domains.rehab import PatientEnvelope
+from meta_agent.orchestration.identity import hospital_ops_allowed
 
 LABELS = {
     "hospital_name": "医院",
@@ -90,7 +91,7 @@ def _resolve_window(date_mode, start_date, end_date, today):
 
 class HospitalAdapter:
     async def directory(self, task, args, ctx):
-        if ctx.scope.role != "operator":
+        if not hospital_ops_allowed(ctx.settings, ctx.scope.role):
             raise DomainError(
                 "operator_required", "机构目录需要运营人员身份。", outcome="unsupported"
             )
@@ -112,7 +113,7 @@ class HospitalAdapter:
         )
 
     async def execute(self, task, args, ctx):
-        if ctx.scope.role != "operator":
+        if not hospital_ops_allowed(ctx.settings, ctx.scope.role):
             raise DomainError(
                 "operator_required", "医院运营查询需要运营人员身份。", outcome="unsupported"
             )

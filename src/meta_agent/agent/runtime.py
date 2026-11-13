@@ -6,6 +6,7 @@
 import inspect
 import json
 import logging
+import re
 from typing import Any
 
 from langchain.agents import create_agent
@@ -19,6 +20,7 @@ from meta_agent.agent.tools import (
     available_tools,
     build_tools,
     invoke_tool,
+    tool_allowed,
 )
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
@@ -63,7 +65,7 @@ class PatientContextMiddleware(AgentMiddleware):
             )
         knowledge_tool = next((t.name for t in tools if t.name == "search_knowledge"), None)
         if is_navigation_question(ctx.query) and knowledge_tool:
-            domain = "的 help/product 领域" if knowledge_tool == "search_knowledge" else ""
+            domain = "的 product 领域（场景库）" if knowledge_tool == "search_knowledge" else ""
             prompt += (
                 "\n本轮用户输入是在问路/问怎么去某个楼层或区域，请调用资料检索工具"
                 f"（{knowledge_tool}）{domain}按知识库内容回答，不要凭常识编造电梯、楼梯、"
@@ -74,15 +76,39 @@ class PatientContextMiddleware(AgentMiddleware):
                 "\n本轮用户输入是介绍/说明/功能类问题，请先调用资料检索工具"
                 f"（{knowledge_tool}）检索知识库，不要还没检索就先反问用户或凭通用知识作答；"
                 "检索后再判断信息是否足够。"
+                "涉及楼层、科室、布局、场景、医院环境介绍时，必须选 product 领域"
+                "（场景库 scene_kb），不要选 help。"
             )
         if is_chat_history_query(ctx.query) and any(t.name == "open_chat_history" for t in tools):
             prompt += (
                 "\n本轮用户输入是打开/查看历史对话记录，请调用打开历史对话记录工具"
                 "（open_chat_history），不要调用场景指令解析工具，也不要自行拼网址。"
             )
+        # 路由提示必须对所有分支生效：患者数据查询、历史对话等非场景路由同样需要
+        # 点名工具，否则模型没有落点，会直接自由作答（实测 steps 0）。
+        route_hint = route.guidance()
+        if route_hint:
+            prompt += "\n" + route_hint
+        if route.hospital_ops:
+            if any(t.name == "query_hospital_operations" for t in tools):
+                hint = (
+                    "\n本轮要查医院运营数据：先用机构目录工具（query_hospital_directory）"
+                    "确认机构编号，再调用 query_hospital_operations；机构不明确时先问清是哪家医院，"
+                    "不要凭常识或场景描述作答。"
+                )
+                if not any(t.name == "query_hospital_directory" for t in tools):
+                    hint = (
+                        "\n本轮要查医院运营数据，请调用查询医院运营数据工具"
+                        "（query_hospital_operations），不要凭常识或场景描述作答。"
+                    )
+                prompt += hint
+            else:
+                prompt += (
+                    "\n本轮要查医院运营数据，但当前配置未启用该工具：直接说明暂时无法查询运营数据，"
+                    "不编造数字，也不指引去某楼层看大屏。"
+                )
         if route.scene:
             if any(t.name == "navigate_scene" for t in tools):
-                prompt += "\n" + route.guidance()
                 prompt += "\n将本轮原话中的动作片段作为target；场景版本由服务端解析，无需追问用户。"
             else:
                 prompt += "\n本轮场景执行工具未启用，请如实说明无法下发动作，不把预览当作执行。"
@@ -191,6 +217,7 @@ class SingleAgentRuntime:
             emit_answer=emit_answer,
             enrich_profile=True,
             system_prompt=None,
+            scene_fallback=True,
         )
 
     async def execute_sub(
@@ -210,6 +237,7 @@ class SingleAgentRuntime:
             emit_answer=emit_answer,
             enrich_profile=False,
             system_prompt=system_prompt,
+            scene_fallback=False,
         )
 
     async def _run(
@@ -221,6 +249,7 @@ class SingleAgentRuntime:
         emit_answer: bool,
         enrich_profile: bool,
         system_prompt: str | None,
+        scene_fallback: bool = False,
     ) -> str | None:
         """单 Agent 循环核心，主代理与子代理共用，仅 graph / goal_id / 提示词 / 档案装填不同。
 
@@ -273,6 +302,8 @@ class SingleAgentRuntime:
             if not isinstance(answer, str) or not answer.strip():
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
             answer = model_text(answer)
+            if scene_fallback:
+                answer = await self._deliver_scene_action(ctx, answer)
             processor = ctx.answer_post_processor
             if processor is not None:
                 processed = processor(answer, ctx)
@@ -321,3 +352,53 @@ class SingleAgentRuntime:
             return answer
         finally:
             CURRENT_RUN.reset(token)
+
+    # 模型没执行动作时常见的道歉话术，用于判断答复是否可被导航结果替换。
+    _SCENE_APOLOGY = re.compile(
+        "没认出来|没听懂|没识别|没带您|没给您带|无法带您|无法为您|抱歉|对不起|没找到|查不到"
+    )
+
+    async def _deliver_scene_action(self, ctx, answer: str) -> str:
+        """模型漏调场景工具时，按原话确定性补执行一次。
+
+        场景指令由 agent 本地解析（scene_local，直连点位库），口语话术归一、
+        同义词、拼音兜底与多动作拆句都在本地完成，不再受 AI_WebApi 词表限制。
+        但多轮上下文里模型仍可能整轮不调工具、只回道歉话术；此处不依赖模型
+        决策，把原话整句交给场景工具，成功下发后用确定性话术替换道歉。
+        """
+        if ctx.record.action_delivery or not classify_business_query(ctx.query).scene:
+            return answer
+        if not tool_allowed(ctx, "navigate_scene"):
+            return answer
+        try:
+            await invoke_tool(ctx, "navigate_scene", {"target": ctx.query})
+        except DomainError as exc:
+            logger.info(
+                "scene fallback skipped",
+                extra={
+                    "run_id": ctx.record.run_id,
+                    "event_type": "scene_fallback_skipped",
+                    "fields": {"code": exc.code},
+                },
+            )
+            return answer
+        if not ctx.record.action_delivery:
+            return answer
+        names = [
+            action.get("matchName")
+            for result in ctx.record.results.values()
+            for action in (result.outputs.get("actions") or {}).values()
+            if action.get("status") == "matched" and action.get("matchName")
+        ]
+        logger.info(
+            "scene fallback delivered",
+            extra={
+                "run_id": ctx.record.run_id,
+                "event_type": "scene_fallback_delivered",
+                "fields": {"actions": len(ctx.record.action_delivery), "names": names[:3]},
+            },
+        )
+        notice = f"好的，这就带您去{names[0]}。" if names else "好的，已经为您带路。"
+        if self._SCENE_APOLOGY.search(answer):
+            return notice
+        return answer if notice in answer else f"{answer}\n{notice}"

@@ -7,7 +7,7 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from meta_agent.integrations.knowledge import KnowledgeSourceConfig
@@ -140,15 +140,34 @@ class Settings(BaseSettings):
     scene_enabled: bool = True
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False
-    # search_knowledge 仅使用统一契约；空列表表示尚未接通知识服务。
+    # 场景指令改为 agent 本地解析（直连 webyun 点位库），不再调用 AI_WebApi 的
+    # navigate_scene 端点。设为 false 可回滚到旧的 .NET 匹配器。
+    scene_local_enabled: bool = True
+    scene_backend_version_url: str = "http://192.168.8.160/back/version"
+    scene_backend_query_url: str = "http://192.168.8.160/back/query"
+    scene_backend_timeout_seconds: float = Field(default=15, gt=0, le=60)
+    scene_default_space_id: str = "67ecd511-5532-405d-9b70-1cd1c0532eed"
+    # 必填：场景上游 192.168.8.160/back/* 的 apikey / apitoken（代码内不保留默认值）。
+    scene_backend_api_key: str = ""
+    scene_backend_api_token: SecretStr = SecretStr("")
+    knowledge_corpus_path: str = ""
+    # 多知识源统一契约（knowledge-search-v1）；非空时 search_knowledge 优先走此接入。
     knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
-    # 兼容旧部署的占位配置，不再决定知识检索的实现。
+    # 兼容旧配置名；知识检索统一使用 search_knowledge，不再启用独立企业问答。
     knowledge_backend: Literal["maxkb"] = "maxkb"
     knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
-    # 仅用于发现尚未迁移的旧配置，不再启用任何本地/Portfolio 检索逻辑。
-    knowledge_corpus_path: str = ""
+    # rag-portfolio 接入：health 全局文献 + 按 spaceId 选择的医院 help/product。
     portfolio_enabled: bool = False
+    portfolio_base_url: str = "http://rag-portfolio-api:8000"
+    portfolio_token: SecretStr = SecretStr("")
+    portfolio_kb_ids: list[str] = Field(default_factory=list)
+    portfolio_space_kb_ids: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    portfolio_help_token: SecretStr = SecretStr("")
+    portfolio_timeout_seconds: float = Field(default=20, gt=0, le=40)
+    portfolio_top_k: int = Field(default=5, ge=1, le=20)
+    portfolio_context_tokens: int = Field(default=4000, ge=128, le=16000)
     portfolio_scene_catalog_enabled: bool = False
+    portfolio_scene_catalog_ttl_seconds: float = Field(default=30, ge=1, le=300)
     artifact_allowed_hosts: list[str] = Field(default_factory=list)
     # 制品 URL 反代前缀归一化：后端返回的 image_url 用内部路径 /api/ai/...，
     # 而公开入口是 AI_WEBAPI_*_BASE_URL 里的 /aiwebapi/ai/...（差一个反代前缀）。
@@ -169,6 +188,20 @@ class Settings(BaseSettings):
     # webyun 直连业务接口的固定服务账号（场景指令 / 医生 / 问诊房间共用的登录凭据）。
     webyun_login_phone: str = ""
     webyun_login_password: SecretStr = SecretStr("")
+    # 在线医生改为 agent 本地查询（直连 webyun 在线医生列表），不再调用 AI_WebApi 的
+    # search_doctors 端点。设为 false 可回滚到 .NET 实现。
+    doctors_local_enabled: bool = True
+    # 医院运营数据（机构目录 + 运营查询）默认对所有角色开放（产品要求患者也能查）；
+    # 设为 false 可回滚到仅 operator 可见。
+    hospital_ops_open_to_all_roles: bool = True
+    doctor_backend_login_url: str = "http://www.ga-robot.com/webyun/api/Login/Login"
+    doctor_backend_query_url: str = "http://192.168.8.71:4000/api/users/all"
+    doctor_backend_timeout_seconds: float = Field(default=15, gt=0, le=60)
+    doctor_token_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    doctor_default_space_id: str = ""
+    # 医生专用账号；留空时沿用 webyun_login_phone / webyun_login_password。
+    doctor_login_phone: str = ""
+    doctor_login_password: SecretStr = SecretStr("")
 
     @classmethod
     def settings_customise_sources(
@@ -194,6 +227,18 @@ class Settings(BaseSettings):
                                 token = file_values.get(name, file_values.get(name.lower()))
                                 if token:
                                     item = {**item, "token_env": "", "token": token}
+                            native = item.get("maxkb")
+                            if isinstance(native, dict):
+                                native = dict(native)
+                                for field in ("username", "password"):
+                                    name = native.get(field + "_env", "")
+                                    if name and name not in os.environ and not native.get(field):
+                                        secret = file_values.get(
+                                            name, file_values.get(name.lower())
+                                        )
+                                        if secret:
+                                            native.update({field + "_env": "", field: secret})
+                                item = {**item, "maxkb": native}
                         resolved.append(item)
                     values = {**values, "knowledge_sources": resolved}
                 return values
@@ -213,20 +258,6 @@ class Settings(BaseSettings):
         if len({source.id for source in sources}) != len(sources):
             raise ValueError("knowledge source IDs must be unique")
         return sources
-
-    @model_validator(mode="after")
-    def reject_retired_knowledge_backends(self):
-        if (
-            self.knowledge_corpus_path
-            or self.portfolio_enabled
-            or self.portfolio_scene_catalog_enabled
-        ):
-            raise ValueError(
-                "Local corpus and Portfolio retrieval have been retired; "
-                "remove KNOWLEDGE_CORPUS_PATH/PORTFOLIO_* and configure "
-                "KNOWLEDGE_SOURCES with knowledge-search-v1"
-            )
-        return self
 
     def runtime_issues(self) -> list[str]:
         issues = []

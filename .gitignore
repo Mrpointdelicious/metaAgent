@@ -39,9 +39,14 @@ build/
 # 参考快照（另一版本的完整代码副本，内含自身 .env 密钥，不入主仓库）
 /metaAgent-main/
 
-# 保留旧部署私有目录的忽略规则；knowledge-search-v1 客户端不再读取该文件。
+# MaxKB 已发布资料目录（由 generate_maxkb_catalog.py 生成，体积 17MB，不入库）
 /maxkb/catalog.json
 
 # 本地设计文档（不随代码提交）
 /平台新增AI功能设计文档.html
 /平台新增AI功能设计文档.md
+
+# 部署源码包 / 镜像归档（每次部署打一次包，不入库）
+*.tgz
+*.tar.gz
+/loginspect/

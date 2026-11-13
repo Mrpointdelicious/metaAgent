@@ -10,6 +10,7 @@ import pytest
 
 from meta_agent.agent.tools import invoke_tool, spec
 from meta_agent.domains.scene import SceneAdapter
+from meta_agent.domains.scene_instruction import SceneIntentParser, is_history_back
 from meta_agent.events.dify import DifyEventAdapter
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
@@ -220,5 +221,108 @@ def test_missing_or_invalid_server_version_cannot_authorize_action(version):
             result = await invoke_tool(ctx, "navigate_scene", {"target": ctx.query})
             assert result["code"] == "invalid_contract"
             assert ctx.scope.scene_version is None and not ctx.record.action_delivery
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("我想回四楼", "去四楼"),
+        ("我想去四楼", "去四楼"),
+        ("带我回四楼", "去四楼"),
+        ("帮我回四楼", "去四楼"),
+        ("我要回四楼", "去四楼"),
+        ("请回四楼", "去四楼"),
+        ("回四楼", "去四楼"),
+        ("回社交岛", "去社交岛"),
+        ("回到入口", "回到入口"),
+        ("返回四楼", "返回四楼"),
+        ("带我去四楼", "去四楼"),
+        ("去二楼", "去二楼"),
+        ("打开个人中心", "打开个人中心"),
+        ("切换视角", "切换视角"),
+    ],
+)
+def test_canonicalize_normalizes_colloquial_motion_phrases(raw, expected):
+    assert SceneIntentParser().canonicalize(raw) == expected
+
+
+def test_colloquial_return_phrase_is_passed_through_verbatim():
+    """本地解析器自行识别口语，原话整句透传且仍能命中点位。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "我想回四楼"
+            backend.overrides["navigate_scene"] = scene_body([phrase])
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "succeeded"
+            assert backend.calls[0][1]["target"] == phrase
+            assert len(ctx.record.action_delivery) == 1
+
+    asyncio.run(check())
+
+
+def test_unknown_destination_keeps_unmatched_without_inventing_actions():
+    """目的地不在目录里时保持 unmatched，不凭空造动作。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "我想回九十九楼"
+            backend.overrides["navigate_scene"] = scene_body([phrase], statuses=["unmatched"])
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "partial"
+            assert backend.calls[0][1]["target"] == phrase
+            assert not ctx.record.action_delivery
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "phrase,expected",
+    [
+        ("回上一个场景", True),
+        ("返回上一个场景", True),
+        ("退回上一个场景", True),
+        ("退回上一步", True),
+        ("上一步", True),
+        ("回到上一场景", True),
+        ("回四楼", False),
+        ("带我去四楼", False),
+        ("我想回四楼", False),
+        ("回到四楼", False),
+        ("返回四楼", False),
+        ("介绍四楼", False),
+        ("我回病房拿个东西", False),
+    ],
+)
+def test_history_back_phrases_are_recognized(phrase, expected):
+    """「退回上一个场景」是浏览历史语义，场景目录里没有对应点位，需单独识别。"""
+
+    assert is_history_back(phrase) is expected
+
+
+def test_canonicalize_keeps_history_back_phrases_unchanged():
+    """归一化不能把「回上一个场景」改写成「去上一个场景」，那会改变语义。"""
+
+    parser = SceneIntentParser()
+    for phrase in ["回上一个场景", "返回上一个场景", "退回上一个场景"]:
+        assert parser.canonicalize(phrase) == phrase
+
+
+def test_history_back_request_goes_to_the_local_catalog():
+    """「退回上一个场景」不再被硬拦截，交给本地目录解析（真实点位 [ClickPoint:]33）。"""
+
+    async def check():
+        async with runtime(scene_actions_enabled=True) as (container, backend):
+            phrase = "退回上一个场景"
+            backend.overrides["navigate_scene"] = scene_body([phrase], codes=["[ClickPoint:]33"])
+            ctx = context(container, phrase)
+            result = await invoke_tool(ctx, "navigate_scene", {"target": phrase})
+            assert result["status"] == "succeeded"
+            assert backend.calls[0][1]["target"] == phrase
+            assert len(ctx.record.action_delivery) == 1
 
     asyncio.run(check())

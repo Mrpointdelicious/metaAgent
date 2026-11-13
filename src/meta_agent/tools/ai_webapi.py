@@ -202,6 +202,49 @@ class AIWebApiClient:
             from meta_agent.tools.demo import demo_response
 
             return demo_response(endpoint, payload)
+        # 场景指令由 agent 本地解析：直连点位库 + 本地匹配，不再请求 .NET 端点。
+        # 仍返回 commands-array-v1 同构封套，上层的 evidence/action_ref 校验链不变。
+        if endpoint == "navigate_scene" and self.settings.scene_local_enabled:
+            from meta_agent.domains.scene_local import resolve_local_scene
+
+            try:
+                return await resolve_local_scene(self.client, self.settings, payload)
+            except httpx.HTTPError as exc:
+                raise BackendCallError(
+                    "transport_error", "场景点位库暂时无法访问。", retryable=True
+                ) from exc
+            except (ValueError, TypeError, RuntimeError) as exc:
+                raise BackendCallError("invalid_contract", "场景点位库返回了无效数据。") from exc
+        # 在线医生同样本地查询：登录 webyun 拿 token + 拉在线名单，不请求 .NET 端点。
+        # 仍返回 numeric-envelope 同构封套，上层 DoctorAdapter / evidence 链不变。
+        if endpoint == "search_doctors" and self.settings.doctors_local_enabled:
+            from meta_agent.domains.doctors_local import (
+                DoctorUpstreamAuthError,
+                resolve_local_doctors,
+            )
+
+            try:
+                return await resolve_local_doctors(self.client, self.settings, payload)
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code
+                raise BackendCallError(
+                    f"http_{code}",
+                    "在线医生服务暂时不可用。",
+                    retryable=code in {408, 429, 502, 503, 504},
+                    outcome="unavailable" if code in {401, 403} else "failed",
+                ) from exc
+            except DoctorUpstreamAuthError as exc:
+                raise BackendCallError(
+                    "doctor_upstream_unauthorized",
+                    "在线医生服务暂时不可用。",
+                    outcome="unavailable",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise BackendCallError(
+                    "transport_error", "在线医生服务暂时无法访问。", retryable=True
+                ) from exc
+            except (ValueError, TypeError, RuntimeError) as exc:
+                raise BackendCallError("invalid_contract", "在线医生服务返回了无效数据。") from exc
         base = (
             self.hospital_base
             if endpoint in HOSPITAL_ENDPOINTS
@@ -230,6 +273,19 @@ class AIWebApiClient:
                         reason = reasons[0]
                 except (ValueError, UnicodeDecodeError):
                     pass
+                logger.warning(
+                    "backend tool error",
+                    extra={
+                        "event_type": "backend_tool_error",
+                        "dependency": "ai_webapi",
+                        "fields": {
+                            "endpoint": endpoint,
+                            "http_status": code,
+                            "reason": reason,
+                            "base": base,
+                        },
+                    },
+                )
                 raise BackendCallError(
                     reason or f"http_{code}",
                     "患者登录凭证已失效或权限不足，请重新登录。"

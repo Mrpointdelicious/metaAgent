@@ -235,8 +235,13 @@ class ApplicationService:
             )
             await ctx.emitter.emit(kind, payload)
         except Exception as exc:
+            import traceback as _tb
+
             logger.error(
-                "Application failure run_id=%s error_type=%s", ctx.record.run_id, type(exc).__name__
+                "Application failure run_id=%s error_type=%s\n%s",
+                ctx.record.run_id,
+                type(exc).__name__,
+                "".join(_tb.format_exception(exc)),
             )
             self._settle(
                 ctx, "failed", "application_internal_error", "当前请求处理失败，请稍后重试。"

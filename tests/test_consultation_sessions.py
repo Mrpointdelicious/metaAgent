@@ -65,9 +65,12 @@ def request(query, pos="大厅", cid="", *, rid=None, scope=None, **inputs):
     [
         ("问诊房间", "consultation_room"),
         ("三楼问诊房间A", "consultation_room"),
+        ("二楼 问诊1号房间", "consultation_room"),
+        ("二楼  问诊 2 号 房间", "consultation_room"),
         ("房间A", "default"),
         ("普通房间", "default"),
-        ("问诊区附近的康复房间", "default"),
+        ("二楼 问诊中心", "default"),
+        ("一楼 康复大厅", "default"),
     ],
 )
 def test_literal_entry(pos, expected):

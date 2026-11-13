@@ -233,16 +233,35 @@ def test_tour_reference_mismatch_fails_without_report():
     asyncio.run(check())
 
 
-def test_hospital_operator_query_and_patient_rejection():
+def test_hospital_query_allowed_for_patient_by_default():
+    """产品口径：患者也能查运营数据（含机构目录）。"""
+
     async def check():
         async with runtime() as (c, backend):
             query = "查询医院1的运营情况"
-            rejected = await c.application.execute(request(query))
-            assert rejected.record.status == "unsupported" and not backend.calls
-            scope = TrustedScope("tenant", "operator", role="operator")
-            run = await c.application.execute(request(query, "r2", scope=scope))
+            run = await c.application.execute(request(query))
             assert run.record.status == "succeeded"
             assert "患者数：10" in answers(run.record)
+            assert backend.calls[-1][0] == "query_hospital_operations"
+            operator = TrustedScope("tenant", "operator", role="operator")
+            run = await c.application.execute(request(query, "r2", scope=operator))
+            assert run.record.status == "succeeded"
+            assert backend.calls[-1][0] == "query_hospital_operations"
+
+    asyncio.run(check())
+
+
+def test_hospital_query_can_be_restricted_back_to_operator():
+    """回滚开关：hospital_ops_open_to_all_roles=false 时患者重新被拒。"""
+
+    async def check():
+        async with runtime(hospital_ops_open_to_all_roles=False) as (c, backend):
+            query = "查询医院1的运营情况"
+            rejected = await c.application.execute(request(query))
+            assert rejected.record.status == "unsupported" and not backend.calls
+            operator = TrustedScope("tenant", "operator", role="operator")
+            run = await c.application.execute(request(query, "r2", scope=operator))
+            assert run.record.status == "succeeded"
             assert backend.calls[-1][0] == "query_hospital_operations"
 
     asyncio.run(check())

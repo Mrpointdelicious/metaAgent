@@ -79,3 +79,22 @@ def test_tool_allowed_excludes_search_doctors_only_for_secondary():
 
     primary = _ctx(ClientIdentity("primary"))
     assert tool_allowed(primary, "search_doctors") is True
+
+
+def test_hospital_ops_open_to_patient_by_default():
+    """产品口径：患者也能查运营数据，机构目录与运营查询必须同时放行。"""
+    ctx = _ctx(ClientIdentity("primary"))
+    assert ctx.scope.role == "patient"
+    assert tool_allowed(ctx, "query_hospital_operations") is True
+    assert tool_allowed(ctx, "query_hospital_directory") is True
+
+
+def test_hospital_ops_can_be_restricted_to_operator():
+    """回滚开关：关闭后恢复仅 operator 可见。"""
+    ctx = _ctx(ClientIdentity("primary"))
+    ctx.settings.hospital_ops_open_to_all_roles = False
+    assert tool_allowed(ctx, "query_hospital_operations") is False
+    assert tool_allowed(ctx, "query_hospital_directory") is False
+    ctx.scope.role = "operator"
+    assert tool_allowed(ctx, "query_hospital_operations") is True
+    assert tool_allowed(ctx, "query_hospital_directory") is True

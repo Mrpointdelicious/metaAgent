@@ -22,7 +22,7 @@ from meta_agent.contracts import (
     TaskSpec,
     ValidatedPlan,
 )
-from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.orchestration.identity import TrustedScope, hospital_ops_allowed
 from meta_agent.planning.capabilities import capability_specs
 from meta_agent.planning.parser import CONDITIONAL, NEGATIVE, REPORT_NEGATION
 
@@ -169,7 +169,9 @@ class PlanCompiler:
                 result.dispositions[gid] = ("unsupported", "该领域接口暂未接入。")
                 continue
             if g.kind == "hospital_query" and g.domain == "hospital":
-                if scope.role != "operator":
+                # 与 tools.tool_allowed / HospitalAdapter 同一口径：默认对所有角色开放，
+                # hospital_ops_open_to_all_roles=false 时回滚为仅 operator。
+                if not hospital_ops_allowed(self.settings, scope.role):
                     result.dispositions[gid] = ("unsupported", "医院运营查询需要运营人员身份。")
                     continue
                 if g.hospital is None:
@@ -275,11 +277,10 @@ class PlanCompiler:
                 else:
                     add([gid], "doctors.search")
             elif g.kind == "knowledge_query":
-                if (
-                    g.domain not in {"health", "product", "help"}
-                    or not self.settings.knowledge_sources
+                if g.domain not in {"health", "product", "help"} or not (
+                    self.settings.knowledge_sources or self.settings.knowledge_corpus_path
                 ):
-                    result.dispositions[gid] = ("unavailable", "知识检索服务尚未配置。")
+                    result.dispositions[gid] = ("unavailable", "尚无已批准的对应知识语料。")
                 else:
                     add([gid], "knowledge.search", {"query": g.query_span, "domain": g.domain})
             elif g.kind in {

@@ -1,0 +1,662 @@
+[
+ {
+  "prefix": "[Telepor:]",
+  "id": "0",
+  "name": "社交岛",
+  "intro": "前往社交岛"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "1",
+  "name": "会议中心",
+  "intro": "元宇宙会议中心"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "2",
+  "name": "上海中医药大学",
+  "intro": "上海中医药大学"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "3",
+  "name": "上海大学 (医院版本)",
+  "intro": "上海大学 (医院版本)"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "4",
+  "name": "岳阳医院",
+  "intro": "岳阳医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "5",
+  "name": "同济医院",
+  "intro": "同济医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "6",
+  "name": "龙湾养老院",
+  "intro": "龙湾养老院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "7",
+  "name": "金海悦心养老院",
+  "intro": "养老院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "8",
+  "name": "嘉兴路社区卫生服务中心",
+  "intro": "社区医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "9",
+  "name": "杨浦区延吉社区服务中心",
+  "intro": "杨浦区延吉社区服务中心"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "10",
+  "name": "上海市第二康复医院",
+  "intro": "上海市第二康复医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "11",
+  "name": "城建职业学院",
+  "intro": "城建职业学院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "12",
+  "name": "上海市浦东新场社区卫生服务中心",
+  "intro": "上海市浦东新场社区卫生服务中心"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "13",
+  "name": "上海市中医药大学龙华医院",
+  "intro": "上海市中医药大学龙华医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "14",
+  "name": "上海市中医药大学附属曙光医院",
+  "intro": "上海市中医药大学附属曙光医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "15",
+  "name": "复旦附属华山一医院",
+  "intro": "复旦附属华山一医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "16",
+  "name": "宝山中西医结合医院",
+  "intro": "宝山中西医结合医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "17",
+  "name": "上海正德医院",
+  "intro": "上海正德医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "18",
+  "name": "上海浦东新区光明中医医院",
+  "intro": "上海浦东新区光明中医医院"
+ },
+ {
+  "prefix": "[Telepor:]",
+  "id": "19",
+  "name": "温州体育运动医院",
+  "intro": "温州体育运动医院"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "0",
+  "name": "一楼接待大厅",
+  "intro": "这是1楼接待大厅"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "1",
+  "name": "一楼模型",
+  "intro": "这是1楼模型展示区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "2",
+  "name": "一楼左走廊区",
+  "intro": "这是1楼走廊区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "3",
+  "name": "一楼走廊中庭",
+  "intro": "这是是1楼中庭"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "4",
+  "name": "一楼右走廊",
+  "intro": "这是1楼右走廊区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "5",
+  "name": "二楼",
+  "intro": "这是2楼问诊区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "6",
+  "name": "二楼问诊1号房间",
+  "intro": "二楼问诊1号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "7",
+  "name": "二楼问诊2号房间",
+  "intro": "二楼问诊2号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "8",
+  "name": "二楼问诊3号房间",
+  "intro": "二楼问诊3号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "9",
+  "name": "二楼问诊4号房间",
+  "intro": "二楼问诊4号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "10",
+  "name": "二楼问诊5号房间",
+  "intro": "二楼问诊5号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "11",
+  "name": "二楼问诊6号房间",
+  "intro": "二楼问诊6号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "12",
+  "name": "二楼问诊7号房间",
+  "intro": "二楼问诊7号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "13",
+  "name": "二楼问诊8号房间",
+  "intro": "二楼问诊8号房间"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "14",
+  "name": "三楼训练区",
+  "intro": "这是三楼训练室区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "15",
+  "name": "三楼1号训练室",
+  "intro": "这里是智能康复步道1号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "16",
+  "name": "三楼2号训练室",
+  "intro": "三楼2号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "17",
+  "name": "三楼3号训练室",
+  "intro": "三楼3号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "18",
+  "name": "三楼4号训练室",
+  "intro": "三楼4号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "19",
+  "name": "三楼5号训练室",
+  "intro": "三楼5号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "20",
+  "name": "三楼6号训练室",
+  "intro": "三楼6号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "21",
+  "name": "三楼7号训练室",
+  "intro": "三楼7号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "22",
+  "name": "三楼8号训练室",
+  "intro": "三楼8号训练室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "23",
+  "name": "四楼评估室",
+  "intro": "这是四楼评估中心"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "24",
+  "name": "四楼1号评估室",
+  "intro": "四楼1号评估室、运动评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "25",
+  "name": "四楼2号评估室",
+  "intro": "四楼2号评估室、感觉评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "26",
+  "name": "四楼3号评估室",
+  "intro": "四楼3号评估室、认知评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "27",
+  "name": "四楼4号评估室",
+  "intro": "四楼4号评估室、认知评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "28",
+  "name": "四楼5号评估室",
+  "intro": "四楼5号评估室、吞咽评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "29",
+  "name": "四楼6号评估室",
+  "intro": "四楼6号评估室、情绪评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "30",
+  "name": "四楼7号评估室",
+  "intro": "四楼7号评估室、言语评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "31",
+  "name": "四楼8号评估室",
+  "intro": "四楼8号评估室、其他评估室"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "32",
+  "name": "五楼直播区",
+  "intro": "这是五楼数据中心大厅"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "33",
+  "name": "五楼左侧休息区",
+  "intro": "这是五楼左侧休息区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "34",
+  "name": "五楼中侧休息区",
+  "intro": "五楼中侧休息区"
+ },
+ {
+  "prefix": "[ScenePoint:]",
+  "id": "35",
+  "name": "五楼右侧休息区",
+  "intro": "五楼右侧休息区"
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "0",
+  "name": "摄像头",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "1",
+  "name": "个人中心",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "2",
+  "name": "界面传送",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "3",
+  "name": "楼层传送",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "4",
+  "name": "快速通道",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "5",
+  "name": "设备管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "6",
+  "name": "投屏",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "7",
+  "name": "结束问诊",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "8",
+  "name": "邀请医生",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "9",
+  "name": "问诊记录",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "10",
+  "name": "填写医嘱",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "11",
+  "name": "训练报告",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "12",
+  "name": "就诊纪要",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "13",
+  "name": "病历信息",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "14",
+  "name": "屏幕放大",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "15",
+  "name": "患者列表",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "16",
+  "name": "患者确认挂号",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "17",
+  "name": "患者挂号返回",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "18",
+  "name": "患者确认叫号",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "19",
+  "name": "患者拒绝叫号",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "20",
+  "name": "医生叫号",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "21",
+  "name": "查看医嘱",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "22",
+  "name": "医生端结束问诊确认",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "23",
+  "name": "结束问诊取消",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "24",
+  "name": "医生端确认医嘱",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "25",
+  "name": "医生端重置医嘱",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "26",
+  "name": "医生端修改医嘱",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "27",
+  "name": "启用人工搜索",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "28",
+  "name": "AI推荐",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "29",
+  "name": "患者端屏幕选择",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "30",
+  "name": "关闭诊断结果",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "31",
+  "name": "快速测评",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "32",
+  "name": "体验小游戏",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "33",
+  "name": "退回上个场景",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "34",
+  "name": "切换视角",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "35",
+  "name": "打开信号管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "36",
+  "name": "打开步道管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "37",
+  "name": "关闭个人中心",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "38",
+  "name": "关闭界面传送",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "39",
+  "name": "关闭摄像头",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "40",
+  "name": "关闭楼层传送",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "41",
+  "name": "关闭快速通道",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "42",
+  "name": "关闭设备管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "43",
+  "name": "关闭病历信息",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "44",
+  "name": "关闭问诊记录",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "45",
+  "name": "关闭训练报告",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "46",
+  "name": "关闭投屏",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "47",
+  "name": "关闭屏幕放大",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "48",
+  "name": "关闭信号管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[ClickPoint:]",
+  "id": "49",
+  "name": "关闭步道管理",
+  "intro": ""
+ },
+ {
+  "prefix": "[GamePoint:]",
+  "id": "0",
+  "name": "记忆速配",
+  "intro": ""
+ },
+ {
+  "prefix": "[GamePoint:]",
+  "id": "1",
+  "name": "饥饿的小鸡",
+  "intro": ""
+ },
+ {
+  "prefix": "[GamePoint:]",
+  "id": "2",
+  "name": "舒尔特方格",
+  "intro": ""
+ },
+ {
+  "prefix": "[GamePoint:]",
+  "id": "3",
+  "name": "辨色象限",
+  "intro": ""
+ }
+]

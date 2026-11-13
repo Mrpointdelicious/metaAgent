@@ -3,7 +3,6 @@
 文件功能：按统一请求响应契约调用多个独立知识服务，不维护厂商检索逻辑。
 """
 
-import asyncio
 import json
 import os
 from functools import lru_cache
@@ -15,6 +14,36 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 
 Domain = Literal["health", "product", "help"]
+
+
+class NativeMaxKBConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: SecretStr = SecretStr("")
+    password: SecretStr = SecretStr("")
+    username_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
+    password_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
+    workspace_id: str = Field(default="default", pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    catalog_path: str = Field(min_length=1)
+    catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    allowed_space_ids: list[str] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_native(self):
+        for field in ("username", "password"):
+            if getattr(self, field + "_env") and getattr(self, field).get_secret_value():
+                raise ValueError("configure a native credential or its environment name, not both")
+        if any(not space.strip() or space != space.strip() for space in self.allowed_space_ids):
+            raise ValueError("native MaxKB space IDs must not be blank or padded")
+        return self
+
+    def credentials(self):
+        return tuple(
+            os.environ.get(getattr(self, field + "_env"), "")
+            if getattr(self, field + "_env")
+            else getattr(self, field).get_secret_value()
+            for field in ("username", "password")
+        )
 
 
 class KnowledgeSourceConfig(BaseModel):
@@ -29,9 +58,8 @@ class KnowledgeSourceConfig(BaseModel):
     token: SecretStr = SecretStr("")
     token_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
     timeout_seconds: float = Field(default=20, gt=0, le=40)
-    protocol: Literal["knowledge-search-v1"] = "knowledge-search-v1"
-    # Native workflow transport only wraps the contract; retrieval stays in MaxKB nodes.
-    transport: Literal["http", "maxkb-workflow"] = "http"
+    protocol: Literal["knowledge-search-v1", "maxkb"] = "knowledge-search-v1"
+    maxkb: NativeMaxKBConfig | None = None
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -43,8 +71,11 @@ class KnowledgeSourceConfig(BaseModel):
             raise ValueError("scoped_domains must belong to source domains")
         if self.token_env and self.token.get_secret_value():
             raise ValueError("configure token or token_env, not both")
-        if self.transport == "maxkb-workflow" and not self.url.path.endswith("/chat/completions"):
-            raise ValueError("maxkb-workflow requires the native application chat/completions URL")
+        if self.protocol == "maxkb":
+            if self.maxkb is None or set(self.scoped_domains) != set(self.domains):
+                raise ValueError("native MaxKB requires configuration and scoped domains")
+        elif self.maxkb is not None:
+            raise ValueError("maxkb configuration requires the maxkb protocol")
         return self
 
     def credential(self):
@@ -89,57 +120,21 @@ class KnowledgeContractError(ValueError):
     pass
 
 
-class KnowledgeServiceError(KnowledgeContractError):
-    def __init__(self, *, denied=False, retryable=False):
-        super().__init__("knowledge_access_denied" if denied else "knowledge_unavailable")
-        self.denied = denied
-        self.retryable = retryable
-
-
-def request_body(source, payload, request_id):
-    if source.transport == "http":
-        return payload
-    return {
-        "messages": [{"role": "user", "content": payload["query"]}],
-        "stream": False,
-        "form_data": {
-            "domain": payload.get("domain", "health"),
-            "space_id": payload.get("scope", {}).get("space_id") or "",
-            "max_context_tokens": payload.get("limits", {}).get("max_context_tokens", 4000),
-            "request_id": request_id,
-        },
-    }
-
-
-def unwrap_workflow_response(value):
-    """Read deterministic template output, never turn a chat answer into evidence."""
-    try:
-        choices = value["choices"]
-        if len(choices) != 1 or choices[0]["finish_reason"] != "stop":
-            raise KnowledgeContractError("invalid_maxkb_workflow_response")
-        message = choices[0]["message"]
-        if message["role"] != "assistant" or not isinstance(message["content"], str):
-            raise KnowledgeContractError("invalid_maxkb_workflow_response")
-        result = json.loads(message["content"])
-    except (KeyError, IndexError, TypeError) as exc:
-        raise KnowledgeContractError("invalid_maxkb_workflow_response") from exc
-    if isinstance(result, dict) and "error" in result:
-        validate_contract("KnowledgeErrorResponse", result)
-        raise KnowledgeServiceError(
-            denied=result["error"]["code"] == "knowledge_access_denied",
-            retryable=result["error"]["retryable"],
-        )
-    return result
+class KnowledgeAccessDenied(KnowledgeContractError):
+    pass
 
 
 async def search(source, payload, *, request_id, max_bytes):
     """Validate, send, and receive. No retries or fallback to a different knowledge source."""
     validate_contract("KnowledgeSearchRequest", payload)
+    if source.protocol == "maxkb":
+        from meta_agent.integrations.maxkb_native import search as native_search
+
+        return await native_search(source, payload, request_id=request_id, max_bytes=max_bytes)
     token = source.credential()
     if not token:
         raise KnowledgeContractError("knowledge_credential_missing")
     async with (
-        asyncio.timeout(source.timeout_seconds),
         httpx.AsyncClient(
             timeout=source.timeout_seconds, follow_redirects=False, trust_env=False
         ) as client,
@@ -147,7 +142,7 @@ async def search(source, payload, *, request_id, max_bytes):
             "POST",
             str(source.url),
             headers={"Authorization": "Bearer " + token, "X-Request-ID": request_id},
-            json=request_body(source, payload, request_id),
+            json=payload,
         ) as response,
     ):
         response.raise_for_status()
@@ -157,8 +152,6 @@ async def search(source, payload, *, request_id, max_bytes):
             if len(raw) > max_bytes:
                 raise KnowledgeContractError("oversized_knowledge_response")
     result = json.loads(raw)
-    if source.transport == "maxkb-workflow":
-        result = unwrap_workflow_response(result)
     validate_contract("KnowledgeSearchResponse", result)
     ids = [row["id"] for row in result["sources"]]
     if len(set(ids)) != len(ids):

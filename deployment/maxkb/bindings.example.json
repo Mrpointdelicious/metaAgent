@@ -1,9 +1,0 @@
-{
-  "name": "MetaAgent 原生知识检索",
-  "space_id": "replace-with-business-space-id",
-  "scene_knowledge_ids": ["00000000-0000-4000-8000-000000000001"],
-  "help_knowledge_ids": ["00000000-0000-4000-8000-000000000002"],
-  "reranker_model_id": "00000000-0000-4000-8000-000000000003",
-  "similarity": 0.25,
-  "rerank_similarity": 0.1
-}
