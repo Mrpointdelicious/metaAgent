@@ -17,13 +17,14 @@ import httpx
 import pytest
 
 from meta_agent.agent.tools import invoke_tool
-from meta_agent.domains import doctors_local
-from meta_agent.domains.doctors_local import (
+from meta_agent.medical_tools.adapters.platform import doctors as doctors_local
+from meta_agent.medical_tools.adapters.platform.doctors import (
     DoctorUpstreamAuthError,
     build_envelope,
     resolve_local_doctors,
 )
-from meta_agent.tools.ai_webapi import AIWebApiClient, BackendCallError
+from meta_agent.medical_tools.errors import ToolError as BackendCallError
+from meta_agent.medical_tools.gateway import MedicalToolGateway
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
 from tests.helpers.settings import AppTestSettings
@@ -122,7 +123,7 @@ def test_default_path_never_calls_webapi():
             },
             seen=seen,
         )
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -141,7 +142,7 @@ def test_default_path_never_calls_webapi():
 def test_empty_message_maps_to_no_doctor():
     async def check():
         transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []})
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -156,7 +157,7 @@ def test_token_is_cached_across_queries():
     async def check():
         seen = []
         transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []}, seen=seen)
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             await client.post("search_doctors", {"spaceId": "space-1"})
             await client.post("search_doctors", {"spaceId": "space-1"})
@@ -172,7 +173,7 @@ def test_upstream_auth_failure_is_not_reported_as_no_doctor():
 
     async def check():
         transport, _ = _transport({"code": 401, "message": "无权限，请登录"})
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -189,7 +190,7 @@ def test_login_without_token_raises_auth_error():
         transport, _ = _transport(
             {"code": 200, "data": []}, login_body={"code": 200, "message": "获取成功", "data": {}}
         )
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -205,7 +206,7 @@ def test_non_auth_business_error_is_invalid_contract():
 
     async def check():
         transport, _ = _transport({"code": 500, "message": "系统异常"})
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -219,7 +220,7 @@ def test_non_auth_business_error_is_invalid_contract():
 def test_upstream_http_error_is_retryable():
     async def check():
         transport, _ = _transport({"message": "boom"}, doctor_status=503)
-        client = AIWebApiClient(_settings(), transport=transport)
+        client = MedicalToolGateway(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -240,7 +241,7 @@ def test_rollback_flag_restores_webapi_call():
             seen.append(str(request.url))
             return httpx.Response(200, json=canned)
 
-        client = AIWebApiClient(
+        client = MedicalToolGateway(
             _settings(doctors_local_enabled=False), transport=httpx.MockTransport(handler)
         )
         try:
@@ -256,7 +257,7 @@ def test_rollback_flag_restores_webapi_call():
 
 def test_dry_run_keeps_demo_response():
     async def check():
-        client = AIWebApiClient(AppTestSettings(dry_run=True))
+        client = MedicalToolGateway(AppTestSettings(dry_run=True))
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -286,7 +287,7 @@ def test_doctor_adapter_consumes_local_envelope():
             }
         )
         async with runtime() as (container, backend):
-            client = AIWebApiClient(_settings(), transport=transport)
+            client = MedicalToolGateway(_settings(), transport=transport)
             ctx = context(container, "有哪些医生在线")
             ctx.backend = client
             try:

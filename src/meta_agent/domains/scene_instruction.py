@@ -4,7 +4,7 @@
 Natural-language intent → local scene resolver → validated native delivery.
 
 场景目录加载、拆句、同义词/拼音排序、歧义判断均由 agent 侧的
-meta_agent.domains.scene_local 本地完成（直连点位库，不经过 AI_WebApi）。
+meta_agent.medical_tools.adapters.platform.scene 完成（直连点位库，不经过 AI_WebApi）。
 Python 侧仍校验有序原话覆盖，绝不自行推断可执行指令编码。
 """
 

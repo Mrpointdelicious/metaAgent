@@ -31,6 +31,8 @@ from typing import Any
 import httpx
 
 from meta_agent.config import Settings
+from meta_agent.medical_tools.contracts import ToolContext, ToolRequest, ToolResult
+from meta_agent.medical_tools.errors import ToolError
 
 LOGGER = logging.getLogger(__name__)
 
@@ -508,3 +510,21 @@ async def resolve_local_scene(
         for command in commands:
             command["sourceText"] = original
     return envelope(space_id, version, commands)
+
+
+class SceneToolAdapter:
+    """适配统一入口；解析、目录访问和异常映射沿用 13 号实现。"""
+
+    def __init__(self, client: httpx.AsyncClient, settings: Settings):
+        self.client, self.settings = client, settings
+
+    async def execute(self, request: ToolRequest, context: ToolContext | None) -> ToolResult:
+        try:
+            body = await resolve_local_scene(self.client, self.settings, request.payload())
+        except httpx.HTTPError as exc:
+            raise ToolError(
+                "transport_error", "场景点位库暂时无法访问。", retryable=True
+            ) from exc
+        except (ValueError, TypeError, RuntimeError) as exc:
+            raise ToolError("invalid_contract", "场景点位库返回了无效数据。") from exc
+        return ToolResult(tool_name=request.name, payload=body)

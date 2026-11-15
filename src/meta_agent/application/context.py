@@ -17,13 +17,10 @@ from meta_agent.domains.patient_identity import PatientBrief
 from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
-from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
-from meta_agent.tools.ai_webapi import (
-    ASSESSMENT_REPORT_ENDPOINTS,
-    IRECOG_REPORT_ENDPOINTS,
-    IRETOUR_REPORT_ENDPOINTS,
-    PATIENT_ENDPOINTS,
-)
+from meta_agent.medical_tools.contracts import ToolContext
+from meta_agent.medical_tools.gateway import MedicalToolGateway
+from meta_agent.medical_tools.registry import require_enabled
+from meta_agent.orchestration.identity import TrustedScope
 
 logger = logging.getLogger(__name__)
 
@@ -66,33 +63,19 @@ class RunContext:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
-            raise DomainError("capability_disabled", "IReCog报表暂未启用。", outcome="unsupported")
-        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
-            raise DomainError("capability_disabled", "量表报表暂未启用。", outcome="unsupported")
-        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
-            raise DomainError(
-                "capability_disabled",
-                "IReTour报表暂未启用，仍可查询历史和分析结果。",
-                outcome="unsupported",
-            )
-        if (
-            endpoint == "get_multisource_patient_context"
-            and not self.settings.multisource_patient_context_enabled
-        ):
-            raise DomainError(
-                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
-            )
+        require_enabled(endpoint, self.settings)
         priority = (
             0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
         )
-        if endpoint in PATIENT_ENDPOINTS:
-            payload = self.scope.patient_payload(payload, self.record.conversation_id)
+        gateway = MedicalToolGateway.wrap(self.backend, self.settings)
+        context = ToolContext(
+            scope=self.scope,
+            request_id=self.record.request_id,
+            conversation_id=self.record.conversation_id,
+        )
         async with self.tool_slot(priority):
-            body = await self.backend.post(endpoint, payload)
-        if endpoint in PATIENT_ENDPOINTS:
-            validate_patient_envelope(self.scope, endpoint, body)
-        return body
+            result = await gateway.execute(endpoint, payload, context)
+        return result.domain_payload()
 
     @asynccontextmanager
     async def tool_slot(self, priority: int = 1):

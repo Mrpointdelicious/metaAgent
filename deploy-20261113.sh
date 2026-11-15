@@ -45,7 +45,7 @@ curl -sS http://127.0.0.1:5080/health/ready && echo
 echo "---- 场景直连冒烟（拉点位库版本）----"
 docker exec meta_agent_codex python -c "
 import asyncio, httpx
-from meta_agent.domains.scene_local import DEFAULT_VERSION_URL, DEFAULT_API_KEY, DEFAULT_API_TOKEN
+from meta_agent.medical_tools.adapters.platform.scene import DEFAULT_VERSION_URL, DEFAULT_API_KEY, DEFAULT_API_TOKEN
 async def main():
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post(DEFAULT_VERSION_URL, json={}, headers={'apikey': DEFAULT_API_KEY, 'apitoken': DEFAULT_API_TOKEN})

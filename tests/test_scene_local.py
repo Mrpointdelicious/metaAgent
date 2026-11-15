@@ -17,16 +17,16 @@ import httpx
 import pytest
 
 from meta_agent.agent.tools import invoke_tool
-from meta_agent.domains import scene_local
 from meta_agent.domains.scene import COMMAND, numeric_envelope, source_text
 from meta_agent.domains.scene_instruction import SceneIntentParser
-from meta_agent.domains.scene_local import (
+from meta_agent.medical_tools.adapters.platform import scene as scene_local
+from meta_agent.medical_tools.adapters.platform.scene import (
     MIN_MATCH_SCORE,
     build_commands,
     envelope,
     resolve_local_scene,
 )
-from meta_agent.tools.ai_webapi import AIWebApiClient
+from meta_agent.medical_tools.gateway import MedicalToolGateway
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
 from tests.helpers.settings import AppTestSettings
@@ -288,7 +288,7 @@ def test_backend_uses_local_catalog_and_never_calls_webapi():
             ai_webapi_rehab_base_url="http://webapi.test/api/ai/rehab/tools",
         )
         assert settings.scene_local_enabled is True
-        client = AIWebApiClient(settings, transport=transport)
+        client = MedicalToolGateway(settings, transport=transport)
         try:
             body = await client.post("navigate_scene", {"target": "带我回四楼", "spaceId": "space"})
         finally:
@@ -319,7 +319,7 @@ def test_scene_local_disabled_falls_back_to_webapi():
             scene_local_enabled=False,
             ai_webapi_rehab_base_url="http://webapi.test/api/ai/rehab/tools",
         )
-        client = AIWebApiClient(settings, transport=httpx.MockTransport(handler))
+        client = MedicalToolGateway(settings, transport=httpx.MockTransport(handler))
         try:
             body = await client.post("navigate_scene", {"target": "去四楼", "spaceId": "space"})
         finally:

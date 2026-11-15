@@ -283,6 +283,27 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 
 ## 工具与轻量知识库接入
 
+医疗工具在 `codex/scene-doctor-local` 的 2026-11-13 提交 `324a502` 基础上分层：
+
+```text
+MetaAgent（agent / legacy 编排、证据与动作交付）
+    ↓ Medical Tool Contract（ToolRequest / ToolContext / ToolResult）
+MedicalToolGateway + 工具注册表
+    ├── AIWebApiAdapter → AI_WebApi（患者、训练、量表、报表、医院运营）
+    ├── SceneToolAdapter → 中台场景目录
+    └── DoctorToolAdapter → 中台在线医生
+```
+
+统一入口位于 `src/meta_agent/medical_tools/`。`registry.py` 管理工具名、参数类型、
+原有功能开关与提供方；`contracts.py` 定义调用接口和各领域封套类型；
+`adapters/` 隔离上游协议。新增工具时在注册表登记并实现适配器，领域流程仍负责业务校验。
+患者身份解析和医院目录也使用该入口，`AIWebApiClient` 仅负责 .NET 传输。
+
+场景与医生实现原样迁至 `adapters/platform/`，返回封套、匹配规则、登录缓存、
+异常映射均沿用 13 号版本。`SCENE_LOCAL_ENABLED` / `DOCTORS_LOCAL_ENABLED` 默认仍为
+`true`，设为 `false` 时显式选用 AI_WebApi；失败时不会自动切换提供方。
+本次不新增认证：原有中台凭据、患者 v2 身份及可选 AI_WebApi 令牌继续按原配置使用。
+
 在 master `0620db1` 基础上新增 IReCog、线上量表各 6 个工具；两类工具使用可信 project 患者身份，
 报表分别由 `META_AGENT__IRECOG_REPORTS_ENABLED`、`META_AGENT__ASSESSMENT_REPORTS_ENABLED` 显式开启。
 

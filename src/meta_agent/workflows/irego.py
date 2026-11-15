@@ -6,7 +6,9 @@
 from typing import Any
 
 from meta_agent.config import Settings
-from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
+from meta_agent.medical_tools.contracts import ToolContext
+from meta_agent.medical_tools.gateway import MedicalToolGateway
+from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.orchestration.planner import TaskName
 from meta_agent.tools.ai_webapi import AIWebApiClient
 from meta_agent.tools.contracts import WorkflowOutcome
@@ -16,7 +18,7 @@ class IReGoWorkflow:
     """向编排层提供单一 IREGO 任务入口。"""
 
     def __init__(self, client: AIWebApiClient, settings: Settings) -> None:
-        self._client = client
+        self._client = MedicalToolGateway.wrap(client, settings)
         self._settings = settings
 
     async def execute(
@@ -29,9 +31,8 @@ class IReGoWorkflow:
             return self._dry_run_outcome(tasks)
 
         async def post(endpoint, arguments):
-            body = await self._client.post(endpoint, scope.patient_payload(arguments))
-            validate_patient_envelope(scope, endpoint, body)
-            return body
+            result = await self._client.execute(endpoint, arguments, ToolContext(scope))
+            return result.domain_payload()
 
         raw: dict[str, Any] = {}
         facts: dict[str, Any] = {"status": "success"}

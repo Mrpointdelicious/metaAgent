@@ -36,6 +36,8 @@ from typing import Any
 import httpx
 
 from meta_agent.config import Settings
+from meta_agent.medical_tools.contracts import ToolContext, ToolRequest, ToolResult
+from meta_agent.medical_tools.errors import ToolError
 
 logger = logging.getLogger(__name__)
 
@@ -238,3 +240,33 @@ async def resolve_local_doctors(
     )
     names, ids, phones = await fetch_doctors(client, settings, space_id)
     return build_envelope(names, ids, phones)
+
+
+class DoctorToolAdapter:
+    """适配统一入口；登录缓存、查询和异常映射沿用 13 号实现。"""
+
+    def __init__(self, client: httpx.AsyncClient, settings: Settings):
+        self.client, self.settings = client, settings
+
+    async def execute(self, request: ToolRequest, context: ToolContext | None) -> ToolResult:
+        try:
+            body = await resolve_local_doctors(self.client, self.settings, request.payload())
+        except httpx.HTTPStatusError as exc:
+            code = exc.response.status_code
+            raise ToolError(
+                f"http_{code}", "在线医生服务暂时不可用。",
+                retryable=code in {408, 429, 502, 503, 504},
+                outcome="unavailable" if code in {401, 403} else "failed",
+            ) from exc
+        except DoctorUpstreamAuthError as exc:
+            raise ToolError(
+                "doctor_upstream_unauthorized", "在线医生服务暂时不可用。",
+                outcome="unavailable",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ToolError(
+                "transport_error", "在线医生服务暂时无法访问。", retryable=True
+            ) from exc
+        except (ValueError, TypeError, RuntimeError) as exc:
+            raise ToolError("invalid_contract", "在线医生服务返回了无效数据。") from exc
+        return ToolResult(tool_name=request.name, payload=body)

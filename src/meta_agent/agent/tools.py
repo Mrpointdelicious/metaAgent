@@ -52,12 +52,12 @@ from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.scene_instruction import SceneInstructionAdapter
 from meta_agent.integrations.knowledge import tool_schema as knowledge_tool_schema
-from meta_agent.orchestration.identity import hospital_ops_allowed
-from meta_agent.tools.ai_webapi import (
+from meta_agent.medical_tools.registry import (
     ASSESSMENT_REPORT_ENDPOINTS,
     IRECOG_REPORT_ENDPOINTS,
     IRETOUR_REPORT_ENDPOINTS,
 )
+from meta_agent.orchestration.identity import hospital_ops_allowed
 
 logger = logging.getLogger(__name__)
 

@@ -521,9 +521,9 @@ def test_dify_clinical_lookup_works_without_installing_a_new_identity_provider(a
                 return httpx.Response(200, json={"token": "synthetic-service-token"})
             return httpx.Response(200, json={"data": {"MedicalHistory": "合成病情"}})
 
-        original = container.application.backend.client
+        original = container.ai_webapi_client.client
         client.portal.call(original.aclose)
-        container.application.backend.client = httpx.AsyncClient(
+        container.ai_webapi_client.client = httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         )
         headers = {"Authorization": "Bearer primary"}

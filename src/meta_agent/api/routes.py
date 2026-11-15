@@ -43,7 +43,7 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             request.app.state.container.settings.default_tenant_id,
         )
         if scope.patient_identity is not None:
-            scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
+            scope = await request.app.state.container.medical_tools.resolve_patient_identity(
                 scope
             )
         client = getattr(getattr(request, "state", None), "client", None)

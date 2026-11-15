@@ -95,8 +95,7 @@ class HospitalAdapter:
             raise DomainError(
                 "operator_required", "机构目录需要运营人员身份。", outcome="unsupported"
             )
-        async with ctx.tool_slot():
-            entries = await ctx.backend.directory()
+        entries = (await ctx.call("query_hospital_directory", {}))["directory"]
         name = args.get("name", "").strip().casefold()
         entries = [entry for entry in entries if name in entry["hospital_name"].casefold()]
         evidence = await ctx.repository.save_evidence(
@@ -119,8 +118,7 @@ class HospitalAdapter:
             )
         request = HospitalRequest.model_validate(args)
         if request.hospital_id is not None or request.hospital_ids or request.hospital_name:
-            async with ctx.tool_slot():
-                entries = await ctx.backend.directory()
+            entries = (await ctx.call("query_hospital_directory", {}))["directory"]
             ids = {entry["hospital_id"] for entry in entries}
             if request.hospital_name and request.hospital_id is None:
                 matches = [

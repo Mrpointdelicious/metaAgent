@@ -24,6 +24,7 @@ from meta_agent.graph.runtime import build_runtime_graph
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.llm.models import create_planner_model
+from meta_agent.medical_tools.gateway import MedicalToolGateway
 from meta_agent.planning.compiler import PlanCompiler
 from meta_agent.planning.parser import ConservativePlanner, IntentPlanner, StructuredIntentPlanner
 from meta_agent.tools.ai_webapi import AIWebApiClient
@@ -39,6 +40,7 @@ class ServiceContainer:
     repository: Repository
     application: ApplicationService
     ai_webapi_client: AIWebApiClient
+    medical_tools: MedicalToolGateway
     exit_stack: AsyncExitStack
     persistence_status: str
     cleanup_task: asyncio.Task | None = None
@@ -108,6 +110,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
             persistence = "memory"
         client = AIWebApiClient(settings)
         stack.push_async_callback(client.close)
+        medical_tools = MedicalToolGateway(settings, backend=client)
         repository = Repository(store, settings, checkpointer)
         await repository.ready()
         await checkpointer.aget_tuple({"configurable": {"thread_id": "metaagent-startup-probe"}})
@@ -140,7 +143,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
             compiler=PlanCompiler(settings),
             scheduler=TaskScheduler(DomainDispatcher()),
             repository=repository,
-            backend=client,
+            backend=medical_tools,
             tool_limiter=PriorityLimiter(settings.max_concurrent_tools),
             composer=ResponseComposer(model),
             agent_runtime=agent_runtime,
@@ -159,6 +162,7 @@ async def create_container(settings: Settings) -> ServiceContainer:
             repository,
             application,
             client,
+            medical_tools,
             stack,
             persistence,
             lease_connection=lease,
