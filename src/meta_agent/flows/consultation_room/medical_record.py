@@ -359,7 +359,32 @@ def _extract_content(response: Any) -> str:
 
 
 async def _login(client: Any, settings) -> str:
+    """登录取 token；上游偶发返回 200 但不带 token，重试一次再判定失败。
+
+    实测（2026-11-16）同一账号连续两次登录，第一次 `has_token=false`、第二次正常，
+    属于上游会话互踢一类的瞬时问题，直接报错会让整条问诊链路无谓失败。
+    """
     run_id = CURRENT_RUN_ID.get()
+    for attempt in (1, 2):
+        token = await _login_once(client, settings, run_id=run_id, attempt=attempt)
+        if token:
+            return token
+        if attempt == 1:
+            logger.warning(
+                "medical record login returned no token, retrying once",
+                extra={
+                    "run_id": run_id,
+                    "event_type": "http_call",
+                    "fields": {"step": "login", "method": "POST", "url": LOGIN_URL},
+                },
+            )
+    raise DomainError(
+        "medical_record_token_missing", "未获取到病历服务访问凭证。", outcome="unavailable"
+    )
+
+
+async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int) -> str:
+    """单次登录尝试，返回 token；传输层/HTTP 错误直接抛出 DomainError。"""
     try:
         resp = await client.post(
             LOGIN_URL,
@@ -426,8 +451,10 @@ async def _login(client: Any, settings) -> str:
 
     token = parse_token(login_body).get("token", "")
     logger.info(
-        "login ok status=%s",
+        "login ok status=%s attempt=%s has_token=%s",
         resp.status_code,
+        attempt,
+        bool(token),
         extra={
             "run_id": run_id,
             "event_type": "http_call",
@@ -436,14 +463,11 @@ async def _login(client: Any, settings) -> str:
                 "method": "POST",
                 "url": LOGIN_URL,
                 "status": resp.status_code,
+                "attempt": attempt,
                 "has_token": bool(token),
             },
         },
     )
-    if not token:
-        raise DomainError(
-            "medical_record_token_missing", "未获取到病历服务访问凭证。", outcome="unavailable"
-        )
     return token
 
 

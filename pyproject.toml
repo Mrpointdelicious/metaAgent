@@ -56,3 +56,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 # Preserve the source business prompts verbatim; normal Python checks still apply.
 "src/meta_agent/agent/context.py" = ["E501"]
 "src/meta_agent/flows/consultation_room/prompts.py" = ["E501"]
+"src/meta_agent/flows/ai_medical_order/medical_order_prompt.py" = ["E501"]
+"src/meta_agent/flows/ai_prescription/prompts.py" = ["E501"]
+"src/meta_agent/flows/ai_realtime_analysis/prompts.py" = ["E501"]

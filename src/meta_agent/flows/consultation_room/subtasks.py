@@ -13,8 +13,8 @@
   - 量表测评
   - 医嘱填写
   - 结束问诊
-
-评估分析尚未启用：分类器仍可识别，路由明确返回 unsupported。
+  - 纪要总结（只整理对话，不写临床系统）
+  - 评估分析（取病历与对话生成解读草稿，不下诊断结论）
 """
 
 from __future__ import annotations
@@ -30,11 +30,14 @@ from meta_agent.agent.tools import BASIC_COMMAND_TOOLS
 from meta_agent.contracts import DomainError
 from meta_agent.flows.default.post_process import post_process
 
+from .analysis import run_analysis
 from .invite_doctor import run_invite_doctor
 from .medical_order import run_medical_order
-from .medical_record import run_medical_record
+from .medical_record import _extract_content, run_medical_record
 from .prescription import run_prescription
+from .prompts import SUMMARY_PROMPT
 from .scale_assessment import run_scale_assessment
+from .transcript import build_transcript
 
 if TYPE_CHECKING:
     from meta_agent.application.context import RunContext
@@ -282,7 +285,86 @@ async def _end_consultation(
     )
 
 
-# category -> 子流程处理器。评估分析由 route() 单独返回 unsupported。
+async def _summary(
+    ctx: RunContext, category: str, reason: str, application: ApplicationService
+) -> None:
+    """纪要总结：只整理当前会话已出现的对话，产出草稿文本，不写任何临床系统。"""
+    runtime = application.agent_runtime
+    model = runtime.model if runtime else None
+    if model is None:
+        raise DomainError("summary_unavailable", "纪要总结暂不可用。", outcome="unavailable")
+
+    transcript = build_transcript(ctx)
+
+    await ctx.llm_budget.take()
+    response = await model.ainvoke(
+        SUMMARY_PROMPT.replace("{{transcript}}", transcript),
+        config={
+            "tags": ["consultation_room", "summary"],
+            "metadata": {"component": "consultation_room_summary"},
+        },
+    )
+    text = _extract_content(response).strip()
+    if not text:
+        raise DomainError(
+            "summary_empty", "当前对话内容不足，暂时无法生成纪要。", outcome="unavailable"
+        )
+
+    ctx.record.goal_statuses["consultation_room:纪要总结"] = "succeeded"
+    ctx.record.metrics["summary_generated"] = True
+    logger.info(
+        "consultation summary generated",
+        extra={
+            "run_id": ctx.record.run_id,
+            "event_type": "consultation_summary_generated",
+            "fields": {"turns": len(ctx.memory.turns)},
+        },
+    )
+    await ctx.emitter.emit(
+        "answer_part",
+        {
+            "text": text,
+            "fact_ids": [],
+            "doc_refs": [],
+            "revision": 1,
+            "replaces": None,
+        },
+        goal_id="consultation_room:纪要总结",
+    )
+
+
+async def _analysis(
+    ctx: RunContext, category: str, reason: str, application: ApplicationService
+) -> None:
+    """评估分析：取病历与对话，生成解读草稿；不下诊断结论，不写临床系统。"""
+    runtime = application.agent_runtime
+    model = runtime.model if runtime else None
+
+    text = await run_analysis(ctx, ctx.query, model)
+
+    ctx.record.goal_statuses["consultation_room:评估分析"] = "succeeded"
+    ctx.record.metrics["analysis_generated"] = True
+    logger.info(
+        "consultation analysis generated",
+        extra={
+            "run_id": ctx.record.run_id,
+            "event_type": "consultation_analysis_generated",
+        },
+    )
+    await ctx.emitter.emit(
+        "answer_part",
+        {
+            "text": text,
+            "fact_ids": [],
+            "doc_refs": [],
+            "revision": 1,
+            "replaces": None,
+        },
+        goal_id="consultation_room:评估分析",
+    )
+
+
+# category -> 子流程处理器。
 HANDLERS: dict[str, Handler] = {
     "基础问答": _basic_or_command,
     "指令功能": _basic_or_command,
@@ -292,6 +374,8 @@ HANDLERS: dict[str, Handler] = {
     "量表测评": _scale_assessment,
     "医嘱填写": _medical_order,
     "结束问诊": _end_consultation,
+    "纪要总结": _summary,
+    "评估分析": _analysis,
 }
 
 
@@ -299,10 +383,6 @@ async def route(
     ctx: RunContext, category: str, reason: str, application: ApplicationService
 ) -> None:
     """按分类结果分发到对应子流程；未知类别兜底到基础问答与指令。"""
-    if category == "评估分析":
-        raise DomainError(
-            "consultation_analysis_not_enabled", "问诊内评估分析暂未启用。", outcome="unsupported"
-        )
     handler = HANDLERS.get(category) or _basic_or_command
     ctx.record.metrics["subtask"] = category
     await handler(ctx, category, reason, application)

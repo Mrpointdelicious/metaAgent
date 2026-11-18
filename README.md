@@ -112,6 +112,208 @@ uv run python main.py
 可信网关携带服务 Bearer Token（`META_AGENT__SERVICE_BEARER_TOKEN`，即 Dify 调用方的 `api_key`），
 注入真实用户、租户、角色、患者及当前空间。身份不从用户问题中提取；服务令牌不能直接分发给患者客户端。
 
+### 多接入方令牌与功能流程
+
+除 `primary` / `secondary` 两个固定令牌外，可用 `META_AGENT__SERVICE_CLIENTS` 配置任意数量的
+功能令牌（单行 JSON 数组）。每个条目是一个独立客户端档案：
+
+| 字段 | 作用 |
+| --- | --- |
+| `name` | 客户端标识，进入 `scope_hash` 与会话隔离键；不同令牌的会话互不可见 |
+| `token` | Bearer 令牌，全局唯一，不能与旧 primary/secondary 重复 |
+| `flow` | 绑定的独立流程分支：`default`、`consultation_room`，或 `ai_summary` / `ai_medical_order` / `ai_prescription` / `ai_realtime_analysis` / `ai_consultation` 五个独立功能流程；留空则沿用 `pos` 是否含「问诊房间」判定 |
+| `allowed_tools` | 工具白名单，非空时只有列出的工具可见 |
+| `excluded_tools` | 工具黑名单，与 `allowed_tools` 互斥 |
+| `prompt_suffix` | 追加在系统提示词末尾的功能边界，只能收窄能力，不能覆盖安全约束 |
+
+功能令牌绑定的是**独立注册的完整流程分支**（不是问诊内的子流程）：每个 `ai_*` 分支在
+`flows/` 下有自己的 Flow 与完整执行链路（登录、取数、生成、下发），会话类型、goal、
+metrics 都按独立分支记账：
+
+- `ai_summary` 纪要总结：时间归一 → 语义过滤与拼接 → LLM 两级总结 → 拆 part/all（见下）；
+- `ai_medical_order` 医嘱生成：记录数组 → 医患判定 → LLM 抽取 → 引号规范化，产出三字段 JSON（见下）；
+- `ai_prescription` 处方推荐（新建处方）：二次判断 → 结构化抽取 → 合并参数 → 查处方 / 补 Type → 排班推荐（见下）；
+- `ai_realtime_analysis` 实时分析（对齐 Dify「初始评估.yml」双模式）：query 含「初始评估」
+  或 JSON 报文 `InitialEvaluation` 字段非空 →
+  登录 → 病历信息 / 用户角色 / 病历模板 / 历史就诊记录四路取数 → LLM 生成结构化初始评估，
+  并缓存进会话变量 `patient_context`；否则 → 实时对话分析。前端真实 query 是 JSON 字符串
+  （`{"InitialEvaluation":null,"role":"Doctor","timeStamp":…,"from":"医生1","message":"…"}`），
+  对话模式会解析报文、取 `message`（带说话人前缀）作为对话原文；纯文本 query 原样使用。
+  与缓存的初始评估基线对比，50-200 字建议。两种模式输出均为
+  `{"event":"analysis_record","display_text":"[Answer:]…","payload":{}}` 事件 JSON；
+- `ai_consultation` 问诊全流程：任务分类 → 按类别路由子流程（与问诊分支同一实现）。
+
+配置错误（重名、重令牌、同时配置黑白名单、未注册 flow）会在启动时拒绝，不会静默降级。
+
+`allowed_tools` 与 `prompt_suffix` 只作用于走 Agent 的路径（`default` 分支、问诊内的
+基础问答/指令）；独立功能流程（`ai_*` 分支）使用各自的专用提示词和取数链路，
+不读通用系统提示词。
+
+示例（单行 JSON，实际部署按 app 替换令牌）：
+
+```text
+META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_summary","allowed_tools":["open_chat_history","search_knowledge"]},{"name":"medical-order","token":"app-...","flow":"ai_medical_order"},{"name":"prescription","token":"app-...","flow":"ai_prescription"},{"name":"realtime-analysis","token":"app-...","flow":"ai_realtime_analysis"},{"name":"consultation","token":"app-...","flow":"ai_consultation"}]'
+```
+
+纪要总结与评估分析都只产出草稿文本，不写病历、医嘱、处方或量表，也不声称已保存或生效。
+评估分析使用问诊原有登录与取数链路，仍要求 `patientphone` / `requesterphone` 等既有问诊字段。
+
+`ai_summary` 与 Dify「AI纪要总结」工作流逐步对齐，链路固定为四段：
+
+1. **取数**：优先看 `query` 本身是不是对话记录数组（见下）；其次看 `inputs` 的
+   `records` / `dialogue` / `data` / `messages`；再退到 `inputs` 带
+   `requesterphone` / `phone` / `patientphone` 时登录 webyun 拉 `/api/chat-records`；
+   最后退回本次会话轮次。
+2. **时间归一**（`textproc.normalize_records`）：把 `timeStamp` 秒/毫秒时间戳、以及正文里
+   `起止时间：HH:MM:SS-HH:MM:SS`（按 UTC 理解）统一换成北京时间。
+3. **对话整合**（`textproc.integrate`）：判断本轮输入有无医疗语义，与历史累积拼接，
+   逐句剥掉「嗯嗯/哈哈/谢谢」等敷衍尾巴，并给出 `exceed_six`（超过 6 句即需分段）。
+   结构化记录（`role` / `from` / `message`）先渲染成
+   `[2026-11-16 12:44:14] 潘x（医生）：…` 再送模型，模型据此判断发言人与时间区间。
+4. **LLM + 后处理**：用「部分对话总结 / 全部对话总结」提示词生成纯文本，
+   `parse.parse_summary` 拆成两段；若记录自带 `timeStamp`，`parse.apply_time_range`
+   会把每条小结的「起止时间」校正为记录的真实区间（模型常写成 `00:00:00`）。
+   `answer` 就是 `{"part": "...", "all": "..."}` 的 JSON 字符串（对应 Dify 侧 `summary` 变量的契约）。
+
+「AI纪要总结」的输入示例（`inputs` 为空，只有 `query`）：
+
+```json
+["{\"role\":\"Doctor\",\"timeStamp\":1794804254821,\"from\":\"潘x\",\"message\":\"我膝盖疼了两周，走路多了更疼。。\"}",
+ "{\"role\":\"Doctor\",\"timeStamp\":1794804267261,\"from\":\"潘x\",\"message\":\"先做个膝关节功能评估，暂时别急着用药。。\"}"]
+```
+
+输出（时间区间取自记录的 `timeStamp`，换算成北京时间）：
+
+```json
+{"part": "[潘x]：患者自述膝关节疼痛持续两周，行走增多时疼痛加重……（起止时间：12:44:14-12:44:27）\n",
+ "all": "患者膝关节疼痛持续两周，行走增多时疼痛加重，医生建议先行膝关节功能评估，暂缓用药……\n"}
+```
+
+`ai_medical_order`（AI医嘱生成）同样是「记录数组进、JSON 文本出」，四段链路：
+
+1. **代码 A**（`ai_medical_order.transcript.conversation_text`）：记录数组 → 对话文本，
+   每行 `医生(医生1)：…` / `患者(医生1)：…`（`role` 定医生/患者，`from` 是名字，两者不纠正）；
+2. **条件判断**：文本里既没有「医生」也没有「患者」→ 不调模型，固定输出
+   `{"ChiefComplaint": "无问诊记录", "Diagnosis": "无问诊记录", "Management": "无问诊记录"}`；
+3. **LLM**（`medical_order_prompt.py`，原文对齐）：只按文本抽取，产出
+   `{"ChiefComplaint": …, "Diagnosis": …, "Management": …}`；
+4. **代码 B**（`transcript.to_json_text` / `build_order_json`）：去 Markdown 围栏 →
+   中文/单引号统一成英文双引号 → 结构位中文标点（`，：；`）修正 → 按固定键序规整，
+   最终 `answer` 就是这三个字段的**纯 JSON 对象**（不再套 `{"data": …}` 外壳）。
+
+```json
+// 输入 query（inputs 为空）
+["{\"role\":\"Patient\",\"timeStamp\":1793085016130,\"from\":\"医生1\",\"message\":\"有吗？\"}",
+ "{\"role\":\"Patient\",\"timeStamp\":1793085283680,\"from\":\"医生1\",\"message\":\"脑卒中\"}"]
+
+// 输出 answer
+{"ChiefComplaint": "脑卒中", "Diagnosis": "脑卒中", "Management": "立即就医评估；监测生命体征；保持呼吸道通畅；避免自行用药；遵医嘱进行影像学检查及相应治疗。"}
+```
+
+键序固定为 `ChiefComplaint` → `Diagnosis` → `Management`，模型漏字段补空串、多余字段保留在后面；
+模型没吐合法 JSON 时如实返回原文（`metrics.medical_order_json = "raw"`），不编造字段。
+
+这条分支不再反查 webyun（对话内容由调用方随 `query` 传入），因此也不需要
+`patientphone` / `requesterphone`。
+
+`ai_prescription`（AI推荐处方 / 新建处方）对齐「元宇宙实时问诊AI(新建处方)」，共六段：
+
+1. **二次判断**（LLM）：本轮输入有没有医学信息 / 地点 / 时间，都没有直接回空结果；
+2. **整合对话**：会话变量 `talk` + `" 。"` + 本轮 `query`（与 Dify 同名变量语义一致）；
+3. **结构化抽取**（LLM）：疾病（仅康复相关，感冒发烧一律 null）、机器人类型、训练模式、
+   疾病判断依据、地点、时间、量表（12 个固定量表）；
+4. **合并参数**：新值优先、旧 `params_json` 兜底 → 训练模式按 31 条游戏库随机挑游戏 →
+   设备映射（单臂 `iReMo`，行走/坐站/平衡 `iReGo`）→ `is_multi_disease`（0/1/≥2）；
+5. **查处方**：`GET GetPrescriptionList?keyword=疾病`，缺 Type（0 线上通用 / 1 线下 /
+   2 评估 / 3 治疗 / 4 用药）时按 `prescription_auto_create` 决定是否 `POST AddPrescription`，
+   建完重查；知识检索（`knowledge_corpus_path` 的已批准语料）只用于补评估/治疗/用药内容；
+6. **输出**：逐条 `GetPrescriptionInfoById` 取详情 → 线上按量表聚合、线下算空闲时段 →
+   `answer` 为 `{"online_prescriptions": [...], "offline_prescriptions": [...], "summary": "..."}`。
+
+```json
+// 输入 query（inputs 里的 token 可选，缺省用服务账号登录）
+"患者脑卒中后走路不稳，想在上海做康复训练，明天下午有号吗？"
+
+// 输出 answer（截断示意）
+{"online_prescriptions": [{"Id": 12, "Name": "脑卒中线上通用处方", "Type": 0, "Details": ["ADL量表-Barthel指数"]}],
+ "offline_prescriptions": [{"Id": 13, "Name": "脑卒中线下机器人处方", "Type": 1,
+   "Hospitals": [{"Name": "上海金矢机器人", "occupied_slots": ["2026/11/17 09:00-10:00"]}],
+   "time_slot_recommendation": [{"Hospital": "上海金矢机器人", "Time": "2026/11/17 14:00-15:00"}]}],
+ "summary": "根据走路不稳推荐相关处方。线上处方共1个：[…]。线下处方共1个：[…]，推荐地点：… 推荐时间：…。"}
+```
+
+两个开关（`.env`）：
+
+| 配置 | 默认 | 作用 |
+| --- | --- | --- |
+| `META_AGENT__PRESCRIPTION_AUTO_CREATE` | `false` | 缺 Type 时是否自动 `AddPrescription`。默认只读，先跑一轮看推荐结果再打开 |
+| `META_AGENT__PRESCRIPTION_API_BASE` | `http://192.168.8.71:8085` | 处方接口基址（Dify 侧用的是公网网关 `www.ga-robot.com`） |
+
+写入副作用需要明确知道：打开自动新建后，同一疾病每次「缺 Type」都会再建一批处方
+（Dify 原逻辑没有幂等去重，唯一保护是「Type 齐了就不再建」）；`SettingTime` 随机
+20–30 分钟、游戏随机抽取，所以同样的输入两次结果可能不同。`dry_run=true` 时不发任何
+处方请求，返回内置演示处方（`metrics.prescription_source = "demo"`），便于离线看输出结构。
+
+### 本地令牌测试台（不启动正式服务）
+
+不想起 Docker / 正式服务时，可用本地测试台在网页上逐个验证功能令牌：
+
+```bash
+# 离线桩：不访问外部系统、不产生模型费用（dry_run=true，临床接口返回 demo 数据）
+.venv/Scripts/python.exe scripts/token_lab.py
+
+# 真实输入输出：真实模型 + dry_run=false 的真实临床接口（会消耗额度、访问院内服务）
+.venv/Scripts/python.exe scripts/token_lab.py --live \
+  --patientphone 13800000000 --requesterphone 13800000000 --spaceid 1
+```
+
+`--live` 与离线桩的差别只有两点：不安装模型/管线桩，且把 `dry_run` 置为 `false`
+（离线模式下 `dry_run=true` 会让 `ai_webapi` 直接返回 demo 数据，模型再真也是假输入）。
+
+**各令牌的默认 `inputs` 是分开的**，放在 `scripts/lab_client_inputs.json`（已在
+`.gitignore`，因为里面有网关 `apikey` 等凭据），结构为 `{"<令牌名>": {...}}`：
+
+```json
+{
+  "primary":   {"spaceid": "67ecd511-…", "pos": "二楼 问诊中心", "requesterphone": "xwjsd0", "…": "…"},
+  "secondary": {"spaceid": "d23735f8-…", "pos": "社交岛",       "requesterphone": "xwjsd0", "…": "…"},
+  "summary":   {}
+}
+```
+
+- 出现在文件里的令牌**以文件为准**（`summary` 给空对象即「只发 `query`」）；
+- 没出现的令牌才用命令行 `--inputs` / `--patientphone` 等兜底；
+- `--client-inputs <路径>` 换一份配置，`--no-client-inputs` 忽略该文件。
+
+`--patientphone` / `--requesterphone` / `--spaceid` / `--serialnumber` 只是把真实测试数据
+预填进未单独配置的卡片的 `inputs`，页面上仍可逐卡修改。临床分支不加这些参数也能跑，
+但取不到病历与对话记录，模型只能在“资料缺失”的前提下作答。
+
+网关真实报文可以直接整包喂进来（JSON 字符串或 `@文件`），只作用于没有分令牌配置的卡片：
+
+```bash
+.venv/Scripts/python.exe scripts/token_lab.py --live \
+  --inputs @C:/Users/me/lab_inputs.json
+```
+
+页面顶部还有「统一 inputs」折叠框：粘贴网关报文后点「应用到全部卡片」即可一次改完所有卡
+（会覆盖各令牌的专属默认值，可点「清除本地修改，恢复各令牌默认」还原）。注意报文里的
+`apikey` / `apitoken` / `companykb` / `maxkapp` / `maxkbauth` 服务端**不会使用**（场景与知识库凭据走
+`META_AGENT__SCENE_BACKEND_*` / `KNOWLEDGE_SOURCES` 配置），只有 `spaceid`、`identity`、
+`pos`、`timestamp`、`requesterphone`（及 `patientphone`）会真正参与路由与取数。
+
+测试台在进程内构造真实应用：认证、分支选择、会话绑定、SSE 编码都走完整代码；
+持久化强制 `memory`，不写数据库。页面支持逐卡运行、一键全部运行、观察
+`conversation_id` 续聊，并可切换 blocking / streaming。临床侧默认只调用只读接口
+（登录、病历、对话记录、处方列表；医嘱生成与纪要总结的输入由 `query` 自带，不再取数），
+医嘱 / 分析 / 纪要只产出草稿文本；处方分支只有显式打开
+`META_AGENT__PRESCRIPTION_AUTO_CREATE` 才会写 `AddPrescription`，默认只读。
+
+页面上的令牌列表直接来自 `api.security.client_registry`，因此**旧版
+`META_AGENT__SERVICE_BEARER_TOKEN` / `..._SECONDARY` 与 `SERVICE_CLIENTS` 里的功能令牌会一起列出**
+（旧令牌标注「旧令牌」，并显示 `secondary_excluded_tools` 的禁用项）。全量共 2 + N 个令牌，
+与线上认证完全同源，不存在「页面有但服务端不认」的偏差。
+
 聊天请求 `POST /v1/chat-messages`（别名 `/v1/chat`、`/compat/dify/v1/chat-messages`）：
 
 ```json
@@ -140,7 +342,7 @@ uv run python main.py
 - `POST /v1/runs/{run_id}/status`、`POST /v1/runs/{run_id}/cancel`：请求体为相同的 `user`、`inputs`；不同作用域返回 404。
 - `GET /health/live`、`/health/ready`、`/health/dependencies`：分别检查进程、持久化与实例锁、外部服务。
 
-场景动作需显式启用 `SCENE_ACTIONS_ENABLED=true`，并提供 `spaceId`、`sceneVersion`；医生查询只返回数量和姓名，不自动联系医生。
+场景动作需显式启用 `SCENE_ACTIONS_ENABLED=true`，并提供 `spaceId`、`sceneVersion`；医生查询只返回数量和姓名，不自动联系医生。名单口径分两条：**房间外挂号**走 `GET /api/users`（在线接诊医生，**严格按 `spaceId` 过滤**，空间传错必然「暂无在线医生」），**房间内邀请医生**走 `GET /api/users/all`（在房间中的医生，**可见范围由 `inviterPhone` 决定**），两者不可混用：房间外只发 `spaceId`，`inviterPhone` 传了也不影响结果（`/api/users` 不认它），因此不要带。例外是**明确挂号**：当本轮出现挂号/挂某位医生的号/就他/选第 N 个等表述、在线医生恰好 1 位、该医生有手机号且请求人不是医生身份时，`[DoctorRecommend:]手机号` 作为独立 `action_ready` 事件下发（流式模式下先于 `[Answer:]` 的单独 message），由前端弹挂号卡；只问名单、多医生、无手机号、医生身份一律不下发。
 
 ## 持久化与部署
 
@@ -283,26 +485,21 @@ PostgreSQL 集成测试需显式设置 `META_AGENT_TEST_POSTGRES_DSN`，仅接�
 
 ## 工具与轻量知识库接入
 
-医疗工具在 `codex/scene-doctor-local` 的 2026-11-13 提交 `324a502` 基础上分层：
+医疗工具统一入口在 `src/meta_agent/medical_tools/`（2026-11 从 `metaAgent-dev` 的 `medical_tools`
+设计合并回主线，实现以主线为准）：
 
 ```text
-MetaAgent（agent / legacy 编排、证据与动作交付）
-    ↓ Medical Tool Contract（ToolRequest / ToolContext / ToolResult）
-MedicalToolGateway + 工具注册表
-    ├── AIWebApiAdapter → AI_WebApi（患者、训练、量表、报表、医院运营）
-    ├── SceneToolAdapter → 中台场景目录
-    └── DoctorToolAdapter → 中台在线医生
+RunContext.call
+    ↓ MedicalToolGateway（注册表校验：未知工具 / 功能开关）
+    ├── AIWebApiAdapter      → .NET AI_WebApi（患者、康复、量表、报表、医院运营）
+    ├── platform/scene.py    → 中台点位库（场景指令，本地匹配）
+    └── platform/doctors.py  → 中台在线医生（房间外挂号名单，/api/users）
 ```
 
-统一入口位于 `src/meta_agent/medical_tools/`。`registry.py` 管理工具名、参数类型、
-原有功能开关与提供方；`contracts.py` 定义调用接口和各领域封套类型；
-`adapters/` 隔离上游协议。新增工具时在注册表登记并实现适配器，领域流程仍负责业务校验。
-患者身份解析和医院目录也使用该入口，`AIWebApiClient` 仅负责 .NET 传输。
-
-场景与医生实现原样迁至 `adapters/platform/`，返回封套、匹配规则、登录缓存、
-异常映射均沿用 13 号版本。`SCENE_LOCAL_ENABLED` / `DOCTORS_LOCAL_ENABLED` 默认仍为
-`true`，设为 `false` 时显式选用 AI_WebApi；失败时不会自动切换提供方。
-本次不新增认证：原有中台凭据、患者 v2 身份及可选 AI_WebApi 令牌继续按原配置使用。
+`registry.py` 是工具名、参数、功能开关与提供方的唯一来源，`tools/ai_webapi.py` 与
+`application/context.py` 都从这里取端点集合，不再各存一份。`dry_run` 时一律走 AI_WebApi
+适配器返回合成数据；注入合成后端（测试）时场景/医生回落到该后端的 `post`，
+真实客户端才接本地中台，行为与合并前一致。
 
 在 master `0620db1` 基础上新增 IReCog、线上量表各 6 个工具；两类工具使用可信 project 患者身份，
 报表分别由 `META_AGENT__IRECOG_REPORTS_ENABLED`、`META_AGENT__ASSESSMENT_REPORTS_ENABLED` 显式开启。

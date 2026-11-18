@@ -288,9 +288,13 @@ def parse_disease_recommendation(
     if answer.startswith("__DEEPSEEK_ERROR__:"):
         return {"disease": answer}
 
+    # 先按模型答案对齐词表；对齐不上再按 Dify 原逻辑做一次「最相近」兜底，
+    # 保证只要三个来源里有一个非空就必有输出（否则会误触发澄清）。
     matched = _align_answer(answer, PRESCRIPTION_INDICATIONS)
     if not matched:
         matched = next((t for t in PRESCRIPTION_INDICATIONS if t in (doctor or conv or raw)), "")
+    if not matched:
+        matched = _fallback_closest(raw or conv or doctor, PRESCRIPTION_INDICATIONS)
 
     return {"disease": matched}
 

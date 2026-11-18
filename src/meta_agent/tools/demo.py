@@ -233,7 +233,7 @@ def attach_synthetic_scope(body, payload):
 
 
 def demo_response(endpoint, payload):
-    from meta_agent.medical_tools.registry import PATIENT_ENDPOINTS
+    from meta_agent.tools.ai_webapi import PATIENT_ENDPOINTS
 
     if endpoint == "resolve_patient_identity":
         ref, _ = synthetic_binding(payload)

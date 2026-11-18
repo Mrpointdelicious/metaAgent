@@ -11,30 +11,25 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from meta_agent.config import Settings
-from meta_agent.medical_tools.errors import ToolError as BackendCallError
+from meta_agent.contracts import DomainError
+
+# 端点集合统一来自医疗工具注册表（单一来源，避免与 registry/gateway 漂移）。
 from meta_agent.medical_tools.registry import (
-    ASSESSMENT_REPORT_ENDPOINTS as ASSESSMENT_REPORT_ENDPOINTS,
-)
-from meta_agent.medical_tools.registry import (
+    ASSESSMENT_REPORT_ENDPOINTS,
     HOSPITAL_ENDPOINTS,
+    IRECOG_REPORT_ENDPOINTS,
+    IRETOUR_REPORT_ENDPOINTS,
+    PATIENT_ENDPOINTS,
+    PATIENT_ENDPOINTS_V17,
     REHAB_ENDPOINTS,
-    require_enabled,
-)
-from meta_agent.medical_tools.registry import (
-    IRECOG_REPORT_ENDPOINTS as IRECOG_REPORT_ENDPOINTS,
-)
-from meta_agent.medical_tools.registry import (
-    IRETOUR_REPORT_ENDPOINTS as IRETOUR_REPORT_ENDPOINTS,
-)
-from meta_agent.medical_tools.registry import (
-    PATIENT_ENDPOINTS as PATIENT_ENDPOINTS,
-)
-from meta_agent.medical_tools.registry import (
-    PATIENT_ENDPOINTS_V17 as PATIENT_ENDPOINTS_V17,
 )
 from meta_agent.orchestration.identity import TrustedScope
 
 logger = logging.getLogger(__name__)
+
+
+class BackendCallError(DomainError):
+    pass
 
 
 async def _read_error_body(response) -> str | None:
@@ -133,13 +128,82 @@ class AIWebApiClient:
         return headers
 
     async def post(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if endpoint not in PATIENT_ENDPOINTS | REHAB_ENDPOINTS | HOSPITAL_ENDPOINTS:
+        if endpoint not in (
+            PATIENT_ENDPOINTS | REHAB_ENDPOINTS | PATIENT_ENDPOINTS_V17 | HOSPITAL_ENDPOINTS
+        ):
             raise BackendCallError("unknown_tool", "未注册的工具端点。")
-        require_enabled(endpoint, self.settings)
+        if (
+            endpoint == "get_multisource_patient_context"
+            and not self.settings.multisource_patient_context_enabled
+        ):
+            raise BackendCallError(
+                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
+            )
+        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "IReTour报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
+        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "IReCog报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
+        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
+            raise BackendCallError(
+                "capability_disabled",
+                "量表报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
         if self.settings.dry_run:
             from meta_agent.tools.demo import demo_response
 
             return demo_response(endpoint, payload)
+        # 场景指令由 agent 本地解析：直连点位库 + 本地匹配，不再请求 .NET 端点。
+        # 仍返回 commands-array-v1 同构封套，上层的 evidence/action_ref 校验链不变。
+        if endpoint == "navigate_scene" and self.settings.scene_local_enabled:
+            from meta_agent.medical_tools.adapters.platform.scene import resolve_local_scene
+
+            try:
+                return await resolve_local_scene(self.client, self.settings, payload)
+            except httpx.HTTPError as exc:
+                raise BackendCallError(
+                    "transport_error", "场景点位库暂时无法访问。", retryable=True
+                ) from exc
+            except (ValueError, TypeError, RuntimeError) as exc:
+                raise BackendCallError("invalid_contract", "场景点位库返回了无效数据。") from exc
+        # 在线医生同样本地查询：登录 webyun 拿 token + 拉在线名单，不请求 .NET 端点。
+        # 仍返回 numeric-envelope 同构封套，上层 DoctorAdapter / evidence 链不变。
+        if endpoint == "search_doctors" and self.settings.doctors_local_enabled:
+            from meta_agent.medical_tools.adapters.platform.doctors import (
+                DoctorUpstreamAuthError,
+                resolve_local_doctors,
+            )
+
+            try:
+                return await resolve_local_doctors(self.client, self.settings, payload)
+            except httpx.HTTPStatusError as exc:
+                code = exc.response.status_code
+                raise BackendCallError(
+                    f"http_{code}",
+                    "在线医生服务暂时不可用。",
+                    retryable=code in {408, 429, 502, 503, 504},
+                    outcome="unavailable" if code in {401, 403} else "failed",
+                ) from exc
+            except DoctorUpstreamAuthError as exc:
+                raise BackendCallError(
+                    "doctor_upstream_unauthorized",
+                    "在线医生服务暂时不可用。",
+                    outcome="unavailable",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise BackendCallError(
+                    "transport_error", "在线医生服务暂时无法访问。", retryable=True
+                ) from exc
+            except (ValueError, TypeError, RuntimeError) as exc:
+                raise BackendCallError("invalid_contract", "在线医生服务返回了无效数据。") from exc
         base = (
             self.hospital_base
             if endpoint in HOSPITAL_ENDPOINTS

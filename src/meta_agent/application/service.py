@@ -262,8 +262,9 @@ class ApplicationService:
                 self.active.pop(ctx.record.run_id, None)
 
     async def _dispatch(self, ctx: RunContext) -> None:
-        """按 inputs 路由到对应分支流程；所有分支（含 default）都注册在 self.flows。"""
-        branch = route_from_inputs(ctx.record.raw_inputs)
+        """按客户端档案或 inputs 路由到对应分支流程；所有分支（含 default）都注册在 self.flows。"""
+        client = getattr(ctx, "client", None)
+        branch = route_from_inputs(ctx.record.raw_inputs, forced=getattr(client, "flow", "") or "")
         ctx.record.metrics["branch"] = branch.name
         flow = self.flows.get(branch.name)
         if flow is None:  # 装配缺失时的最后保护，正常不会发生。

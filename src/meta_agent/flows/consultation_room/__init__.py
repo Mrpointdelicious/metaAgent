@@ -30,10 +30,17 @@ logger = logging.getLogger(__name__)
 
 
 class Flow:
-    """独立问诊会话：任务分类 → 按类别执行对应处理器。"""
+    """独立问诊会话：任务分类 → 按类别执行对应处理器。
 
-    def __init__(self, application: ApplicationService) -> None:
+    goal_root 是 goal 记账键：问诊分支用默认值 consultation_room；
+    ai_consultation 分支复用本实现但以自己的名字记账。
+    """
+
+    def __init__(
+        self, application: ApplicationService, goal_root: str = "consultation_room"
+    ) -> None:
         self._application = application
+        self._goal_root = goal_root
 
     async def execute(self, ctx: RunContext) -> None:
         model = self._application.agent_runtime.model if self._application.agent_runtime else None
@@ -78,12 +85,12 @@ class Flow:
         )
 
         # 分类结果不直接输出，只用来选择子流程；由子流程产出 answer_part.text。
-        # 子流程全部成功后才把 consultation_room 标记为 succeeded，否则失败会保留
+        # 子流程全部成功后才把本分支标记为 succeeded，否则失败会保留
         # DomainError 的 outcome（如 unavailable），避免出现「状态 succeeded 但 task_failed」。
         run_id_token = CURRENT_RUN_ID.set(ctx.record.run_id)
         try:
             await route(ctx, category, reason, self._application)
-            ctx.record.goal_statuses["consultation_room"] = (
+            ctx.record.goal_statuses[self._goal_root] = (
                 ctx.record.status if ctx.record.status != "running" else "succeeded"
             )
         finally:

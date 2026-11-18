@@ -4,13 +4,12 @@
 """
 
 from dataclasses import replace
-from typing import Literal
 
 from pydantic import ConfigDict, Field
 
 from meta_agent.application.legacy_conversations import load_legacy_conversation
 from meta_agent.contracts import DomainError, StrictModel, fingerprint, identifier, utcnow
-from meta_agent.domains.routing import route_from_inputs
+from meta_agent.domains.routing import ConversationKind, route_from_inputs
 from meta_agent.infrastructure.locks import ThreadLockRegistry
 from meta_agent.orchestration.identity import space_id_from_inputs
 
@@ -20,7 +19,7 @@ class ConversationBinding(StrictModel):
     conversation_id: str
     owner: str
     authorization_scope: str
-    agent_kind: Literal["default", "consultation_room"]
+    agent_kind: ConversationKind
     consultation_context: str = ""
     consultation_id: str = ""
     position: str = ""
@@ -59,6 +58,8 @@ def consultation_inputs(inputs):
     for key, aliases in (
         ("patientphone", ("patientphone", "patientPhone", "patient_phone", "phone")),
         ("requesterphone", ("requesterphone", "requesterPhone", "requester_phone", "phone")),
+        # Dify 侧「新建处方」应用把 webyun 令牌当开始变量传入；缺失时流程自己登录取。
+        ("token", ("token", "webyuntoken")),
     ):
         value = next((inputs[name] for name in aliases if inputs.get(name) not in (None, "")), None)
         if value is not None:
@@ -172,7 +173,9 @@ class ConversationSelector:
         if request.client is not None:
             scope = replace(scope, client_id=request.client.name)
         try:
-            kind = route_from_inputs(inputs).name
+            # 客户端令牌可固定功能分支；会话类型必须与实际执行分支一致，
+            # 否则同一 token 的续聊会被判成另一种会话而反复新建。
+            kind = route_from_inputs(inputs, forced=getattr(request.client, "flow", "") or "").name
         except ValueError as exc:
             raise DomainError("invalid_position", str(exc)) from exc
         position = inputs.get("pos", "").strip()
@@ -193,7 +196,9 @@ class ConversationSelector:
         if target:
             patient = fingerprint([patient, target])
         context = (
-            fingerprint([position, business_id, patient]) if kind == "consultation_room" else ""
+            fingerprint([position, business_id, patient])
+            if kind in ("consultation_room", "ai_consultation")
+            else ""
         )
         owner = owner_key(scope)
         async with self.locks.hold(owner):
@@ -214,7 +219,11 @@ class ConversationSelector:
                 )
             ):
                 raise DomainError("conversation_not_found", "会话不存在或不属于当前用户。")
-            if binding and binding.agent_kind == "consultation_room" and not position:
+            if (
+                binding
+                and binding.agent_kind in ("consultation_room", "ai_consultation")
+                and not position
+            ):
                 raise DomainError("consultation_position_required", "问诊续聊缺少当前位置。")
             alias_key = fingerprint([source_app, caller_id, kind, context, scope.scope_hash])
             if source_app:

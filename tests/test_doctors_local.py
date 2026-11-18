@@ -7,6 +7,9 @@
     无医生：{"code":200,"message":"暂无在线医生","data":[]}
     未登录：{"code":401,"message":"无权限，请登录"}      # HTTP 仍是 200
 
+口径（2026-11-17 确认）：房间外挂号走 /api/users（在线接诊医生）；
+房间内邀请医生走 /api/users/all（在房间中的医生）。本文件校验前者。
+
 因此本地实现必须：① 结构与 .NET DoctorToolsService 的 DTO 一致；
 ② 把 body.code != 200 判为鉴权失败，而不是「当前没有在线医生」。
 """
@@ -17,20 +20,22 @@ import httpx
 import pytest
 
 from meta_agent.agent.tools import invoke_tool
+from meta_agent.domains.doctors import booking_intent, recommendation_command
 from meta_agent.medical_tools.adapters.platform import doctors as doctors_local
 from meta_agent.medical_tools.adapters.platform.doctors import (
     DoctorUpstreamAuthError,
     build_envelope,
     resolve_local_doctors,
 )
-from meta_agent.medical_tools.errors import ToolError as BackendCallError
-from meta_agent.medical_tools.gateway import MedicalToolGateway
+from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.tools.ai_webapi import AIWebApiClient, BackendCallError
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
 from tests.helpers.settings import AppTestSettings
 
 LOGIN_PATH = "/webyun/api/Login/Login"
-DOCTORS_PATH = "/api/users/all"
+# 房间外挂号：/api/users；房间内邀请医生才是 /api/users/all。
+DOCTORS_PATH = "/api/users"
 
 
 @pytest.fixture(autouse=True)
@@ -123,7 +128,7 @@ def test_default_path_never_calls_webapi():
             },
             seen=seen,
         )
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -142,7 +147,7 @@ def test_default_path_never_calls_webapi():
 def test_empty_message_maps_to_no_doctor():
     async def check():
         transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []})
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -157,7 +162,7 @@ def test_token_is_cached_across_queries():
     async def check():
         seen = []
         transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []}, seen=seen)
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             await client.post("search_doctors", {"spaceId": "space-1"})
             await client.post("search_doctors", {"spaceId": "space-1"})
@@ -173,7 +178,7 @@ def test_upstream_auth_failure_is_not_reported_as_no_doctor():
 
     async def check():
         transport, _ = _transport({"code": 401, "message": "无权限，请登录"})
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -190,7 +195,7 @@ def test_login_without_token_raises_auth_error():
         transport, _ = _transport(
             {"code": 200, "data": []}, login_body={"code": 200, "message": "获取成功", "data": {}}
         )
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -206,7 +211,7 @@ def test_non_auth_business_error_is_invalid_contract():
 
     async def check():
         transport, _ = _transport({"code": 500, "message": "系统异常"})
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -220,7 +225,7 @@ def test_non_auth_business_error_is_invalid_contract():
 def test_upstream_http_error_is_retryable():
     async def check():
         transport, _ = _transport({"message": "boom"}, doctor_status=503)
-        client = MedicalToolGateway(_settings(), transport=transport)
+        client = AIWebApiClient(_settings(), transport=transport)
         try:
             with pytest.raises(BackendCallError) as caught:
                 await client.post("search_doctors", {"spaceId": "space-1"})
@@ -241,7 +246,7 @@ def test_rollback_flag_restores_webapi_call():
             seen.append(str(request.url))
             return httpx.Response(200, json=canned)
 
-        client = MedicalToolGateway(
+        client = AIWebApiClient(
             _settings(doctors_local_enabled=False), transport=httpx.MockTransport(handler)
         )
         try:
@@ -257,7 +262,7 @@ def test_rollback_flag_restores_webapi_call():
 
 def test_dry_run_keeps_demo_response():
     async def check():
-        client = MedicalToolGateway(AppTestSettings(dry_run=True))
+        client = AIWebApiClient(AppTestSettings(dry_run=True))
         try:
             body = await client.post("search_doctors", {"spaceId": "space-1"})
         finally:
@@ -287,7 +292,7 @@ def test_doctor_adapter_consumes_local_envelope():
             }
         )
         async with runtime() as (container, backend):
-            client = MedicalToolGateway(_settings(), transport=transport)
+            client = AIWebApiClient(_settings(), transport=transport)
             ctx = context(container, "有哪些医生在线")
             ctx.backend = client
             try:
@@ -326,5 +331,160 @@ def test_missing_credentials_raise_auth_error():
             with pytest.raises(DoctorUpstreamAuthError):
                 await resolve_local_doctors(client, settings, {"spaceId": "space-1"})
         assert seen == []
+
+    asyncio.run(check())
+
+
+# --------------------------------------------------------------------------- #
+# 挂号指令下发口径：明确挂号意图 + 单医生 + 有手机号 + 非医生身份
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["我想挂号", "帮我挂个号", "我想挂医生3的号", "确认挂号", "就他吧", "选第1个"],
+)
+def test_booking_intent_detects_explicit_requests(query):
+    assert booking_intent(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["有哪些在线医生", "查询医生", "不要挂号", "取消挂号", "你好", ""],
+)
+def test_booking_intent_ignores_listing_and_negation(query):
+    assert booking_intent(query) is False
+
+
+def _scope(role="patient"):
+    return TrustedScope("tenant", "actor", role=role, space_id="space", scene_version=7)
+
+
+def _doctor_ctx(container, query, *, role="patient"):
+    return context(container, query, scope=_scope(role))
+
+
+def _single_doctor(backend):
+    backend.overrides["search_doctors"] = build_envelope(["张三"], ["5848"], ["13900000001"])
+
+
+def test_booking_with_single_doctor_emits_recommend_command():
+    async def check():
+        async with runtime() as (container, backend):
+            _single_doctor(backend)
+            ctx = _doctor_ctx(container, "我想挂号")
+            result = await invoke_tool(ctx, "search_doctors", {})
+            assert result["status"] == "succeeded", result
+            assert result["data"]["command"] == "[DoctorRecommend:]13900000001"
+            actions = [e for e in ctx.record.events if e.type == "action_ready"]
+            assert len(actions) == 1
+            assert actions[0].payload["command_code"] == "[DoctorRecommend:]13900000001"
+            assert actions[0].payload["command_order"] == 1
+            assert ctx.record.action_delivery == {
+                actions[0].payload["action_id"]: "delivery_unknown"
+            }
+
+    asyncio.run(check())
+
+
+def test_listing_doctors_never_emits_recommend_command():
+    async def check():
+        async with runtime() as (container, backend):
+            _single_doctor(backend)
+            ctx = _doctor_ctx(container, "有哪些在线医生")
+            result = await invoke_tool(ctx, "search_doctors", {})
+            assert result["status"] == "succeeded"
+            assert "command" not in result["data"]
+            assert [e for e in ctx.record.events if e.type == "action_ready"] == []
+
+    asyncio.run(check())
+
+
+def test_multiple_doctors_have_no_recommend_command():
+    async def check():
+        async with runtime() as (container, backend):
+            backend.overrides["search_doctors"] = build_envelope(
+                ["张三", "李四"], ["5848", "5849"], ["13900000001", "13900000002"]
+            )
+            ctx = _doctor_ctx(container, "我想挂号")
+            result = await invoke_tool(ctx, "search_doctors", {})
+            assert "command" not in result["data"]
+            assert [e for e in ctx.record.events if e.type == "action_ready"] == []
+
+    asyncio.run(check())
+
+
+def test_doctor_identity_never_emits_recommend_command():
+    async def check():
+        async with runtime() as (container, backend):
+            _single_doctor(backend)
+            ctx = _doctor_ctx(container, "我想挂号", role="clinician")
+            assert recommendation_command(ctx, {"count": 1, "doctorPhones": "13900000001"}) == ""
+
+    asyncio.run(check())
+
+
+def test_single_doctor_without_phone_has_no_command():
+    async def check():
+        async with runtime() as (container, backend):
+            backend.overrides["search_doctors"] = build_envelope(["张三"], ["5848"], [])
+            ctx = _doctor_ctx(container, "我想挂号")
+            result = await invoke_tool(ctx, "search_doctors", {})
+            assert "command" not in result["data"]
+            assert [e for e in ctx.record.events if e.type == "action_ready"] == []
+
+    asyncio.run(check())
+
+
+def test_local_call_sends_only_space_id():
+    """房间外挂号只发 spaceId；inviterPhone 是 /api/users/all 的参数，此接口不认，别带。"""
+
+    async def check():
+        seen = []
+        transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []}, seen=seen)
+        client = AIWebApiClient(_settings(), transport=transport)
+        try:
+            body = await client.post(
+                "search_doctors", {"spaceId": "space-1", "inviterPhone": "15800000005"}
+            )
+        finally:
+            await client.close()
+        assert body["data"]["count"] == 0
+        assert any("spaceId=space-1" in url for url in seen), seen
+        assert not any("inviterPhone" in url for url in seen), seen
+
+    asyncio.run(check())
+
+
+def test_local_booking_uses_out_of_room_endpoint():
+    """房间外挂号必须打 /api/users；/api/users/all 是房间内在场口径，用了就永远查不到人。"""
+
+    async def check():
+        seen = []
+        transport, _ = _transport({"code": 200, "message": "暂无在线医生", "data": []}, seen=seen)
+        client = AIWebApiClient(_settings(), transport=transport)
+        try:
+            await client.post("search_doctors", {"spaceId": "space-1"})
+        finally:
+            await client.close()
+        paths = [httpx.URL(url).path for url in seen]
+        assert DOCTORS_PATH in paths, seen
+        assert "/api/users/all" not in paths, seen
+
+    asyncio.run(check())
+
+
+def test_doctor_adapter_sends_only_space_id(monkeypatch):
+    """请求人手机号不再透传：/api/users 的可见范围只由 spaceId 决定。"""
+
+    async def check():
+        async with runtime() as (container, backend):
+            _single_doctor(backend)
+            ctx = _doctor_ctx(container, "我想挂号")
+            ctx.business_inputs = {"requesterphone": "15800000005"}
+            await invoke_tool(ctx, "search_doctors", {})
+            calls = [payload for endpoint, payload in backend.calls if endpoint == "search_doctors"]
+            assert calls and calls[0]["spaceId"] == "space", calls
+            assert "inviterPhone" not in calls[0], calls
 
     asyncio.run(check())

@@ -86,29 +86,87 @@ PREFIX_TO_TYPE = {
 # 动作/礼貌前缀。按长度倒序取最长匹配，避免「请带我去」被「请」截短。
 # 不剥离「取消」「确认」：它们是反义语义标记（取消挂号 / 确认挂号）。
 PREFIX_WORDS = [
-    "请帮我打开", "请带我去", "请带我", "麻烦你帮我", "麻烦帮我", "请帮我",
-    "帮我打开", "我想要去", "我需要去", "我想要回", "我需要回",
-    "我想去", "我要去", "我想回", "我要回", "我想要", "我需要",
-    "带我回", "带我到", "带我去", "带我过去", "传送到",
-    "要去", "想去", "要回", "想回",
-    "打开", "关闭", "切换", "前往", "进入", "回到", "返回", "退回", "后退",
-    "传送", "来一局", "开始玩", "带我", "帮我", "麻烦", "请",
-    "去", "到", "回", "上", "玩",
+    "请帮我打开",
+    "请带我去",
+    "请带我",
+    "麻烦你帮我",
+    "麻烦帮我",
+    "请帮我",
+    "帮我打开",
+    "我想要去",
+    "我需要去",
+    "我想要回",
+    "我需要回",
+    "我想去",
+    "我要去",
+    "我想回",
+    "我要回",
+    "我想要",
+    "我需要",
+    "带我回",
+    "带我到",
+    "带我去",
+    "带我过去",
+    "传送到",
+    "要去",
+    "想去",
+    "要回",
+    "想回",
+    "打开",
+    "关闭",
+    "切换",
+    "前往",
+    "进入",
+    "回到",
+    "返回",
+    "退回",
+    "后退",
+    "传送",
+    "来一局",
+    "开始玩",
+    "带我",
+    "帮我",
+    "麻烦",
+    "请",
+    "去",
+    "到",
+    "回",
+    "上",
+    "玩",
 ]
 _PREFIX_WORDS_BY_LEN = sorted(PREFIX_WORDS, key=len, reverse=True)
 
 # 句尾口语尾巴：「我想去四楼看看」→「四楼」。
 _TARGET_TAIL_WORDS = (
-    "看看", "瞧瞧", "转转", "逛逛", "走走", "一下",
-    "那儿", "那里", "那边", "这边", "吧", "呗", "啊",
+    "看看",
+    "瞧瞧",
+    "转转",
+    "逛逛",
+    "走走",
+    "一下",
+    "那儿",
+    "那里",
+    "那边",
+    "这边",
+    "吧",
+    "呗",
+    "啊",
 )
 
 SYNONYMS = [
-    ("点开", "打开"), ("开启", "打开"),
-    ("关掉", "关闭"), ("关上", "关闭"), ("退出", "关闭"),
-    ("退出", "结束"), ("终止", "结束"), ("停止", "结束"),
-    ("转换", "切换"), ("换", "切换"),
-    ("返回", "退回"), ("后退", "退回"), ("进去", "进入"),
+    ("点开", "打开"),
+    ("开启", "打开"),
+    ("关掉", "关闭"),
+    ("关上", "关闭"),
+    ("退出", "关闭"),
+    ("退出", "结束"),
+    ("终止", "结束"),
+    ("停止", "结束"),
+    ("转换", "切换"),
+    ("换", "切换"),
+    ("返回", "退回"),
+    ("后退", "退回"),
+    ("进去", "进入"),
 ]
 ACTION_ALIASES = [
     ("取消挂号", "挂号返回"),
@@ -139,11 +197,13 @@ try:
         except Exception:
             return ""
 except Exception:
+
     def _to_pinyin(s: str) -> str:
         return ""
 
 
 # ==================== 上游访问 ====================
+
 
 async def _post(client: httpx.AsyncClient, url: str, payload: dict[str, Any], settings: Settings):
     key = settings.scene_backend_api_key
@@ -211,11 +271,12 @@ async def fetch_points(
 
 # ==================== 匹配打分 ====================
 
+
 def _strip_prefix(s: str) -> str:
     """剥掉最长命中的动作/礼貌前缀，再去掉句尾口语尾巴。"""
     for word in _PREFIX_WORDS_BY_LEN:
         if s.startswith(word) and len(s) > len(word):
-            s = s[len(word):]
+            s = s[len(word) :]
             break
     for tail in _TARGET_TAIL_WORDS:
         if s.endswith(tail) and len(s) > len(tail):
@@ -237,7 +298,7 @@ def _expand_synonyms(target: str):
     yield target
     for frm, to in SYNONYMS:
         if target.startswith(frm) and len(target) > len(frm):
-            yield to + target[len(frm):]
+            yield to + target[len(frm) :]
     for frm, to in ACTION_ALIASES:
         if frm in target:
             yield target.replace(frm, to)
@@ -247,8 +308,17 @@ def _expand_synonyms(target: str):
 
 
 _CN_DIGITS = {
-    "零": 0, "一": 1, "二": 2, "两": 2, "三": 3,
-    "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
 }
 
 
@@ -425,6 +495,7 @@ def _relative_match(target: str, current_pos: str | None, points: list[dict[str,
 
 # ==================== 封套构造 ====================
 
+
 def _split_actions(query: str) -> list[str]:
     q = (query or "").strip()
     if not q:
@@ -513,18 +584,18 @@ async def resolve_local_scene(
 
 
 class SceneToolAdapter:
-    """适配统一入口；解析、目录访问和异常映射沿用 13 号实现。"""
+    """场景指令的本地提供方：直连点位库 + 本地匹配，异常映射与合并前一致。"""
 
-    def __init__(self, client: httpx.AsyncClient, settings: Settings):
-        self.client, self.settings = client, settings
+    def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
+        self.client = client
+        self.settings = settings
 
-    async def execute(self, request: ToolRequest, context: ToolContext | None) -> ToolResult:
+    async def execute(self, request: ToolRequest, context: ToolContext | None = None) -> ToolResult:
+        del context
         try:
-            body = await resolve_local_scene(self.client, self.settings, request.payload())
+            payload = await resolve_local_scene(self.client, self.settings, request.payload())
         except httpx.HTTPError as exc:
-            raise ToolError(
-                "transport_error", "场景点位库暂时无法访问。", retryable=True
-            ) from exc
+            raise ToolError("transport_error", "场景点位库暂时无法访问。", retryable=True) from exc
         except (ValueError, TypeError, RuntimeError) as exc:
             raise ToolError("invalid_contract", "场景点位库返回了无效数据。") from exc
-        return ToolResult(tool_name=request.name, payload=body)
+        return ToolResult(tool_name=request.name, payload=payload)

@@ -39,6 +39,13 @@ build/
 # 参考快照（另一版本的完整代码副本，内含自身 .env 密钥，不入主仓库）
 /metaAgent-main/
 
+# 本地令牌测试台的分令牌 inputs（含网关 apikey 等凭据，不入仓库）
+/scripts/lab_client_inputs.json
+
+# 本地令牌测试台（仅本地调试用，不随仓库分发）
+/scripts/token_lab.py
+/scripts/token_lab.html
+
 # MaxKB 已发布资料目录（由 generate_maxkb_catalog.py 生成，体积 17MB，不入库）
 /maxkb/catalog.json
 
@@ -46,7 +53,9 @@ build/
 /平台新增AI功能设计文档.html
 /平台新增AI功能设计文档.md
 
+# 临时分析产物（Dify 工作流拆解缓存）
+.tmp/
+
 # 部署源码包 / 镜像归档（每次部署打一次包，不入库）
 *.tgz
 *.tar.gz
-/loginspect/

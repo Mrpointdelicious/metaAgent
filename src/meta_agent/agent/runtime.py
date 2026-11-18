@@ -139,6 +139,10 @@ class PatientContextMiddleware(AgentMiddleware):
                 "\n用户当前位置（pos）：「" + ctx.scope.position + "」。"
                 "回答位置、就近推荐、导航类问题时以此为参考。"
             )
+        # 功能令牌的专属边界追加在通用约束之后：只能收窄能力，不能覆盖安全规则。
+        client = getattr(ctx, "client", None)
+        if client is not None and getattr(client, "prompt_suffix", ""):
+            prompt += "\n" + client.prompt_suffix
         messages = bounded_history(request.messages, ctx.settings.agent_history_tokens)
         token_estimate = estimate_tokens(
             {
@@ -262,7 +266,13 @@ class SingleAgentRuntime:
         ctx.record.metrics["orchestration_mode"] = "agent"
         logger.info(
             "agent run start",
-            extra={"run_id": ctx.record.run_id, "event_type": "agent_run_start"},
+            extra={
+                "run_id": ctx.record.run_id,
+                "event_type": "agent_run_start",
+                "fields": {
+                    "client": getattr(getattr(ctx, "scope", None), "client_id", "primary")
+                },
+            },
         )
         try:
             previous_prompt = ctx.system_prompt
@@ -346,6 +356,7 @@ class SingleAgentRuntime:
                         "status": ctx.record.status,
                         "tool_calls": ctx.tool_calls,
                         "llm_calls": ctx.llm_budget.calls,
+                        "client": getattr(getattr(ctx, "scope", None), "client_id", "primary"),
                     },
                 },
             )

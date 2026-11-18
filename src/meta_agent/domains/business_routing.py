@@ -12,7 +12,17 @@ from meta_agent.domains.instruction_classify import classify_instruction
 SCENE_TOOLS = frozenset({"navigate_scene", "resolve_scene_instruction"})
 KNOWLEDGE_TOOLS = frozenset({"search_knowledge"})
 _QUESTIONS = (
-    "介绍", "解释", "说明", "是什么", "什么是", "怎么", "如何", "在哪", "哪里", "功能", "干什么",
+    "介绍",
+    "解释",
+    "说明",
+    "是什么",
+    "什么是",
+    "怎么",
+    "如何",
+    "在哪",
+    "哪里",
+    "功能",
+    "干什么",
 )
 _HISTORY = ("对话记录", "聊天记录", "对话历史", "历史对话", "聊天历史")
 # 医院运营数据（query_hospital_operations 的领域）：与患者个人数据是两套权限，
@@ -206,9 +216,9 @@ def classify_business_query(query: str) -> BusinessRoute:
             scene = not (history or question or uncertain)
         else:
             patient = patient_words
-            scene = (
-                bool(_COMMAND.search(clause)) or intent in ("0", "1")
-            ) and not (history or question or patient or uncertain or hospital_ops)
+            scene = (bool(_COMMAND.search(clause)) or intent in ("0", "1")) and not (
+                history or question or patient or uncertain or hospital_ops
+            )
         navigation = question and bool(
             re.search(r"楼|层|入口|大厅|房间|中心|区域|评估室|训练室", clause)
         )

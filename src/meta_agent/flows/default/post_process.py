@@ -177,13 +177,17 @@ def post_process(
         "query_context": "",
         "evidence_count": str(len(collected)),
     }
-    # 把最终回复完整写进日志，便于按 run_id 排查「输入 → 输出」。
+    # 把最终回复写进日志（截断防刷屏），便于按 run_id 排查「输入 → 输出」。
     logger.info(
         "final answer",
         extra={
             "run_id": getattr(ctx.record, "run_id", ""),
             "event_type": "answer",
-            "fields": {"answer_length": len(result["answer"])},
+            "fields": {
+                "client": getattr(getattr(ctx, "scope", None), "client_id", "primary"),
+                "answer": (result["answer"] or "")[:600],
+                "answer_length": len(result["answer"]),
+            },
         },
     )
     return result

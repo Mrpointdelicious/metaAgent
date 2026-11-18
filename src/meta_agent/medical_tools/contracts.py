@@ -1,6 +1,9 @@
 """
-创建日期：2026-11-15
+创建日期：2026-11-17
 文件功能：定义稳定工具调用接口及现有领域封套类型，不改变业务校验和数据格式。
+
+来源：metaAgent-dev 的 `medical_tools/contracts.py`（2026-11-15）。泛型写法沿用 PEP 695，
+项目要求 Python >= 3.12。
 """
 
 from dataclasses import dataclass, field
@@ -20,6 +23,8 @@ class SceneArguments(TypedDict, total=False):
 
 
 class DoctorArguments(TypedDict, total=False):
+    # 房间外挂号：spaceId 必须传患者当前空间（/api/users 严格按空间过滤）。
+    # 不设 inviterPhone——那是 /api/users/all 房间内在场口径的参数，本接口不认。
     spaceId: str | None
 
 

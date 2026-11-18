@@ -22,7 +22,7 @@ from meta_agent.api.security import require_service_identity
 from meta_agent.application.conversations import owner_key
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord
-from meta_agent.domains.routing import route_from_inputs
+from meta_agent.domains.routing import CLINICAL_BRANCHES, route_from_inputs
 from meta_agent.events.dify import DifyEventAdapter as SettledDifyAdapter
 from meta_agent.events.stream import NativeEventAdapter
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
@@ -33,7 +33,11 @@ router = APIRouter()
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
         inputs = dict(payload.inputs)
-        if route_from_inputs(inputs).name == "consultation_room":
+        client = getattr(getattr(request, "state", None), "client", None)
+        # 绑定到临床分支的客户端即使没有「问诊房间」位置，也属于临床上下文。
+        if route_from_inputs(inputs, forced=getattr(client, "flow", "") or "").name in (
+            CLINICAL_BRANCHES
+        ):
             # Existing clinical lookup parameters do not establish patient v2 identity.
             for key in ("patientphone", "patientPhone", "patient_phone"):
                 inputs.pop(key, None)
@@ -43,10 +47,9 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             request.app.state.container.settings.default_tenant_id,
         )
         if scope.patient_identity is not None:
-            scope = await request.app.state.container.medical_tools.resolve_patient_identity(
+            scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
                 scope
             )
-        client = getattr(getattr(request, "state", None), "client", None)
         if client:
             scope = replace(scope, client_id=client.name)
         return scope

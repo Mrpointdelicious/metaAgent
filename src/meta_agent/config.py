@@ -7,10 +7,76 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from meta_agent.integrations.knowledge import KnowledgeSourceConfig
+
+# 已注册的运行分支；客户端档案只能绑定到这些分支，新增分支时同步这里与 flows 注册表。
+# ai_* 五个分支是功能令牌的独立完整流程（见 flows/fixed_task.py）。
+SUPPORTED_CLIENT_FLOWS = frozenset(
+    {
+        "default",
+        "consultation_room",
+        "ai_summary",
+        "ai_medical_order",
+        "ai_prescription",
+        "ai_realtime_analysis",
+        "ai_consultation",
+    }
+)
+
+
+class ClientTokenConfig(BaseModel):
+    """一个接入方的功能档案：令牌决定可见工具、独立流程分支和专属提示词。
+
+    令牌本身只用于识别“是谁在调用”，功能差异由 flow（绑定的独立流程分支）、
+    工具白名单和 prompt_suffix 表达，避免为每个 app 复制一套认证代码。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
+    token: SecretStr
+    # 空表示沿用 pos 判定（default / consultation_room）；非空则强制该独立流程分支。
+    flow: str = Field(default="", max_length=32)
+    # allowed_tools 非空即白名单；与 excluded_tools 只能二选一，避免语义冲突。
+    allowed_tools: list[str] = Field(default_factory=list, max_length=64)
+    excluded_tools: list[str] = Field(default_factory=list, max_length=64)
+    # 追加在系统提示词末尾的功能边界说明；不能覆盖基础安全约束。
+    prompt_suffix: str = Field(default="", max_length=4000)
+
+    @field_validator("token")
+    @classmethod
+    def nonempty_token(cls, value: SecretStr) -> SecretStr:
+        raw = value.get_secret_value().strip()
+        if len(raw) < 8:
+            raise ValueError("客户端令牌不能为空且长度至少 8 个字符")
+        if raw != value.get_secret_value():
+            raise ValueError("客户端令牌不能包含首尾空格")
+        return value
+
+    @field_validator("flow")
+    @classmethod
+    def valid_flow(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.replace("_", "").isalnum():
+            raise ValueError("flow 必须是分支标识（字母、数字、下划线）")
+        return value
+
+    @field_validator("allowed_tools", "excluded_tools")
+    @classmethod
+    def unique_tool_names(cls, values: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in values if item and item.strip()]
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("工具名不能重复")
+        return cleaned
+
+    @model_validator(mode="after")
+    def allowed_and_excluded_are_exclusive(self):
+        if self.allowed_tools and self.excluded_tools:
+            raise ValueError("allowed_tools 与 excluded_tools 只能配置一个")
+        return self
 
 
 class Settings(BaseSettings):
@@ -40,6 +106,10 @@ class Settings(BaseSettings):
     service_bearer_token_secondary: str = ""
     # secondary 客户端禁用的工具名集合（默认去掉挂号 search_doctors）。
     secondary_excluded_tools: list[str] = Field(default_factory=lambda: ["search_doctors"])
+    # 多接入方令牌表：每个条目把一个 Bearer Token 映射到独立客户端档案与独立流程分支。
+    # 配置为 JSON 数组，例如
+    # [{"name":"summary","token":"app-...","flow":"ai_summary"}]
+    service_clients: list[ClientTokenConfig] = Field(default_factory=list, max_length=32)
     # 允许跨域访问的前端来源（Origin）。浏览器直连本服务时，据此返回 CORS 头；
     # 默认 "*" 放行所有来源。生产环境建议收敛为具体前端地址，JSON 数组格式，
     # 如 ["https://metaverse.example.com"]。
@@ -188,6 +258,10 @@ class Settings(BaseSettings):
     # webyun 直连业务接口的固定服务账号（场景指令 / 医生 / 问诊房间共用的登录凭据）。
     webyun_login_phone: str = ""
     webyun_login_password: SecretStr = SecretStr("")
+    # AI推荐处方直连的处方接口基址（Dify 应用用的是公网网关，内网部署用 8085）。
+    prescription_api_base: str = "http://192.168.8.71:8085"
+    # 处方缺 Type 时是否允许流程自动新建（对生产库有写入副作用，默认关闭）。
+    prescription_auto_create: bool = False
     # 在线医生改为 agent 本地查询（直连 webyun 在线医生列表），不再调用 AI_WebApi 的
     # search_doctors 端点。设为 false 可回滚到 .NET 实现。
     doctors_local_enabled: bool = True
@@ -195,7 +269,9 @@ class Settings(BaseSettings):
     # 设为 false 可回滚到仅 operator 可见。
     hospital_ops_open_to_all_roles: bool = True
     doctor_backend_login_url: str = "http://www.ga-robot.com/webyun/api/Login/Login"
-    doctor_backend_query_url: str = "http://192.168.8.71:4000/api/users/all"
+    # 房间外挂号（search_doctors）用 /api/users（在线接诊医生）；
+    # 房间内邀请医生走 /api/users/all（在房间中的医生），两者口径不同，不要混用。
+    doctor_backend_query_url: str = "http://192.168.8.71:4000/api/users"
     doctor_backend_timeout_seconds: float = Field(default=15, gt=0, le=60)
     doctor_token_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
     doctor_default_space_id: str = ""
@@ -259,10 +335,37 @@ class Settings(BaseSettings):
             raise ValueError("knowledge source IDs must be unique")
         return sources
 
+    @model_validator(mode="after")
+    def validate_client_registry(self):
+        """令牌表内部唯一，且不能与旧 primary/secondary 冲突。"""
+        names = [client.name for client in self.service_clients]
+        if len(set(names)) != len(names):
+            raise ValueError("service_clients 的 name 必须唯一")
+        tokens = [client.token.get_secret_value() for client in self.service_clients]
+        if len(set(tokens)) != len(tokens):
+            raise ValueError("service_clients 的 token 必须唯一")
+        legacy = {
+            "primary": self.service_bearer_token,
+            "secondary": self.service_bearer_token_secondary,
+        }
+        for name in names:
+            if legacy.get(name):
+                raise ValueError(f"service_clients 不能重复使用已配置的 {name} 名称")
+        configured_legacy = {token for token in legacy.values() if token}
+        if configured_legacy.intersection(tokens):
+            raise ValueError("service_clients 的 token 不能与旧令牌重复")
+        return self
+
     def runtime_issues(self) -> list[str]:
         issues = []
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
             issues.append("v1仅支持一个worker；扩容须实现跨进程租约与事件回放")
+        for client in self.service_clients:
+            if client.flow and client.flow not in SUPPORTED_CLIENT_FLOWS:
+                issues.append(
+                    f"service_clients.{client.name} 的 flow={client.flow!r} 未注册；"
+                    f"可选 {sorted(SUPPORTED_CLIENT_FLOWS)}"
+                )
         return issues
 
     def production_issues(self) -> list[str]:

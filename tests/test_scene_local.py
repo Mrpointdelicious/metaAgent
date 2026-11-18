@@ -26,7 +26,7 @@ from meta_agent.medical_tools.adapters.platform.scene import (
     envelope,
     resolve_local_scene,
 )
-from meta_agent.medical_tools.gateway import MedicalToolGateway
+from meta_agent.tools.ai_webapi import AIWebApiClient
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
 from tests.helpers.settings import AppTestSettings
@@ -48,19 +48,44 @@ def build_cases():
     groups = {}
     groups["G1 历史报障话术"] = [
         "带我去四楼并介绍五楼并打开对话记录",
-        "带我回四楼", "带我回社交岛", "我想去四楼", "我想回四楼",
-        "回上一个场景", "返回上一个场景", "退回上一个场景",
+        "带我回四楼",
+        "带我回社交岛",
+        "我想去四楼",
+        "我想回四楼",
+        "回上一个场景",
+        "返回上一个场景",
+        "退回上一个场景",
     ]
     floors = ["一楼", "二楼", "三楼", "四楼", "五楼"]
     templates = [
-        "去{}", "到{}", "带我去{}", "请带我去{}", "带我到{}", "带我回{}",
-        "我想去{}", "我想回{}", "我要去{}", "我要回{}", "回{}", "回到{}",
-        "返回{}", "退回{}", "前往{}", "进入{}", "我想去{}看看",
+        "去{}",
+        "到{}",
+        "带我去{}",
+        "请带我去{}",
+        "带我到{}",
+        "带我回{}",
+        "我想去{}",
+        "我想回{}",
+        "我要去{}",
+        "我要回{}",
+        "回{}",
+        "回到{}",
+        "返回{}",
+        "退回{}",
+        "前往{}",
+        "进入{}",
+        "我想去{}看看",
     ]
     groups["G2 楼层简称口语"] = [t.format(f) for f in floors for t in templates]
     groups["G2 楼层简称口语"] += [
-        "去4楼", "去5楼", "上四楼", "四楼", "五楼",
-        "去四楼评估室", "去四楼1号评估室", "去二楼问诊1号房间",
+        "去4楼",
+        "去5楼",
+        "上四楼",
+        "四楼",
+        "五楼",
+        "去四楼评估室",
+        "去四楼1号评估室",
+        "去二楼问诊1号房间",
     ]
     groups["G3 场景点位全名"] = [f"去{p['name']}" for p in SCENE] + [
         f"带我去{p['name']}" for p in SCENE
@@ -68,18 +93,37 @@ def build_cases():
     groups["G4 点击点位原样"] = [p["name"] for p in CLICK] + [
         f"打开{p['name'].removeprefix('打开').removeprefix('关闭')}" for p in CLICK
     ]
-    groups["G5 传送与游戏点位"] = [f"去{p['name']}" for p in TELEPOR] + [
-        f"传送到{p['name']}" for p in TELEPOR[:5]
-    ] + [f"打开{p['name']}" for p in GAME] + [f"玩{p['name']}" for p in GAME]
+    groups["G5 传送与游戏点位"] = (
+        [f"去{p['name']}" for p in TELEPOR]
+        + [f"传送到{p['name']}" for p in TELEPOR[:5]]
+        + [f"打开{p['name']}" for p in GAME]
+        + [f"玩{p['name']}" for p in GAME]
+    )
     groups["G6 上个场景系列"] = [
-        "退回上个场景", "退回上一个场景", "返回上个场景", "回上个场景",
-        "上一个场景", "回到上一个场景", "返回上一个场景", "回上一个场景",
-        "退回上一场景", "后退一个场景", "回到上个场景",
+        "退回上个场景",
+        "退回上一个场景",
+        "返回上个场景",
+        "回上个场景",
+        "上一个场景",
+        "回到上一个场景",
+        "返回上一个场景",
+        "回上一个场景",
+        "退回上一场景",
+        "后退一个场景",
+        "回到上个场景",
     ]
     groups["G7 挂号叫号系列"] = [
-        "患者确认挂号", "患者挂号返回", "确认挂号", "取消挂号",
-        "挂号确认", "挂号取消", "患者确认叫号", "患者拒绝叫号",
-        "确认叫号", "取消叫号", "医生叫号",
+        "患者确认挂号",
+        "患者挂号返回",
+        "确认挂号",
+        "取消挂号",
+        "挂号确认",
+        "挂号取消",
+        "患者确认叫号",
+        "患者拒绝叫号",
+        "确认叫号",
+        "取消叫号",
+        "医生叫号",
     ]
     groups["G8 多指令"] = [
         "带我去四楼并打开个人中心",
@@ -92,9 +136,18 @@ def build_cases():
         "去三楼训练区，顺便打开摄像头",
     ]
     groups["G9 负例与问句"] = [
-        "五楼有什么", "介绍一下五楼", "怎么去四楼", "四楼是干什么的",
-        "今天天气怎么样", "随便聊聊", "打开地图说明书", "打开地图123",
-        "打开史", "你好", "谢谢你", "我要喝水",
+        "五楼有什么",
+        "介绍一下五楼",
+        "怎么去四楼",
+        "四楼是干什么的",
+        "今天天气怎么样",
+        "随便聊聊",
+        "打开地图说明书",
+        "打开地图123",
+        "打开史",
+        "你好",
+        "谢谢你",
+        "我要喝水",
     ]
     return groups
 
@@ -140,8 +193,18 @@ def test_real_catalog_covers_all_348_phrases():
 
 def test_floor_phrases_never_land_on_the_wrong_floor():
     """曾因拼音退化成 lou 全部错跑到二楼；这里逐条校验落点楼层。"""
-    digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
-              "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
+    digits = {
+        "一": "1",
+        "二": "2",
+        "两": "2",
+        "三": "3",
+        "四": "4",
+        "五": "5",
+        "六": "6",
+        "七": "7",
+        "八": "8",
+        "九": "9",
+    }
     wrong = []
     for query in CASES["G2 楼层简称口语"]:
         match = re.search(r"([一二两三四五六七八九0-9])楼", query)
@@ -242,9 +305,9 @@ def test_pinyin_is_optional_and_does_not_change_results(monkeypatch):
     monkeypatch.setattr(scene_local, "_to_pinyin", lambda _s: "")
     for queries in CASES.values():
         for query in queries:
-            assert [
-                (c["status"], c["result"]) for c in build_commands(query, POINTS)
-            ] == baseline[query], query
+            assert [(c["status"], c["result"]) for c in build_commands(query, POINTS)] == baseline[
+                query
+            ], query
 
 
 def _mock_transport(points):
@@ -288,7 +351,7 @@ def test_backend_uses_local_catalog_and_never_calls_webapi():
             ai_webapi_rehab_base_url="http://webapi.test/api/ai/rehab/tools",
         )
         assert settings.scene_local_enabled is True
-        client = MedicalToolGateway(settings, transport=transport)
+        client = AIWebApiClient(settings, transport=transport)
         try:
             body = await client.post("navigate_scene", {"target": "带我回四楼", "spaceId": "space"})
         finally:
@@ -319,7 +382,7 @@ def test_scene_local_disabled_falls_back_to_webapi():
             scene_local_enabled=False,
             ai_webapi_rehab_base_url="http://webapi.test/api/ai/rehab/tools",
         )
-        client = MedicalToolGateway(settings, transport=httpx.MockTransport(handler))
+        client = AIWebApiClient(settings, transport=httpx.MockTransport(handler))
         try:
             body = await client.post("navigate_scene", {"target": "去四楼", "spaceId": "space"})
         finally:

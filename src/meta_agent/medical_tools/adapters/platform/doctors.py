@@ -2,6 +2,13 @@
 创建日期：2026-11-13
 文件功能：在线医生查询本地实现（直连 webyun 在线医生列表，不经过 AI_WebApi）。
 
+上游有两个不同的名单接口，口径不同（2026-11-17 确认）：
+    房间外挂号（本模块 / ``search_doctors``）：GET /api/users
+        → 「在线接诊」的医生，房间里有没有人都不影响
+    房间内邀请医生（``flows/consultation_room/invite_doctor.py``）：GET /api/users/all
+        → 「在问诊房间中」的医生，需要 inviterPhone 才有可见范围
+因此本模块固定走 /api/users；把 /all 当作房间外挂号的口径会永远查不到人。
+
 与 .NET ``DoctorToolsService.SearchDoctorsAsync`` 等价：
     POST 登录接口（固定服务账号）→ 缓存 Bearer token
     GET  在线医生列表 ?spaceId=<当前空间>
@@ -43,7 +50,10 @@ logger = logging.getLogger(__name__)
 
 # 直连 webyun 在线医生接口（可由 settings 覆盖）。
 DEFAULT_LOGIN_URL = "http://www.ga-robot.com/webyun/api/Login/Login"
-DEFAULT_QUERY_URL = "http://192.168.8.71:4000/api/users/all"
+# 房间外挂号用的名单（在线接诊医生）；房间内邀请医生用的是 /api/users/all。
+DEFAULT_QUERY_URL = "http://192.168.8.71:4000/api/users"
+# 房间内邀请医生的名单接口，仅作注释/对照，实际调用在 consultation_room 子流程里。
+INVITE_DOCTORS_URL = "http://192.168.8.71:4000/api/users/all"
 # 上游用这个文案表示「名单为空」，此时 data 为空数组或不存在。
 EMPTY_MESSAGE = "暂无在线医生"
 REQUEST_TIMEOUT = 15
@@ -209,15 +219,25 @@ def build_envelope(names: list[str], ids: list[str], phones: list[str]) -> dict[
 
 
 async def fetch_doctors(
-    client: httpx.AsyncClient, settings: Settings, space_id: str
+    client: httpx.AsyncClient,
+    settings: Settings,
+    space_id: str,
 ) -> tuple[list[str], list[str], list[str]]:
-    """登录 + 查询在线医生名单（原始三元组）。"""
+    """登录 + 查询房间外可挂号的在线医生名单（原始三元组）。
+
+    固定走 ``/api/users``（在线接诊口径），不是 ``/api/users/all``（房间内在场口径）。
+    ``/api/users`` **严格按 spaceId 过滤**：只返回该空间下处于在线接诊状态的医生，
+    空间传错（如用知识库空间 b827185e 去查医生所在空间 67ecd511）就一定是「暂无在线医生」。
+    所以这里的 ``space_id`` 必须是患者当前所在空间，不能随便兜底成别的空间。
+
+    只发 ``spaceId``：``inviterPhone`` 是 ``/api/users/all`` 房间内在场口径的参数，
+    本接口实测不认它（传与不传结果一致），带上只会误导。
+    """
     token = await _bearer(client, settings)
     base = (settings.doctor_backend_query_url or DEFAULT_QUERY_URL).strip()
-    separator = "&" if "?" in base else "?"
-    url = f"{base}{separator}spaceId={space_id}"
     response = await client.get(
-        url,
+        base,
+        params={"spaceId": space_id},
         headers={"Authorization": f"Bearer {token}"},
         timeout=settings.doctor_backend_timeout_seconds,
     )
@@ -243,25 +263,27 @@ async def resolve_local_doctors(
 
 
 class DoctorToolAdapter:
-    """适配统一入口；登录缓存、查询和异常映射沿用 13 号实现。"""
+    """在线医生的本地提供方（房间外挂号名单），异常映射与合并前一致。"""
 
-    def __init__(self, client: httpx.AsyncClient, settings: Settings):
-        self.client, self.settings = client, settings
+    def __init__(self, client: httpx.AsyncClient, settings: Settings) -> None:
+        self.client = client
+        self.settings = settings
 
-    async def execute(self, request: ToolRequest, context: ToolContext | None) -> ToolResult:
+    async def execute(self, request: ToolRequest, context: ToolContext | None = None) -> ToolResult:
+        del context
         try:
-            body = await resolve_local_doctors(self.client, self.settings, request.payload())
+            payload = await resolve_local_doctors(self.client, self.settings, request.payload())
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             raise ToolError(
-                f"http_{code}", "在线医生服务暂时不可用。",
+                f"http_{code}",
+                "在线医生服务暂时不可用。",
                 retryable=code in {408, 429, 502, 503, 504},
                 outcome="unavailable" if code in {401, 403} else "failed",
             ) from exc
         except DoctorUpstreamAuthError as exc:
             raise ToolError(
-                "doctor_upstream_unauthorized", "在线医生服务暂时不可用。",
-                outcome="unavailable",
+                "doctor_upstream_unauthorized", "在线医生服务暂时不可用。", outcome="unavailable"
             ) from exc
         except httpx.HTTPError as exc:
             raise ToolError(
@@ -269,4 +291,4 @@ class DoctorToolAdapter:
             ) from exc
         except (ValueError, TypeError, RuntimeError) as exc:
             raise ToolError("invalid_contract", "在线医生服务返回了无效数据。") from exc
-        return ToolResult(tool_name=request.name, payload=body)
+        return ToolResult(tool_name=request.name, payload=payload)

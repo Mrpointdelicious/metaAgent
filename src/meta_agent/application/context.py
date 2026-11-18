@@ -17,10 +17,14 @@ from meta_agent.domains.patient_identity import PatientBrief
 from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
-from meta_agent.medical_tools.contracts import ToolContext
 from meta_agent.medical_tools.gateway import MedicalToolGateway
-from meta_agent.medical_tools.registry import require_enabled
-from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
+from meta_agent.tools.ai_webapi import (
+    ASSESSMENT_REPORT_ENDPOINTS,
+    IRECOG_REPORT_ENDPOINTS,
+    IRETOUR_REPORT_ENDPOINTS,
+    PATIENT_ENDPOINTS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,19 @@ class RunContext:
     answer_post_processor: Any = None
     # 子代理（如基础问答与指令）在本轮使用的系统提示词覆盖；None 时用 settings 或默认。
     system_prompt: str | None = None
+    # 工具网关缓存（按 backend 实例复用）；backend 被替换时自动重建，见 gateway 属性。
+    _gateway: Any = field(default=None, init=False, repr=False, compare=False)
+
+    @property
+    def gateway(self) -> MedicalToolGateway:
+        """工具统一入口：注册表校验 + 提供方路由（本地中台场景/医生 或 .NET）。"""
+        backend = self.backend
+        cached = self._gateway
+        if cached is None or cached.backend is not backend:
+            cached = MedicalToolGateway.wrap(backend, self.settings)
+            self._gateway = cached
+        return cached
+
     # 认证后的接入方身份（ClientIdentity）；决定工具可见性等按客户端差异，None 表示无客户端约束。
     client: Any = None
 
@@ -63,19 +80,34 @@ class RunContext:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        require_enabled(endpoint, self.settings)
+        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
+            raise DomainError("capability_disabled", "IReCog报表暂未启用。", outcome="unsupported")
+        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
+            raise DomainError("capability_disabled", "量表报表暂未启用。", outcome="unsupported")
+        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
+            raise DomainError(
+                "capability_disabled",
+                "IReTour报表暂未启用，仍可查询历史和分析结果。",
+                outcome="unsupported",
+            )
+        if (
+            endpoint == "get_multisource_patient_context"
+            and not self.settings.multisource_patient_context_enabled
+        ):
+            raise DomainError(
+                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
+            )
         priority = (
             0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
         )
-        gateway = MedicalToolGateway.wrap(self.backend, self.settings)
-        context = ToolContext(
-            scope=self.scope,
-            request_id=self.record.request_id,
-            conversation_id=self.record.conversation_id,
-        )
+        if endpoint in PATIENT_ENDPOINTS:
+            payload = self.scope.patient_payload(payload, self.record.conversation_id)
         async with self.tool_slot(priority):
-            result = await gateway.execute(endpoint, payload, context)
-        return result.domain_payload()
+            # 统一走医疗工具网关：注册表（未知工具/功能开关）→ 提供方（本地中台 / .NET）。
+            body = await self.gateway.post(endpoint, payload)
+        if endpoint in PATIENT_ENDPOINTS:
+            validate_patient_envelope(self.scope, endpoint, body)
+        return body
 
     @asynccontextmanager
     async def tool_slot(self, priority: int = 1):

@@ -40,11 +40,25 @@ class Flow(Protocol):
 def register_flows(application: Any) -> None:
     """把各分支 Flow 注册进 application.flows（由 container 装配时调用）。"""
     # 分支名 -> 分支包；每个包的 __init__.py 导出 Flow 类。
-    from meta_agent.flows import consultation_room, default
+    # ai_* 五个分支是功能令牌绑定的独立完整流程（见 flows/fixed_task.py）。
+    from meta_agent.flows import (
+        ai_consultation,
+        ai_medical_order,
+        ai_prescription,
+        ai_realtime_analysis,
+        ai_summary,
+        consultation_room,
+        default,
+    )
 
     branches = {
         "default": default,
         "consultation_room": consultation_room,
+        "ai_summary": ai_summary,
+        "ai_medical_order": ai_medical_order,
+        "ai_prescription": ai_prescription,
+        "ai_realtime_analysis": ai_realtime_analysis,
+        "ai_consultation": ai_consultation,
     }
     for name, package in branches.items():
         application.flows[name] = package.Flow(application)
