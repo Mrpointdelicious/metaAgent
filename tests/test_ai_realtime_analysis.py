@@ -17,7 +17,6 @@ from meta_agent.flows.ai_realtime_analysis import (
     run_analysis,
     wrap_analysis_event,
 )
-from tests.helpers.identity import clinical_flow_scope
 
 
 class Memory:
@@ -49,7 +48,6 @@ class Model:
 def make_ctx(inputs=None):
     return SimpleNamespace(
         run_id="r1",
-        scope=clinical_flow_scope("ai_realtime_analysis"),
         metrics={},
         memory=Memory(),
         llm_budget=Budget(),
@@ -81,7 +79,8 @@ def test_json_query_routes_and_extracts_message():
     assert not is_initial_assessment(query)
     assert ra.parse_query_payload(query)["from"] == "医生1"
     assert (
-        ra.extract_dialogue_text(query) == "医生1：我给他说一声，为什么要去现场你们去调这种东西呢？"
+        ra.extract_dialogue_text(query)
+        == "医生1：我给他说一声，为什么要去现场你们去调这种东西呢？"
     )
 
 
@@ -192,7 +191,6 @@ def test_dialogue_analysis_uses_cached_context(monkeypatch):
 
 def test_dialogue_analysis_with_json_query(monkeypatch):
     """JSON 报文对话消息：提示词里应是提取后的「说话人：message」，而非整段 JSON。"""
-
     async def fail_login(*args, **kwargs):
         raise AssertionError("dialogue mode must not fetch")
 

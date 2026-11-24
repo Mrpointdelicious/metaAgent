@@ -10,8 +10,12 @@ from uuid import UUID
 
 from langchain_core.messages import ToolMessage
 from langgraph.store.base import BaseStore, PutOp
-from langmem import create_manage_memory_tool
 from pydantic import ValidationError
+
+try:  # langmem 为可选依赖：默认 patient_memory_enabled=False，缺失不影响主链路启动。
+    from langmem import create_manage_memory_tool
+except ImportError:  # pragma: no cover - 仅在启用长期记忆且未安装 langmem 时触发
+    create_manage_memory_tool = None
 
 from meta_agent.application.conversations import owner_key
 from meta_agent.contracts import DomainError
@@ -64,6 +68,8 @@ class PreferenceToolStore(BaseStore):
 
 
 def build_memory_tool(store=None, owner=None):
+    if create_manage_memory_tool is None:
+        raise RuntimeError("patient memory requires the optional 'langmem' package")
     # The registered tool has a denying store. The middleware binds each authorized call.
     tool = create_manage_memory_tool(
         name=TOOL_NAME,

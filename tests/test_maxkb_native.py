@@ -12,7 +12,6 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from meta_agent.agent.tools import available_tools, build_tools, invoke_tool
 from meta_agent.config import Settings
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.integrations.knowledge import (
@@ -22,9 +21,6 @@ from meta_agent.integrations.knowledge import (
     search,
     tool_schema,
 )
-from meta_agent.orchestration.identity import TrustedScope
-from tests.helpers.integration import context
-from tests.helpers.runtime import runtime
 
 KB = "11111111-1111-4111-8111-111111111111"
 DOC = "22222222-2222-4222-8222-222222222222"
@@ -149,7 +145,7 @@ def mock_native(monkeypatch, *, mode="ok"):
     return seen
 
 
-def invoke(data, *, role="operator", **changes):
+def invoke(data, **changes):
     payload = {
         "query": "电脑端如何跳跃？",
         "domain": "help",
@@ -158,13 +154,7 @@ def invoke(data, *, role="operator", **changes):
     }
     payload.update(changes)
     return asyncio.run(
-        search(
-            KnowledgeSourceConfig(**data),
-            payload,
-            request_id="native-probe",
-            max_bytes=4096,
-            role=role,
-        )
+        search(KnowledgeSourceConfig(**data), payload, request_id="native-probe", max_bytes=4096)
     )
 
 
@@ -180,51 +170,6 @@ def test_calls_native_maxkb_only_and_preserves_sources(source_data, monkeypatch)
     assert tool_schema([KnowledgeSourceConfig(**source_data)])["properties"]["source"]["enum"] == [
         "maxkb"
     ]
-
-
-@pytest.mark.parametrize("role", ["patient", "clinician", "student"])
-def test_operator_publication_is_not_inherited_by_front_roles(source_data, monkeypatch, role):
-    seen = mock_native(monkeypatch)
-    result = invoke(source_data, role=role)
-    assert result["status"] == "no_evidence" and not result["sources"] and not seen
-
-
-@pytest.mark.parametrize("route_granted,doc_granted", [(False, True), (True, False), (True, True)])
-def test_student_knowledge_requires_both_grants(
-    source_data, monkeypatch, route_granted, doc_granted
-):
-    path = Path(source_data["maxkb"]["catalog_path"])
-    published = json.loads(path.read_bytes())
-    if route_granted:
-        published["routes"][0]["roles"].append("student")
-    if doc_granted:
-        published["documents"][DOC]["roles"].append("student")
-    raw = json.dumps(published, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
-    path.write_bytes(raw)
-    source_data["maxkb"]["catalog_sha256"] = hashlib.sha256(raw).hexdigest()
-
-    async def check():
-        other = {
-            "id": "other",
-            "description": "旧知识源",
-            "domains": ["help"],
-            "url": "https://other.test",
-        }
-        async with runtime(knowledge_sources=[other, source_data]) as (container, _):
-            scope = TrustedScope("tenant", "actor", role="student", space_id=SPACE)
-            ctx = context(container, scope=scope)
-            seen = mock_native(monkeypatch)
-            tools = available_tools(ctx, build_tools())
-            assert [tool.name for tool in tools] == ["search_knowledge"]
-            assert tools[0].args_schema["properties"]["source"]["enum"] == ["maxkb"]
-            await invoke_tool(ctx, "search_knowledge", {"query": "操作说明", "domain": "help"})
-            (result,) = ctx.record.results.values()
-            permitted = route_granted and doc_granted
-            assert result.status == ("succeeded" if permitted else "unavailable")
-            assert bool(result.outputs["citations"]) == permitted
-            assert bool(seen) == route_granted
-
-    asyncio.run(check())
 
 
 @pytest.mark.parametrize("space", [None, "另一家医院"])

@@ -54,6 +54,9 @@ FIXED_CLINICAL_CAPABILITIES = MappingProxyType(
         "ai_medical_order": "clinical.order",
         "ai_prescription": "clinical.prescription",
         "ai_realtime_analysis": "clinical.analysis",
+        # 完整 AI 问诊链路（11-18 从 main 补入）：问诊分支复用 clinical.basic，
+        # 该能力在 clinician/patient 角色集合内且豁免 resource_grant 校验。
+        "ai_consultation": "clinical.basic",
     }
 )
 COMMON = frozenset({"knowledge.search", "answer.compose"})

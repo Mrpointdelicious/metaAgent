@@ -3,9 +3,6 @@
 当前 Agent/main 整合版本的入口、会话隔离和部署条件见
 [整合接入说明](docs/agent-main-integration.md)。下文历史部署记录不表示本次已切换线上服务。
 
-前台区分患者、医生、学生，后台保留运营人员。学生传 `inputs.role=student` 或 `inputs.identity=学生`；
-四份独立角色策略共享运行时。运营仅能从独立后台凭证进入；临床操作和后台指标查询还需要由业务方核验当前就诊/机构。接入字段、知识发布、严格模式及回退见[四角色 Agent 方案](docs/role-agent-plan.md)。
-
 ## 单 Agent 与三层患者工具（2026-10）
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
@@ -41,7 +38,7 @@ iretourPatientId 和手机号别名均被拒绝。请求先经 AI_WebApi 确认�
 scope_fingerprint，再进入模型运行；运行中凭证仅用于工具调用，不进入模型或历史。
 患者康复默认 all_tenants，可选 current_tenant。事实、记录锚点和报告保留实际记录的
 医院/卫生中心，账号或查询范围改变时隔离历史。业务凭证刷新不改变同一授权范围的会话。
-医院运营指标默认限于有机构授权的后台 `operator`。患者 v2 请求、签发边界和验证见
+医院运营仍要求可信角色 operator。详细请求、签发边界和验证见
 [患者康复 v2 适配及联调](docs/patient-rehab-v2-adaptation-and-integration-20261029.md)。
 
 趋势分析支持 2–20 次，生成图片支持 3–20 次，可用连续序号或最多180天的日期范围。
@@ -118,7 +115,7 @@ uv run python main.py
 ### 多接入方令牌与功能流程
 
 除 `primary` / `secondary` 两个固定令牌外，可用 `META_AGENT__SERVICE_CLIENTS` 配置任意数量的
-功能令牌（单行 JSON 数组）。每个条目对应一个独立客户端档案。网关在 `inputs` 中同时传入已核验的 `role` 或 `identity`。医生的专用临床流程需要 `consultation_id` 和该次就诊的 `resource_context_token`。各流程所需能力见[四角色 Agent 方案](docs/role-agent-plan.md)。
+功能令牌（单行 JSON 数组）。每个条目是一个独立客户端档案：
 
 | 字段 | 作用 |
 | --- | --- |
@@ -144,7 +141,27 @@ metrics 都按独立分支记账：
   对话模式会解析报文、取 `message`（带说话人前缀）作为对话原文；纯文本 query 原样使用。
   与缓存的初始评估基线对比，50-200 字建议。两种模式输出均为
   `{"event":"analysis_record","display_text":"[Answer:]…","payload":{}}` 事件 JSON；
-- `ai_consultation` 问诊全流程：任务分类 → 按类别路由子流程（与问诊分支同一实现）。
+- `ai_consultation` AI问诊（对齐 Dify「AI诊室(测试)」真实链路）：意图识别为
+  「场景白名单硬前置 → LLM 语义分类 → 规则兜底」（`META_AGENT__CONSULTATION_INTENT_LLM`，
+  默认开启；模型不可用/预算耗尽/输出非法自动降级纯代码规则 `intents.py`）。
+  场景点位只认本地目录，不让 LLM 编造；上一轮意图经
+  `memory.variables["consultation_intent"]` 跨轮传递：问诊中的「谢谢/好的」等过渡语与
+  「嗯」「第二个」等省略句仍续走分诊，`qa` 兜底不冲掉活跃问诊态（避免一次误判让后续
+  全部落到知识库）；明确的新话题、挂号动作或场景跳转则切换/清空状态。按意图分流四条
+  子链路：场景跳转 → 现有 `navigate_scene` 管线（本地解析 + `action_ready` 独立下发）；
+  `ai_consultation` → AI 分诊
+  （病历接口取**患者画像**——性别/年龄/病史/过敏史/用药等客观字段 → 并行检索
+  **health 域医学知识**（`clinical_kb`+`rehab_kb`，以主诉+病史为检索词）→ 患者信息
+  与循证资料一起注入有/无病史两套提示词 → 对话分诊 → 出现「初步判断」且命中康复
+  疾病关键词表时查在线医生自动拼接挂号情况；`META_AGENT__CONSULTATION_MEDICAL_KB`
+  默认开启，检索失败/无命中按无知识继续，不阻断；命中写 metric
+  `consultation_medical_kb_hit`）；挂号/医疗动作 → 在线医生 0/1/多 三态 + 指名匹配。
+  `[ScenePoint:]` / `[DoctorRecommend:]` 指令统一走 `action_ready` 事件独立下发
+  （带 evidence 与去重），不拼进 `[Answer:]` 文本；qa 分支先用轻量规则筛出动作指令
+  才进场景管线，纯知识问题直接检索。知识问答走问题分类 CLASS_1/2/3 + MaxKB 检索：
+  错误码严格作答、产品问答有据引据；CLASS_3 人员咨询转挂号。知识源统一走
+  MaxKB（knowledge_sources 契约），替代 Dify 原版的内置数据集与 richtxt 企业知识；
+  各 HTTP 源失败均降级继续，仅 LLM 无输出视为不可用。
 
 配置错误（重名、重令牌、同时配置黑白名单、未注册 flow）会在启动时拒绝，不会静默降级。
 
@@ -159,13 +176,14 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 ```
 
 纪要总结与评估分析都只产出草稿文本，不写病历、医嘱、处方或量表，也不声称已保存或生效。
-评估分析沿用问诊的登录与取数接口，患者定位字段来自业务授权方核验的本次就诊。
+评估分析使用问诊原有登录与取数链路，仍要求 `patientphone` / `requesterphone` 等既有问诊字段。
 
 `ai_summary` 与 Dify「AI纪要总结」工作流逐步对齐，链路固定为四段：
 
 1. **取数**：优先看 `query` 本身是不是对话记录数组（见下）；其次看 `inputs` 的
-   `records` / `dialogue` / `data` / `messages` / `chat_records`，随后使用授权方返回的
-   本次就诊记录或摘要。缺少记录时使用当前会话轮次。
+   `records` / `dialogue` / `data` / `messages`；再退到 `inputs` 带
+   `requesterphone` / `phone` / `patientphone` 时登录 webyun 拉 `/api/chat-records`；
+   最后退回本次会话轮次。
 2. **时间归一**（`textproc.normalize_records`）：把 `timeStamp` 秒/毫秒时间戳、以及正文里
    `起止时间：HH:MM:SS-HH:MM:SS`（按 UTC 理解）统一换成北京时间。
 3. **对话整合**（`textproc.integrate`）：判断本轮输入有无医疗语义，与历史累积拼接，
@@ -227,10 +245,14 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 4. **合并参数**：新值优先、旧 `params_json` 兜底 → 训练模式按 31 条游戏库随机挑游戏 →
    设备映射（单臂 `iReMo`，行走/坐站/平衡 `iReGo`）→ `is_multi_disease`（0/1/≥2）；
 5. **查处方**：`GET GetPrescriptionList?keyword=疾病`，缺 Type（0 线上通用 / 1 线下 /
-   2 评估 / 3 治疗 / 4 用药）时仅在 `prescription_auto_create` 已启用且有 `clinical.prescription.create` 授权时调用 `POST AddPrescription`，
+   2 评估 / 3 治疗 / 4 用药）时按 `prescription_auto_create` 决定是否 `POST AddPrescription`，
    建完重查；知识检索（`knowledge_corpus_path` 的已批准语料）只用于补评估/治疗/用药内容；
 6. **输出**：逐条 `GetPrescriptionInfoById` 取详情 → 线上按量表聚合、线下算空闲时段 →
    `answer` 为 `{"online_prescriptions": [...], "offline_prescriptions": [...], "summary": "..."}`。
+   排班与机构名兼容新版上游：详情没有 `ScheduleInfo` 时，从 `Hospitals[].occupied_slots`
+   （占用 Used=1）/ `time_slot_recommendation`（空闲 Used=0）反建；机构名递归收集
+   `TenantName` 与 `Hospitals[].Name`；`GetPrescriptionInfoById` 基址同 `PRESCRIPTION_API_BASE`
+   （已指向内网 `192.168.8.71:8085`）。
 
 ```json
 // 输入 query（inputs 里的 token 可选，缺省用服务账号登录）
@@ -320,12 +342,7 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 
 ```json
 {
-  "inputs": {
-    "tenantId": "hospital-a",
-    "role": "patient",
-    "patient_identity": {"type": "project_user_id", "value": "3799"},
-    "identity_context_token": "<业务后端签发的短期凭证>"
-  },
+  "inputs": {"tenantId": "hospital-a", "projectPatientId": "3799", "role": "patient"},
   "query": "解读最近训练并生成报告图片",
   "response_mode": "streaming",
   "conversation_id": "conversation-001",

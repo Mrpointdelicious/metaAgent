@@ -5,13 +5,11 @@
 
 ## 入口与响应
 
-2026-11-23 更新：先按可信角色选择方案，再选择该方案允许的场景。学生和运营均不进入真实问诊流程。角色字段、资源授权和迁移条件见[四角色 Agent 方案](role-agent-plan.md)。
-
 优先使用 `POST /v1/chat-messages` 或 `/compat/dify/v1/chat-messages`。
 `/v1/chat` 保留 main 的请求格式区分：包含 request_id 时是原生协议，否则是 Dify 文本协议。
 所有入口均保留服务认证；网关必须验证并注入真实的 user、租户、角色，不能把服务密钥公开给不可信客户端。
 
-患者/医生的 `inputs.pos` 同时含“问诊”和“房间”才进入问诊 Flow；“问诊中心”和仅含“房间A”均进入普通 Flow。此路由规则不授予临床数据访问权。
+`inputs.pos` 包含**连续的“问诊房间”**才进入问诊 Flow。“房间A”“问诊区附近的康复房间”均进入普通 Flow。
 问诊每轮传非空 pos。缺少位置的问诊续聊返回上下文错误，不回退普通流程；问诊 Flow 缺失也不回退。
 
 ```json
@@ -19,12 +17,7 @@
   "user": "verified-actor",
   "query": "帮我填写病历",
   "conversation_id": "",
-  "inputs": {
-    "role": "clinician",
-    "pos": "三楼问诊房间A",
-    "consultation_id": "<当前就诊编号>",
-    "resource_context_token": "<业务方签发的资源凭证>"
-  },
+  "inputs": {"pos": "三楼问诊房间A", "role": "clinician"},
   "response_mode": "streaming"
 }
 ```
@@ -56,10 +49,11 @@ ConversationSelector 在加载历史之前选择不可变会话绑定。
 `GET /v1/conversations`、`GET /v1/messages` 保留列表/分页接口，可传 tenant_id/role。
 携带患者 v2 上下文的查询优先使用 `POST /v1/conversations/query`、`POST /v1/messages/query?conversation_id=...`，
 请求体为 `{ "user": "...", "inputs": { ... } }`，避免在 URL 放登录凭据。
-列表与消息不再从会话 ID 推断身份。受保护的就诊或机构历史须使用 POST 并重新提交同一活动角色和资源上下文；GET 不补发授权。
+列表与消息沿用当前用户、租户、角色、接入方及患者 v2 范围校验；不再额外查询问诊参与关系。
 
-患者长期偏好通过 `patient_memory_enabled` 开关启用，只对已绑定本人的患者开放。
-医生、学生和运营只读取当前授权范围内的会话；同一账号切换角色后，患者偏好不会注入其他 Agent。
+当前已提交代码仍没有完整长期 MemoryService。本次没有合入其他工作区的未提交原型，
+没有把 ConversationState 冒充长期 memory。两个 Agent 共享同一已验证用户的长期偏好属于后续独立阶段；
+应共用用户 owner key，不能共享会话原文或合并不同医生/患者的记忆。
 
 ## 真实 Dify 工作流桥接
 
@@ -75,9 +69,12 @@ ConversationSelector 在加载历史之前选择不可变会话绑定。
 ## 原有问诊取数流程
 
 保留问诊分类及原有业务处理文件，暂不把临床工具整体迁往 AI_WebApi。
-病历、医嘱、处方、量表、邀请和结束确认分支均校验本次业务授权；没有权威校验方时只提供非受限问答，不读取临床数据。服务凭证只识别接入方，不替代就诊关系。
+本次新增的独立问诊参与关系 provider 已撤销；五个临床分支直接进入原有的登录、查询、模型生成与事件输出流程，
+不需要另行装配授权组件。服务入口的 Bearer 认证、main 患者 v2 校验及会话作用域隔离保持有效。
 
-业务适配器的联系方式来自核验方；传入的旧号码不能覆盖授权目标，也不转换成患者 v2 身份。可选摘要仅来自当前就诊，不再按请求人电话读取所有聊天。换目标或就诊会创建独立绑定。
+问诊处理继续使用原有 patientphone、requesterphone、phone 字段；patientPhone/patient_phone 也映射为患者联系方式。
+这些字段仅作问诊原有业务接口的查询参数，不转换成患者 v2 身份。
+它们只留本次运行上下文，不进入持久化 inputs；目标患者参数变化会创建独立问诊会话。
 普通场景的患者工具仍使用 patient_identity、identity_context_token、patient_ref、scope_fingerprint、data_scope，
 旧患者编号和手机号不能替代该契约；报表的机构范围、来源快照和制品校验保留。
 

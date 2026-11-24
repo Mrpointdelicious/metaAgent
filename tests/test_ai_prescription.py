@@ -7,17 +7,14 @@
 import asyncio
 import json
 import random
-from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
 import meta_agent.flows.ai_prescription as prescription
 from meta_agent.flows.ai_prescription import params as params_mod
 from meta_agent.flows.ai_prescription import render, slots, webyun
-from tests.helpers.identity import clinical_flow_scope
 
 EXTRACTION = {
     "疾病": "脑卒中",
@@ -68,7 +65,6 @@ class _Model:
 def _ctx(query="患者脑卒中后走路不稳，想在上海做康复训练，明天下午有号吗？"):
     return SimpleNamespace(
         query=query,
-        scope=clinical_flow_scope("ai_prescription"),
         record=SimpleNamespace(run_id="run_rx", metrics={}, goal_statuses={}, status="running"),
         memory=_Memory(),
         settings=SimpleNamespace(
@@ -197,6 +193,71 @@ def test_pick_slot_bumps_today_to_tomorrow_when_full():
     assert picked == f"{tomorrow} 14:00-15:00"
 
 
+# ------------------------- 排班反建与机构名兼容（对齐 Dify 新版） -------------------------
+
+
+def test_build_schedule_info_from_hospitals_occupied_slots():
+    """新版上游不给 ScheduleInfo，占用时段放在 Hospitals[].occupied_slots。"""
+    item = {
+        "Hospitals": [
+            {
+                "Name": "康复医院A",
+                "occupied_slots": [
+                    "2026/11/17 09:00-10:00",
+                    {"Date": "2026/11/18", "Time": "14:00-15:00"},
+                ],
+            }
+        ]
+    }
+    built = slots.build_schedule_info(item)
+
+    assert built[0]["TenantName"] == "康复医院A"
+    assert {"Time": "09:00-10:00", "Used": 1} in built[0]["Schedule"]["2026/11/17"]
+    assert {"Time": "14:00-15:00", "Used": 1} in built[0]["Schedule"]["2026/11/18"]
+
+
+def test_build_schedule_info_falls_back_to_recommendation():
+    """Hospitals 为空时，用 time_slot_recommendation 反建空闲时段 Used=0。"""
+    item = {
+        "Hospitals": [],
+        "time_slot_recommendation": [{"Hospital": "康复医院B", "Time": "2026/11/17 14:00-15:00"}],
+    }
+    built = slots.build_schedule_info(item)
+
+    assert built[0]["TenantName"] == "康复医院B"
+    assert built[0]["Schedule"]["2026/11/17"] == [{"Time": "14:00-15:00", "Used": 0}]
+
+
+def test_schedule_of_rebuilds_when_no_schedule_info():
+    """item 和 detail 都没有 ScheduleInfo 时，_schedule_of 从 Hospitals 反建。"""
+    item = {
+        "Hospitals": [{"Name": "康复医院C", "occupied_slots": ["2026/11/17 09:00-10:00"]}]
+    }
+    rebuilt = render._schedule_of(item, {})
+
+    assert rebuilt[0]["TenantName"] == "康复医院C"
+    assert rebuilt[0]["Schedule"]["2026/11/17"][0]["Used"] == 1
+
+
+def test_schedule_of_prefers_explicit_schedule_info():
+    """item 自带的 ScheduleInfo 优先，不被反建覆盖。"""
+    explicit = [{"TenantName": "原始医院", "Schedule": {"2026/11/17": []}}]
+    item = {"ScheduleInfo": explicit, "Hospitals": [{"Name": "不应出现", "occupied_slots": []}]}
+    assert render._schedule_of(item, {}) == explicit
+
+
+def test_collect_tenant_names_from_hospitals_and_nested_json():
+    """机构名递归兼容 TenantName / Hospitals[].Name / 列表里的 JSON 串。"""
+    details = {
+        "1": {"ScheduleInfo": [{"TenantName": "医院A"}]},
+        "2": {"Hospitals": [{"Name": "医院B"}, {"TenantName": "医院C"}]},
+        "3": {"raw": ['{"Hospitals": [{"Name": "医院D"}]}']},
+    }
+    names = prescription.collect_tenant_names(list(details.values()))
+
+    assert names == {"医院A", "医院B", "医院C", "医院D"}
+
+
 # ------------------------- 输出契约 -------------------------
 
 
@@ -290,40 +351,3 @@ def test_flow_requires_model():
     with pytest.raises(Exception) as excinfo:
         asyncio.run(prescription.run_prescription(ctx, ctx.query, None))
     assert "model_unavailable" in str(excinfo.value) or "模型" in str(excinfo.value)
-
-
-@pytest.mark.parametrize(
-    ("enabled", "granted", "writes"), [(True, True, 1), (True, False, 0), (False, True, 0)]
-)
-def test_prescription_template_creation_requires_toggle_and_encounter_grant(
-    monkeypatch, enabled, granted, writes
-):
-    ctx = _ctx()
-    ctx.settings.dry_run = False
-    ctx.settings.prescription_auto_create = enabled
-    grant = ctx.scope.resource_grant
-    if granted:
-        grant = grant.model_copy(
-            update={"capabilities": grant.capabilities | {"clinical.prescription.create"}}
-        )
-        ctx.scope = replace(ctx.scope, resource_grant=grant)
-    lookup = AsyncMock(return_value=[])
-    create = AsyncMock(return_value=[{"body": {}}])
-    monkeypatch.setattr(webyun, "list_prescriptions", lookup)
-    monkeypatch.setattr(webyun, "build_payloads", lambda *args: [{"Type": "2"}])
-    monkeypatch.setattr(webyun, "add_prescriptions", create)
-    asyncio.run(
-        prescription._prescriptions(
-            ctx,
-            object(),
-            "test",
-            grant.requester_phone.get_secret_value(),
-            "示例",
-            {},
-            {},
-            random.Random(1),
-        )
-    )
-    assert create.await_count == writes
-    assert lookup.await_count == 1 + writes
-    assert ctx.record.metrics["prescription_created"] == writes

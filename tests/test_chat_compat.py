@@ -19,7 +19,6 @@ import uvicorn
 
 from meta_agent.api.routes import chat, dify_stream
 from meta_agent.api.schemas import DifyChatRequest, NativeChatRequest
-from meta_agent.api.security import ClientIdentity
 from meta_agent.app import create_app
 from meta_agent.contracts import OutboundEvent, RunRecord
 from meta_agent.events.dify import DifyEventAdapter
@@ -32,7 +31,7 @@ ENDPOINTS = ["/v1/chat", "/v1/chat-messages", "/compat/dify/v1/chat-messages"]
 def payload(**changes):
     return {
         "user": "interactive-cli",
-        "inputs": {"role": "patient"},
+        "inputs": {},
         "query": "你好",
         "conversation_id": "",
         "response_mode": "blocking",
@@ -61,13 +60,13 @@ def test_compat_blocking_assigns_unique_ids_and_reuses_conversation(client, auth
     status = client.post(
         f"/v1/runs/{body['task_id']}/status",
         headers=auth_headers,
-        json={"user": "interactive-cli", "inputs": {"role": "patient"}},
+        json={"user": "interactive-cli", "inputs": {}},
     )
     assert status.status_code == 200 and status.json()["run_id"] == body["task_id"]
     other = client.post(
         f"/v1/runs/{body['task_id']}/status",
         headers=auth_headers,
-        json={"user": "other", "inputs": {"role": "patient"}},
+        json={"user": "other", "inputs": {}},
     )
     assert other.status_code == 404
 
@@ -133,9 +132,7 @@ def test_alias_explicit_id_keeps_idempotency_without_replaying_a_stream(client, 
 @pytest.mark.parametrize("phone_key", ["patientphone", "patientPhone", "patient_phone"])
 def test_old_phone_identity_is_rejected(client, auth_headers, phone_key):
     response = client.post(
-        "/v1/chat",
-        headers=auth_headers,
-        json=payload(inputs={"role": "patient", phone_key: "13800000000"}),
+        "/v1/chat", headers=auth_headers, json=payload(inputs={phone_key: "13800000000"})
     )
     assert response.status_code == 422
 
@@ -144,9 +141,7 @@ def test_conflicting_phone_aliases_are_rejected(client, auth_headers):
     response = client.post(
         "/v1/chat",
         headers=auth_headers,
-        json=payload(
-            inputs={"role": "patient", "patientphone": "13800000000", "patientPhone": "13900000000"}
-        ),
+        json=payload(inputs={"patientphone": "13800000000", "patientPhone": "13900000000"}),
     )
     assert response.status_code == 422
 
@@ -275,8 +270,7 @@ def test_compat_stream_disconnect_cancels_the_original_application_run():
             backend.gates["get_irego_session_analysis"] = asyncio.Event()
             run = await container.application.start(request("解读最近训练"))
             fake_request = SimpleNamespace(
-                app=SimpleNamespace(state=SimpleNamespace(container=container)),
-                state=SimpleNamespace(client=ClientIdentity("primary")),
+                app=SimpleNamespace(state=SimpleNamespace(container=container))
             )
             generator = dify_stream(run, fake_request)
             pending = asyncio.create_task(anext(generator))
@@ -299,8 +293,7 @@ def test_blocking_request_cancellation_stops_the_application(model):
         async with runtime() as (container, backend):
             backend.gates["get_irego_session_analysis"] = asyncio.Event()
             fake_request = SimpleNamespace(
-                app=SimpleNamespace(state=SimpleNamespace(container=container)),
-                state=SimpleNamespace(client=ClientIdentity("primary")),
+                app=SimpleNamespace(state=SimpleNamespace(container=container))
             )
             pending = asyncio.create_task(
                 chat(
@@ -326,17 +319,8 @@ def test_blocking_request_cancellation_stops_the_application(model):
     asyncio.run(check())
 
 
-@pytest.mark.parametrize(
-    ("identity_args", "expected_status"),
-    [
-        (["-i", "project_user_id:3799"], "succeeded"),
-        (["-i", "login_name:000007"], "succeeded"),
-        (["--role", "student"], "unavailable"),
-    ],
-)
-def test_v2_interactive_script_can_chat_and_fetch_verbose_status(
-    settings, identity_args, expected_status
-):
+@pytest.mark.parametrize("identity", ["project_user_id:3799", "login_name:000007"])
+def test_v2_interactive_script_can_chat_and_fetch_verbose_status(settings, monkeypatch, identity):
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
     server = uvicorn.Server(
@@ -354,7 +338,8 @@ def test_v2_interactive_script_can_chat_and_fetch_verbose_status(
                 sys.executable,
                 str(Path(__file__).parents[1] / "interactive.py"),
                 f"http://127.0.0.1:{sock.getsockname()[1]}",
-                *identity_args,
+                "-i",
+                identity,
                 "-t",
                 "test-service-token",
                 "-v",
@@ -370,9 +355,7 @@ def test_v2_interactive_script_can_chat_and_fetch_verbose_status(
             check=True,
         )
         assert result.stdout.count("答 > ") == 2
-        assert result.stdout.count(f"状态: {expected_status}") == 2
-        if identity_args == ["--role", "student"]:
-            assert "已识别为学生" in result.stdout and "请输入患者标识" not in result.stdout
+        assert result.stdout.count("状态: succeeded") == 2
         assert "[错误]" not in result.stdout and "[无回答]" not in result.stdout
         assert "[指标不可用]" not in result.stdout and "[无 task_id" not in result.stdout
     finally:

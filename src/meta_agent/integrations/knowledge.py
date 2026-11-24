@@ -26,9 +26,14 @@ class NativeMaxKBConfig(BaseModel):
     username_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
     password_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
     workspace_id: str = Field(default="default", pattern=r"^[A-Za-z0-9_-]{1,100}$")
-    catalog_path: str = Field(min_length=1)
-    catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # live 模式（默认）不再依赖本地快照；以下两项仅为旧快照模式兼容保留，可缺省。
+    catalog_path: str = Field(default="")
+    catalog_sha256: str = Field(default="")
     allowed_space_ids: list[str] = Field(min_length=1, max_length=100)
+    # 库名首段的短标志 → 完整 spaceid 映射（MaxKB 库名限 64 字符，完整 UUID 放不下）。
+    # 例如 {"d23735f8": "d23735f8-9ad9-4546-9093-685b1b14592c"}。
+    # 未命中的短标志按"完整 spaceid"直接匹配，global 表示所有 space 共用。
+    owner_aliases: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_native(self):
@@ -100,6 +105,7 @@ def validate_contract(name, payload):
 
 
 def sources_for_role(sources, role):
+    """角色可见的知识源（dev 角色授权链依赖；live 检索不改变此契约）。"""
     if role not in USER_ROLES:
         return []
     return [
@@ -107,6 +113,16 @@ def sources_for_role(sources, role):
         for source in sources
         if (source.protocol == "maxkb" and (source.roles is None or role in source.roles))
         or (source.protocol != "maxkb" and role != "student" and role in (source.roles or ()))
+    ]
+
+
+def sources_for_scope(sources, scope):
+    """按角色 + space 白名单过滤可见知识源。"""
+    role = getattr(scope, "role", None)
+    return [
+        source
+        for source in sources_for_role(sources, role)
+        if not source.maxkb or getattr(scope, "space_id", None) in source.maxkb.allowed_space_ids
     ]
 
 
@@ -130,13 +146,6 @@ def tool_schema(sources):
     }
 
 
-def sources_for_scope(sources, scope):
-    return [
-        source for source in sources_for_role(sources, scope.role)
-        if not source.maxkb or getattr(scope, "space_id", None) in source.maxkb.allowed_space_ids
-    ]
-
-
 class KnowledgeContractError(ValueError):
     pass
 
@@ -145,10 +154,14 @@ class KnowledgeAccessDenied(KnowledgeContractError):
     pass
 
 
-async def search(source, payload, *, request_id, max_bytes, role):
-    """Validate, send, and receive. No retries or fallback to a different knowledge source."""
+async def search(source, payload, *, request_id, max_bytes, role=None):
+    """Validate, send, and receive. No retries or fallback to a different knowledge source.
+
+    ``role`` is optional for the live MaxKB path; when supplied by the dev role
+    authorization chain it is enforced before any provider call.
+    """
     validate_contract("KnowledgeSearchRequest", payload)
-    if not sources_for_role([source], role):
+    if role is not None and not sources_for_role([source], role):
         raise KnowledgeAccessDenied("knowledge_source_not_granted")
     if source.protocol == "maxkb":
         from meta_agent.integrations.maxkb_native import search as native_search

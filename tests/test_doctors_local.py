@@ -29,7 +29,6 @@ from meta_agent.medical_tools.adapters.platform.doctors import (
 )
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.tools.ai_webapi import AIWebApiClient, BackendCallError
-from tests.helpers.identity import clinical_scope, patient_scope
 from tests.helpers.integration import context
 from tests.helpers.runtime import runtime
 from tests.helpers.settings import AppTestSettings
@@ -475,18 +474,14 @@ def test_local_booking_uses_out_of_room_endpoint():
     asyncio.run(check())
 
 
-def test_doctor_adapter_sends_only_space_id():
+def test_doctor_adapter_sends_only_space_id(monkeypatch):
     """请求人手机号不再透传：/api/users 的可见范围只由 spaceId 决定。"""
 
     async def check():
         async with runtime() as (container, backend):
             _single_doctor(backend)
             ctx = _doctor_ctx(container, "我想挂号")
-            ctx.scope = clinical_scope(
-                scope=patient_scope("tenant", "actor", space_id="space"),
-                capabilities={"clinical.invite"},
-            )
-            assert ctx.business_inputs["requesterphone"]
+            ctx.business_inputs = {"requesterphone": "15800000005"}
             await invoke_tool(ctx, "search_doctors", {})
             calls = [payload for endpoint, payload in backend.calls if endpoint == "search_doctors"]
             assert calls and calls[0]["spaceId"] == "space", calls

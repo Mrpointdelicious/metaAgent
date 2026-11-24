@@ -55,11 +55,7 @@ def app_for(container):
 @pytest.mark.parametrize("entry", ["chat", "messages", "list", "post_messages"])
 def test_verified_old_id_restores_history_and_sanitizes_runtime_state(entry):
     async def check():
-        async with runtime(
-            legacy_conversation_client="primary",
-            service_bearer_token="test",
-            hospital_ops_open_to_all_roles=True,
-        ) as (
+        async with runtime(legacy_conversation_client="primary", service_bearer_token="test") as (
             container,
             _,
         ):
@@ -87,9 +83,7 @@ def test_verified_old_id_restores_history_and_sanitizes_runtime_state(entry):
                     assert "旧问题" in model.seen[0] and "旧回答" in model.seen[0]
                     assert "old-tool-payload" not in model.seen[0]
                 elif entry == "list":
-                    response = await client.get(
-                        "/v1/conversations", params={"user": USER, "role": "clinician"}
-                    )
+                    response = await client.get("/v1/conversations", params={"user": USER})
                     assert response.status_code == 200
                     assert [r["id"] for r in response.json()["data"]] == [CID]
                 elif entry == "post_messages":
@@ -105,7 +99,6 @@ def test_verified_old_id_restores_history_and_sanitizes_runtime_state(entry):
                     params={
                         "user": USER,
                         "conversation_id": CID,
-                        "role": "clinician",
                     },
                 )
                 assert messages.status_code == 200
@@ -135,7 +128,6 @@ def test_verified_old_id_restores_history_and_sanitizes_runtime_state(entry):
     "case",
     [
         "disabled",
-        "restricted_policy",
         "wrong_client",
         "wrong_user",
         "wrong_role",
@@ -154,10 +146,7 @@ def test_verified_old_id_restores_history_and_sanitizes_runtime_state(entry):
 )
 def test_unverifiable_or_expired_old_conversations_are_not_recovered(case):
     async def check():
-        async with runtime(
-            legacy_conversation_client="" if case == "disabled" else "primary",
-            hospital_ops_open_to_all_roles=case != "restricted_policy",
-        ) as (
+        async with runtime(legacy_conversation_client="" if case == "disabled" else "primary") as (
             container,
             _,
         ):
@@ -201,9 +190,7 @@ def test_unverifiable_or_expired_old_conversations_are_not_recovered(case):
 
 def test_migration_resumes_without_overwriting_newer_conversation_state():
     async def check():
-        async with runtime(
-            legacy_conversation_client="primary", hospital_ops_open_to_all_roles=True
-        ) as (c, _):
+        async with runtime(legacy_conversation_client="primary") as (c, _):
             await seed_legacy(c.repository)
             newer = ConversationState(turns=[{"user": "新问题", "assistant": "新回答"}])
             await c.repository.save_conversation(SCOPE.thread_id(CID), newer)

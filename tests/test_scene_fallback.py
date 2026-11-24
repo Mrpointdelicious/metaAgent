@@ -64,6 +64,9 @@ def test_missing_tool_call_still_delivers_the_scene_action():
             assert len(run.record.action_delivery) == 1
             assert "四楼评估室" in answers(run.record)
             assert "没认出来" not in answers(run.record)
+            # 替换道歉的话术必须带 [Answer:]，否则非流式拼接指令码后会粘连。
+            assert answers(run.record).startswith("[Answer:]")
+            assert "[ScenePoint:]5好的" not in answers(run.record)
             assert [name for name, _ in backend.calls if name == "navigate_scene"] == [
                 "navigate_scene"
             ]

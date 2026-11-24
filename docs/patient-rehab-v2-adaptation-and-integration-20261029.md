@@ -74,3 +74,21 @@ uv run pytest tests/integration/test_patient_v2_live.py -ra
 联调配置包含 base_url、bearer_token、identity_signing_key、patient_id、other_patient_id、current_business_id；签发密钥仅供隔离联调签名使用，不作为 MetaAgent 生产配置。可添加 expected_plan_counts 对照只读 SQL 数量。
 
 现有演示 MetaAgent、Dify 和 AI_WebApi 容器未切换。本轮验证通过后，实际接入方仍须把经认证的业务凭证绑定到上述 inputs，再使用本版服务。
+
+### 用 token_lab 联调（不需要重新部署 AI_WebApi）
+
+AI_WebApi 只用 `PatientAccess__IdentitySigningKey` 校验 HMAC，不区分凭证由哪个进程签发。因此本地签一个短期 `patient_identity_v2` 就能走真实工具链路，无需给 WebApi 增加测试端点。
+
+```powershell
+$env:PATIENT_IDENTITY_SIGNING_KEY = '<与 AI_WebApi 同一把签名密钥>'
+.venv/Scripts/python.exe scripts/make_patient_v2_token.py --patient-id <dbuser.Id>
+# 只有手机号时（本机需有 mysql CLI）：
+$env:AI_WEBAPI_DB_CONNECTION = 'server=…;Database=project;Uid=…;Pwd=…;Port=3306;'
+.venv/Scripts/python.exe scripts/make_patient_v2_token.py --phone <登录手机号>
+
+.venv/Scripts/python.exe scripts/token_lab.py --live --no-browser
+```
+
+浏览器打开 `http://127.0.0.1:8099/lab`（必须 http 且与测试台同源），把脚本打印的 JSON 贴进页面「统一 inputs」→「应用到全部卡片」，再点某张卡片「运行」。查询写「查一下我的下肢康复训练报告」这类自然语言，`response_mode` 用 blocking；展开「查看原始响应」核对工具返回的 `status`、`query_scope` 与 `reason_codes`。
+
+注意：测试台默认 `user=lab-doctor`，脚本签发的 `subject` 必须同为 `lab-doctor`，否则 WebApi 返回 `PATIENT_IDENTITY_PROOF_INVALID`；凭证默认只活 600 秒，过期要重新签。页面 inputs 可以用 JSON 对象，`--inputs` 命令行参数会把值转成字符串，不能用来传 `patient_identity`。联调结束丢弃凭证，不要把签名密钥或 token 写进提示词和会话历史。

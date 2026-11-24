@@ -6,11 +6,10 @@
 只依赖 Python 标准库，宿主机的任意 Python 3 都可运行。
 
 用法：
-    python interactive.py                    # 启动时选择前台身份
+    python interactive.py                    # 启动后按提示输入患者标识
     python interactive.py -i 5718            # 直接用项目患者 ID 5718
     python interactive.py -i login_name:000007  # 另需业务后端签发的短期凭证
     python interactive.py -v                 # 额外显示工具/证据等指标
-    python interactive.py --role student
     python interactive.py -k 4985b6d... --apikey ... --apitoken ...   # 企业知识库检索
     python interactive.py --pos "问诊 房间"                          # 走 consultation_room 分支
     # 凭证由 META_AGENT_IDENTITY_CONTEXT_TOKEN 或 --identity-token-file 注入
@@ -105,8 +104,6 @@ def build_inputs(identity_raw: str, args) -> dict:
         classify_identity(identity_raw) if identity_raw is not None else None, args.space
     )
     inputs = with_pos(inputs, args.pos)
-    if args.role:
-        inputs = {**(inputs or {}), "role": args.role}
     if inputs and "patient_identity" in inputs:
         proof = os.environ.get("META_AGENT_IDENTITY_CONTEXT_TOKEN", "")
         if args.identity_token_file:
@@ -219,7 +216,6 @@ def main():
         help="服务地址，默认 http://localhost:8080（Docker 版用 http://localhost:5080）",
     )
     ap.add_argument("-i", "--identity", help="患者标识：project_user_id:5718 或 login_name:000007")
-    ap.add_argument("--role", choices=("patient", "clinician", "student"), help="当前前台身份")
     ap.add_argument("-s", "--space", help="场景 space_id，塞进 inputs.space_id（用于指令解析工具）")
     ap.add_argument(
         "--pos", help="前端透传的 pos 字段；含「问诊」+「房间」时走 consultation_room 分支"
@@ -239,26 +235,18 @@ def main():
     )
     ap.add_argument("-v", "--verbose", action="store_true", help="额外显示工具/证据指标")
     args = ap.parse_args()
-    if args.role is None:
-        if args.identity:
-            args.role = "patient"
-        else:
-            selected = input("请选择身份（患者 / 医生 / 学生）: ").strip()
-            args.role = {"患者": "patient", "医生": "clinician", "学生": "student"}.get(
-                selected, selected
-            )
-            if args.role not in {"patient", "clinician", "student"}:
-                ap.error("请指定 --role patient、clinician 或 student")
-    if args.role in ("clinician", "student") and (args.identity or args.identity_token_file):
-        ap.error("只有患者角色可以提供患者标识或患者凭证")
 
     token = args.token or load_service_token()
     inputs = build_inputs(args.identity, args)
 
     print("MetaAgent 交互式客户端")
     print(f"  服务: {args.url}")
-    print(f"  身份: {args.role}  上下文: {safe_inputs(inputs)}")
-    print("  输入问题后回车；exit 退出，new 开新会话。\n")
+    print(f"  患者: {safe_inputs(inputs) or '（未设置）'}")
+    print("  输入问题后回车；exit 退出，new 开新会话，id 改患者。\n")
+
+    if inputs is None:
+        raw = input("请输入 project_user_id:编号 或 login_name:登录名，直接回车跳过: ")
+        inputs = build_inputs(raw, args)
 
     conversation_id = ""
     while True:
@@ -275,9 +263,6 @@ def main():
             print("已开启新会话。")
             continue
         if low in ("id", "患者"):
-            if args.role in ("clinician", "student"):
-                print("当前不是患者身份，不绑定患者。")
-                continue
             raw = input("请输入患者标识: ").strip()
             inputs = build_inputs(raw, args)
             print(f"患者已设为: {safe_inputs(inputs) or '（未设置）'}")

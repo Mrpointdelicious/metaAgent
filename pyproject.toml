@@ -61,3 +61,9 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 "src/meta_agent/flows/ai_medical_order/medical_order_prompt.py" = ["E501"]
 "src/meta_agent/flows/ai_prescription/prompts.py" = ["E501"]
 "src/meta_agent/flows/ai_realtime_analysis/prompts.py" = ["E501"]
+# AI诊室真实链路移植件：意图/问题分类/错误码提取的代码节点整体照搬，
+# 为保持与 Dify 原版逐行可对照，不做风格化改写，放宽相应规则。
+"src/meta_agent/flows/ai_consultation/intents.py" = ["E501", "E701", "E722", "SIM102", "SIM110", "B007"]
+"src/meta_agent/flows/ai_consultation/question_classify.py" = ["E501", "E701", "UP035", "UP006", "UP045"]
+"src/meta_agent/flows/ai_consultation/error_code.py" = ["E501", "E701"]
+"src/meta_agent/flows/ai_consultation/prompts.py" = ["E501"]

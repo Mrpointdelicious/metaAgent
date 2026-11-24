@@ -27,9 +27,8 @@ MAXKB_NATIVE_PASSWORD=replace-with-existing-password
 ## 调用与边界
 
 Agent 先检查受信任请求中的 `space_id`，再向 MaxKB 原生 `/user/login` 登录。
-只对目录内已启用、领域匹配、允许当前医院空间及相应受众读取的知识库调用
+只对目录内已启用、领域匹配、允许当前医院空间和 operator 读取的知识库调用
 `/workspace/{workspace}/knowledge/{knowledge_id}/hit_test`。
-路由和文档两层都必须包含本次活动角色（`patient / clinician / student / operator`）。没有角色继承或借用：只有 `operator` 的目录不会响应前台请求。部署前由资料负责人逐项复核、重新发布相应受众并更新目录 SHA-256；不要批量补齐四个标签。
 返回命中须与已发布原文一致；输出前再次用 MaxKB 原生文档及段落接口确认在线状态和原文。
 来源标题、页码、发布版本及段落引用保留在统一工具结果中，上下文按当前预算截断并说明缺口。
 

@@ -1,14 +1,22 @@
 """
 创建日期：2026-10-27
-文件功能：直接调用MaxKB原生API，保留已发布资料、医院空间和原文引用边界。
-"""
+更新：2026-11-20 改为实时检索（live）模式。
+文件功能：直接调用 MaxKB 原生 API 检索已发布资料，保留空间引用边界。
 
+live 模式要点：
+  - 不依赖本地 catalog 快照；每次检索实时登录、实时列库、实时 hit_test。
+  - 知识库名首段为 space 归属标志：
+      <spaceid>  → 仅该 space 可见（专属）
+      global     → 所有 space 可见（共用）
+    多个归属可用逗号分隔。
+  - 知识内容在 MaxKB 更新后即时可查，无需重新生成快照。
+  - 安全边界：allowed_space_ids 白名单仍然强制校验；角色、域、类型仍按库名解析。
+"""
 import asyncio
 import hashlib
 import json
 import math
-from functools import lru_cache
-from pathlib import Path
+import re
 from uuid import UUID
 
 import httpx
@@ -23,30 +31,55 @@ from meta_agent.integrations.knowledge import (
 DOMAIN_TYPES = {
     "health": {"clinical_kb", "rehab_kb"},
     # help 域纳入 scene_kb：楼层/科室/场景介绍只发布在场景库，而模型对
-    # 「介绍X楼」这类问题常选 help；不纳入则该类内容永远检索不到
-    # （2026-11-11 线上「介绍二楼」失败即此原因，三楼是因 sop_kb 恰有一份副本才侥幸命中）。
+    # 「介绍X楼」这类问题常选 help；不纳入则该类内容永远检索不到。
     "help": {"sop_kb", "scene_kb"},
     "product": {"scene_kb", "hospital_kb", "device_kb", "sop_kb", "technical_kb"},
 }
 
-
-@lru_cache(maxsize=4)
-def catalog(path, expected_hash):
-    file = Path(path)
-    try:
-        if file.stat().st_size > 64_000_000:
-            raise KnowledgeContractError("maxkb_catalog_too_large")
-        value = json.loads(file.read_text(encoding="utf-8"))
-    except OSError:
-        raise KnowledgeContractError("maxkb_catalog_unavailable") from None
-    raw = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
-    if value.get("schema_version") != 2 or hashlib.sha256(raw).hexdigest() != expected_hash:
-        raise KnowledgeContractError("maxkb_catalog_integrity_failed")
-    return value
+# 库名类型片段 → knowledge_type（与 generate_maxkb_catalog.py 的 TYPE_MAP 保持一致）
+TYPE_MAP = {
+    "设备资料": "device_kb",
+    "技术研究参考": "technical_kb",
+    "操作说明": "sop_kb",
+    "场景说明": "scene_kb",
+    "医院流程": "hospital_kb",
+    "临床文献": "clinical_kb",
+    "康复文献": "rehab_kb",
+}
+GLOBAL_OWNER = "global"
+SEARCH_MODE = "blend"
+SKIP_PREFIXES = ("待发布", "Smoke")
 
 
 def identifier(value):
     return str(UUID(str(value)))
+
+
+def resolve_owner(token: str, aliases: dict[str, str]) -> str:
+    """把库名首段的归属 token 解析为完整 spaceid；global 原样保留。"""
+    if token == GLOBAL_OWNER:
+        return token
+    return aliases.get(token, token)
+
+
+def parse_library(name: str):
+    """从库名解析 (owners, knowledge_type, roles)。
+
+    库名格式（全角竖线分隔）：<归属标志>｜<类型>｜<载体>｜<角色>
+      归属标志：spaceid 或短标志（别名）或 global，多个用逗号/中文逗号分隔。
+    返回 None 表示库名不符合规范，跳过（fail closed）。
+    """
+    parts = [p.strip() for p in name.split("｜") if p.strip()]
+    if len(parts) < 2:
+        return None
+    owners = [x.strip() for x in re.split(r"[,，]", parts[0]) if x.strip()]
+    if not owners:
+        return None
+    ktype = next((t for seg, t in TYPE_MAP.items() if seg in name), None)
+    if not ktype:
+        return None
+    roles = [r.strip() for r in parts[-1].split("/") if r.strip()]
+    return owners, ktype, roles
 
 
 class NativeClient:
@@ -67,7 +100,6 @@ class NativeClient:
                     raise KnowledgeContractError("oversized_maxkb_response")
         value = json.loads(raw)
         if not isinstance(value, dict) or value.get("code") not in (0, 200):
-            # MaxKB may return HTTP 200 for provider failures; never expose its error body.
             if isinstance(value, dict) and value.get("code") in (401, 403):
                 raise KnowledgeAccessDenied("maxkb_access_denied")
             raise KnowledgeContractError("maxkb_native_request_failed")
@@ -142,29 +174,18 @@ def project(rows, budget, trace_id):
     return result
 
 
-def grants_role(entry, role):
-    roles = entry.get("roles")
-    return isinstance(roles, list) and role in roles
+async def search(source, payload, *, request_id, max_bytes, catalog_role=None):
+    """实时检索：每次登录、列库、hit_test 均走 MaxKB，不读本地快照。
 
-
-async def search(source, payload, *, request_id, max_bytes, catalog_role):
+    ``catalog_role`` 由 dev 角色授权链传入；未传时保持 main live 的
+    operator 可见性兼容口径。
+    """
     config = source.maxkb
     space = payload.get("scope", {}).get("space_id")
     if not space or space not in config.allowed_space_ids:
         raise KnowledgeAccessDenied("maxkb_space_denied")
-    published = catalog(config.catalog_path, config.catalog_sha256)
     domain = payload.get("domain", "health")
-    routes = [
-        route
-        for route in published["routes"]
-        if route.get("enabled")
-        and route.get("scope_kind") == "space"
-        and route.get("space_id") == space
-        and grants_role(route, catalog_role)
-        and route.get("knowledge_type") in DOMAIN_TYPES[domain]
-    ]
-    if not routes:
-        return project([], payload.get("limits", {}).get("max_context_tokens", 4000), request_id)
+    budget = payload.get("limits", {}).get("max_context_tokens", 4000)
     try:
         async with (
             asyncio.timeout(source.timeout_seconds),
@@ -174,54 +195,85 @@ async def search(source, payload, *, request_id, max_bytes, catalog_role):
         ):
             client = NativeClient(http, source, max_bytes)
             await client.login()
-            prefix = "/workspace/" + config.workspace_id + "/knowledge/"
+            prefix = "/workspace/" + config.workspace_id + "/knowledge"
+
+            # 1) 实时列库，按库名首段的 space 标志 + 域 + 角色过滤候选库
+            libs = await client.call("GET", prefix)
+            if not isinstance(libs, list):
+                raise KnowledgeContractError("invalid_maxkb_library_list")
+            candidates = []
+            for lib in libs:
+                if not isinstance(lib, dict):
+                    continue
+                name = lib.get("name", "")
+                if name.startswith(SKIP_PREFIXES):
+                    continue
+                parsed = parse_library(name)
+                if not parsed:
+                    continue
+                owners, ktype, roles = parsed
+                resolved = [resolve_owner(o, config.owner_aliases) for o in owners]
+                if GLOBAL_OWNER not in resolved and space not in resolved:
+                    continue
+                required_role = catalog_role or "operator"
+                if required_role not in roles:
+                    continue
+                if ktype not in DOMAIN_TYPES[domain]:
+                    continue
+                candidates.append((lib["id"], ktype))
+            if not candidates:
+                return project([], budget, request_id)
+
+            # 2) 并发 hit_test；直接用 API 返回的正文与元数据构造结果
             limiter = asyncio.Semaphore(3)
 
-            async def recall(route):
-                knowledge_id = identifier(route["knowledge_id"])
-                profile = published["strategies"][route["knowledge_type"]]
-                if profile["mode"] not in ("embedding", "keywords", "blend"):
-                    raise KnowledgeContractError("invalid_maxkb_search_mode")
+            async def recall(knowledge_id):
+                kid = identifier(knowledge_id)
                 async with limiter:
                     hits = await client.call(
                         "POST",
-                        prefix + knowledge_id + "/hit_test",
+                        prefix + "/" + kid + "/hit_test",
                         {
                             "query_text": payload["query"],
                             "top_number": 24,
                             "similarity": 0,
-                            "search_mode": profile["mode"],
+                            "search_mode": SEARCH_MODE,
                         },
                     )
                 if not isinstance(hits, list) or len(hits) > 24:
                     raise KnowledgeContractError("invalid_maxkb_hit_list")
                 selected = []
                 for hit in hits:
-                    meta = published["paragraphs"].get(hit["id"])
-                    if not meta or not meta.get("published"):
+                    if not isinstance(hit, dict) or hit.get("is_active") is not True:
                         continue
-                    doc = published["documents"].get(meta["document_id"])
-                    if not doc or not doc.get("published") or not grants_role(doc, catalog_role):
+                    if hit.get("knowledge_id") != knowledge_id:
                         continue
-                    if (
-                        meta["knowledge_id"] != knowledge_id
-                        or hit["document_id"] != meta["document_id"]
-                        or doc["knowledge_id"] != knowledge_id
-                        or space not in (doc.get("space_ids") or [doc.get("space_id")])
-                        or doc.get("scope_kind") != "space"
-                        or doc.get("knowledge_type") != route["knowledge_type"]
-                        or hit["content"] != meta["text"]
-                    ):
-                        raise KnowledgeContractError("maxkb_published_evidence_changed")
-                    if hit.get("is_active") is not True:
+                    content = hit.get("content") or ""
+                    if not content.strip():
+                        continue
+                    document_id = hit.get("document_id")
+                    hit_id = hit.get("id")
+                    if not document_id or not hit_id:
                         continue
                     score = float(hit.get("comprehensive_score") or hit.get("similarity") or 0)
                     if not math.isfinite(score):
                         raise KnowledgeContractError("invalid_maxkb_score")
-                    selected.append((score, doc, {**meta, "id": hit["id"]}, hit["content"]))
+                    document_name = hit.get("document_name") or ""
+                    match = re.search(r"__([0-9a-f]{6,})__", document_name)
+                    code = match.group(1) if match else identifier(document_id).replace("-", "")[:8]
+                    # 版本标识用正文哈希：内容更新后引用随之变化，可追溯。
+                    revision = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    doc = {"code": code, "revision_sha256": revision, "name": document_name}
+                    meta = {
+                        "id": hit_id,
+                        "title": hit.get("title") or "",
+                        "page": None,
+                        "text": content,
+                    }
+                    selected.append((score, doc, meta, content))
                 return selected
 
-            tasks = [asyncio.create_task(recall(route)) for route in routes]
+            tasks = [asyncio.create_task(recall(kid)) for kid, _ in candidates]
             try:
                 groups = await asyncio.gather(*tasks)
             finally:
@@ -232,23 +284,7 @@ async def search(source, payload, *, request_id, max_bytes, catalog_role):
             ranked = sorted(
                 [row for group in groups for row in group], key=lambda row: (-row[0], row[2]["id"])
             )[:6]
-            rows = []
-            for _, doc, meta, text in ranked:
-                doc_path = (
-                    prefix + identifier(doc["knowledge_id"]) + "/document/" + identifier(doc["id"])
-                )
-                live_doc = await client.call("GET", doc_path)
-                live_paragraph = await client.call(
-                    "GET", doc_path + "/paragraph/" + identifier(meta["id"])
-                )
-                if (
-                    live_doc.get("is_active") is not True
-                    or live_paragraph.get("is_active") is not True
-                ):
-                    continue
-                if live_paragraph["content"] != text:
-                    raise KnowledgeContractError("maxkb_published_evidence_changed")
-                rows.append((doc, meta, text))
+            rows = [(doc, meta, text) for _, doc, meta, text in ranked]
     except TimeoutError as exc:
-        raise httpx.ReadTimeout("Native MaxKB retrieval deadline exceeded") from exc
-    return project(rows, payload.get("limits", {}).get("max_context_tokens", 4000), request_id)
+        raise httpx.ReadTimeout("Native MaxKB live retrieval deadline exceeded") from exc
+    return project(rows, budget, request_id)

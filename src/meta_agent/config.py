@@ -227,6 +227,11 @@ class Settings(BaseSettings):
     ai_webapi_rehab_base_url: str = ""
     ai_webapi_health_url: str = ""
     max_tool_response_bytes: int = Field(default=2_000_000, ge=4096, le=20_000_000)
+    # AI问诊意图识别：默认用 LLM 做语义分类，比纯关键词规则更准（过渡语/省略句）。
+    # 场景跳转仍由本地白名单硬前置，避免 LLM 编造点位；模型不可用时自动降级到规则。
+    consultation_intent_llm: bool = True
+    # AI问诊分诊是否检索 health 域（clinical_kb+rehab_kb）医学知识，结合患者档案作答。
+    consultation_medical_kb: bool = True
     scene_enabled: bool = True
     doctors_enabled: bool = True
     scene_actions_enabled: bool = False

@@ -12,7 +12,7 @@ from meta_agent.contracts import TaskSpec
 from meta_agent.domains.chat_history import ChatHistoryAdapter, build, is_chat_history_query
 
 SPACE = "67ecd511-5532-405d-9b70-1cd1c0532eed"
-URL = "http://192.168.8.160:9090/chatPage/?user=118&spaceId=" + SPACE + "&role=patient"
+URL = "http://192.168.8.160:9090/chatPage/?user=118&spaceId=" + SPACE
 
 
 def test_build_success():
@@ -64,7 +64,7 @@ def test_adapter_execute_success():
         return SimpleNamespace(evidence_id="evt-1")
 
     ctx = SimpleNamespace(
-        scope=SimpleNamespace(end_user_id="118", space_id=SPACE, scope_hash="h", role="patient"),
+        scope=SimpleNamespace(end_user_id="118", space_id=SPACE, scope_hash="h"),
         record=SimpleNamespace(request_id="req-1", run_id="run-1"),
         repository=SimpleNamespace(save_evidence=save_evidence),
     )

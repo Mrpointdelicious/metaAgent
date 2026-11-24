@@ -8,7 +8,6 @@ import json
 from types import SimpleNamespace
 
 from meta_agent.flows import ai_medical_order
-from tests.helpers.identity import clinical_flow_scope
 
 RAW_RECORDS = [
     {"role": "Patient", "timeStamp": 1793085016130, "from": "医生1", "message": "有吗？"},
@@ -48,8 +47,6 @@ class _Emitter:
 def _ctx(query: str) -> SimpleNamespace:
     return SimpleNamespace(
         query=query,
-        scope=clinical_flow_scope("ai_medical_order"),
-        settings=SimpleNamespace(dry_run=True),
         record=SimpleNamespace(
             run_id="run_order", metrics={}, goal_statuses={}, status="succeeded"
         ),
