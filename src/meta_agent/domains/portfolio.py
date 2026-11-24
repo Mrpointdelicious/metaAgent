@@ -49,6 +49,10 @@ class PortfolioResponse(BaseModel):
 class PortfolioKnowledgeAdapter:
     async def execute(self, task: TaskSpec, args: dict, ctx: RunContext) -> TaskResult:
         settings = ctx.settings
+        if ctx.scope.role == "student" or ctx.scope.role not in settings.portfolio_roles:
+            raise DomainError(
+                "knowledge_access_denied", "资料未向当前角色发布。", outcome="unsupported"
+            )
         space_id = getattr(ctx.scope, "space_id", None)
         scene_id = getattr(ctx.scope, "scene_id", None)
         bindings = settings.portfolio_space_kb_ids

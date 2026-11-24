@@ -22,6 +22,7 @@ TODO（你在这里接 Dify 里 main() 的逻辑）：
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from meta_agent.domains.chat_history import build as build_chat_history_url
@@ -70,6 +71,7 @@ def _web_page_url(ctx: RunContext) -> str:
     out = build_chat_history_url(
         str(getattr(ctx.scope, "end_user_id", "") or ""),
         str(getattr(ctx.scope, "space_id", "") or ""),
+        role=getattr(ctx.scope, "role", "patient"),
     )
     return out.get("legacy_web") or ""
 
@@ -165,7 +167,11 @@ def post_process(
     if include_timestamp:
         raw_ts = (ctx.record.raw_inputs or {}).get("timestamp")
         timestamp = str(raw_ts).strip() if raw_ts not in (None, "") else ""
-    timestamp_prefix = "[timestamp=" + timestamp + "]" if timestamp else ""
+    timestamp_prefix = (
+        "[timestamp=" + timestamp + "]"
+        if re.fullmatch(r"\d{1,20}(?:\.\d{1,9})?", timestamp)
+        else ""
+    )
     result = {
         # 最终文本 = [timestamp]时间戳 + 指令命令 + [Cweb]报告图 + [web]页面 + [Answer:]答复，
         # 如 "[timestamp=150.26][Answer:]查到了…"。
@@ -177,7 +183,6 @@ def post_process(
         "query_context": "",
         "evidence_count": str(len(collected)),
     }
-    # 把最终回复写进日志（截断防刷屏），便于按 run_id 排查「输入 → 输出」。
     logger.info(
         "final answer",
         extra={
@@ -185,7 +190,6 @@ def post_process(
             "event_type": "answer",
             "fields": {
                 "client": getattr(getattr(ctx, "scope", None), "client_id", "primary"),
-                "answer": (result["answer"] or "")[:600],
                 "answer_length": len(result["answer"]),
             },
         },

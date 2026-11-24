@@ -173,7 +173,7 @@ def _build_prompt(doctor_list: str, disease: str) -> str:
 
 async def run_invite_doctor(ctx: RunContext, model: Any) -> str:
     """执行邀请医生完整链路，返回最终 result JSON 字符串。"""
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.invite")
 
     token = await _login(client, ctx.settings)
 

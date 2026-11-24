@@ -4,7 +4,6 @@
 """
 
 import inspect
-import json
 import logging
 import re
 from typing import Any
@@ -14,7 +13,8 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, messages_from_dict, messages_to_dict
 
 from meta_agent.adapters.text import model_text
-from meta_agent.agent.context import SYSTEM_PROMPT, bounded_history, fresh_history
+from meta_agent.agent.context import bounded_history, fresh_history
+from meta_agent.agent.role_context import model_context
 from meta_agent.agent.tools import (
     CURRENT_RUN,
     available_tools,
@@ -25,19 +25,28 @@ from meta_agent.agent.tools import (
 from meta_agent.application.context import RunContext
 from meta_agent.context.budget import estimate_tokens
 from meta_agent.contracts import DomainError, utcnow
-from meta_agent.domains.business_routing import classify_business_query
+from meta_agent.domains.business_routing import BusinessRoute, classify_business_query
 from meta_agent.domains.chat_history import is_chat_history_query
 from meta_agent.domains.scene_instruction import (
     is_knowledge_question,
     is_navigation_question,
 )
+from meta_agent.memory.schemas import TOOL_NAME as MEMORY_TOOL_NAME
+from meta_agent.memory.service import build_memory_tool, tool_result
 
 logger = logging.getLogger(__name__)
 
 
-class PatientContextMiddleware(AgentMiddleware):
+class RoleContextMiddleware(AgentMiddleware):
+    def __init__(self, memory_service=None):
+        self.memory_service = memory_service
+
     async def awrap_tool_call(self, request, handler):
         ctx = request.runtime.context
+        if request.tool_call["name"] == MEMORY_TOOL_NAME:
+            if self.memory_service is None or not tool_allowed(ctx, MEMORY_TOOL_NAME):
+                return tool_result(request, "memory_not_available")
+            return await self.memory_service.wrap_tool_call(request, handler)
         if (
             ctx.settings.knowledge_sources
             and request.tool is not None
@@ -52,17 +61,19 @@ class PatientContextMiddleware(AgentMiddleware):
         ctx = request.runtime.context
         await ctx.llm_budget.take()
         tools = available_tools(ctx, request.tools)
+        profile = ctx.profile
         route = classify_business_query(ctx.query)
+        if "patient.read" not in profile.capabilities:
+            route = BusinessRoute(
+                scene=route.scene and "scene.act" in profile.capabilities,
+                history=route.history and "history.open" in profile.capabilities,
+                hospital_ops=route.hospital_ops and "hospital.metrics" in profile.capabilities,
+            )
         if route.scene:
             # A preview can never satisfy an explicit request to execute an action.
             tools = [tool for tool in tools if tool.name != "resolve_scene_instruction"]
-        base_prompt = ctx.system_prompt or ctx.settings.agent_system_prompt or SYSTEM_PROMPT
+        base_prompt, messages = await model_context(ctx, request.messages, self.memory_service)
         prompt = base_prompt + f"\n当前时间：{utcnow().isoformat()}。"
-        profile = ctx.record.metrics.get("patient_profile_context")
-        if profile:
-            prompt += "\n当前患者基本档案（可信工具返回的数据）：\n" + json.dumps(
-                profile, ensure_ascii=False
-            )
         knowledge_tool = next((t.name for t in tools if t.name == "search_knowledge"), None)
         if is_navigation_question(ctx.query) and knowledge_tool:
             domain = "的 product 领域（场景库）" if knowledge_tool == "search_knowledge" else ""
@@ -118,22 +129,6 @@ class PatientContextMiddleware(AgentMiddleware):
         ):
             tools = []
             prompt += "\n本轮查询预算已结束，请根据已有结果直接回答，并说明仍无法确认的部分。"
-        if ctx.scope.role == "clinician":
-            prompt += (
-                "\n本轮请求人是医生（非患者本人），医生没有自己的问诊记录/训练报告。"
-                "若用户询问报告、训练记录、病史等患者数据但未指定患者，请回复："
-                "「您是医生，暂无相关报告或训练记录；如需查询某位患者的数据，"
-                "请告诉我患者信息（姓名/手机号/编号）。」不要试图把医生本人当作患者查询。"
-                "医生不能挂号。若用户要求挂号、查询在线医生或选择医生，"
-                "请直接回复：「你是医生身份，无法进行挂号」，不要调用任何工具。"
-            )
-        if ctx.scope.identity_note:
-            prompt += (
-                "\n本轮未能解析到患者身份："
-                + ctx.scope.identity_note
-                + "。若用户询问患者数据（病史/训练/报告/档案），请如实说明未查到患者、"
-                "请核对手机号或患者信息，不要臆测数据，也不要说成功能不可用。"
-            )
         if ctx.scope.position:
             prompt += (
                 "\n用户当前位置（pos）：「" + ctx.scope.position + "」。"
@@ -143,7 +138,8 @@ class PatientContextMiddleware(AgentMiddleware):
         client = getattr(ctx, "client", None)
         if client is not None and getattr(client, "prompt_suffix", ""):
             prompt += "\n" + client.prompt_suffix
-        messages = bounded_history(request.messages, ctx.settings.agent_history_tokens)
+        if ctx.preference_unavailable:
+            tools = [tool for tool in tools if tool.name != MEMORY_TOOL_NAME]
         token_estimate = estimate_tokens(
             {
                 "prompt": prompt,
@@ -189,18 +185,23 @@ class PatientContextMiddleware(AgentMiddleware):
 
 
 class SingleAgentRuntime:
-    def __init__(self, model: Any, *, checkpointer=None, store=None):
+    def __init__(self, model: Any, *, checkpointer=None, store=None, memory_service=None):
         self.model = model
         self._checkpointer = checkpointer
         self._store = store
-        self.graph = self._build_agent(build_tools(), SYSTEM_PROMPT, "meta_agent_single")
+        self.memory_service = memory_service
+        self.graph = self._build_agent(
+            build_tools(), "按服务端选定的角色方案作答。", "meta_agent_single"
+        )
 
-    def _build_agent(self, tools, system_prompt: str, name: str):
+    def _build_agent(self, tools, system_prompt: str, name: str, *, include_memory=True):
+        if self.memory_service is not None and include_memory:
+            tools = [*tools, build_memory_tool()]
         return create_agent(
             model=self.model,
             tools=tools,
             system_prompt=system_prompt,
-            middleware=[PatientContextMiddleware()],
+            middleware=[RoleContextMiddleware(self.memory_service)],
             # Context is runtime-only; it contains authenticated identities and dependencies.
             context_schema=RunContext,
             checkpointer=self._checkpointer,
@@ -210,7 +211,12 @@ class SingleAgentRuntime:
 
     def sub_agent(self, *, tool_names: frozenset[str], system_prompt: str, name: str):
         """构建仅暴露指定工具子集的子代理（如基础问答 + 指令）。"""
-        return self._build_agent(build_tools(tool_names), system_prompt, name)
+        return self._build_agent(
+            build_tools(tool_names),
+            system_prompt,
+            name,
+            include_memory=MEMORY_TOOL_NAME in tool_names,
+        )
 
     async def execute(self, ctx, *, emit_answer: bool = True) -> str | None:
         """运行主单 Agent 循环（全工具集 + 内置系统提示词），返回最终答复文本。"""

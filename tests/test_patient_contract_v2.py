@@ -31,6 +31,44 @@ def test_old_patient_identity_inputs_are_rejected(key):
         trusted_scope_from_inputs({key: "7"}, "actor", "tenant")
 
 
+@pytest.mark.parametrize(
+    ("inputs", "expected"),
+    [
+        ({}, "patient"),
+        ({"identity": "patient"}, "patient"),
+        ({"identity": "医生"}, "clinician"),
+        ({"role": "operator"}, "operator"),
+        ({"identity": "学生"}, "student"),
+        ({"identity": "student"}, "student"),
+        ({"role": "student", "identity": "患者"}, "student"),
+    ],
+)
+def test_gateway_roles_and_explicit_role_precedence(inputs, expected):
+    scope = trusted_scope_from_inputs(inputs, "actor", "tenant")
+    assert scope.role == expected and not scope.has_patient
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"identity": "家属"},
+        {"identity": "operator"},
+        {"identity": []},
+        {"identity": ""},
+        {"role": "unknown", "identity": "学生"},
+        patient_inputs(role="student"),
+        {"identity": "学生", "identity_context_token": "synthetic-proof-only"},
+    ],
+)
+def test_invalid_identity_or_student_patient_binding_fails_at_entry(client, auth_headers, inputs):
+    response = client.post(
+        "/v1/chat-messages",
+        json={"user": "actor", "query": "你好", "inputs": inputs},
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+
+
 def test_login_name_keeps_leading_zero_and_proof_rotation_preserves_scope():
     scope = trusted_scope_from_inputs(patient_inputs("000007", "login_name"), "actor", "tenant")
     assert scope.patient_identity.value == "000007"

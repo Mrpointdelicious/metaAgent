@@ -6,7 +6,21 @@
 import json
 from typing import Any
 
+from meta_agent.adapters.text import model_text
 from meta_agent.contracts import RunRecord
+from meta_agent.domains.routing import CLINICAL_BRANCHES
+
+
+def history_text(event):
+    text = event.payload.get("text", "")
+    if event.type == "answer_part" and (event.goal_id or "").partition(":")[0] in CLINICAL_BRANCHES:
+        try:
+            clinical = json.loads(text)
+        except (ValueError, TypeError):
+            return text
+        if isinstance(clinical, dict) and "event" in clinical:
+            return model_text(str(clinical.get("display_text") or "本轮问诊事件已交付。"))
+    return text
 
 
 class DifyEventAdapter:
@@ -21,7 +35,7 @@ class DifyEventAdapter:
                 replaced_key = event_keys.get(event.payload.get("replaces"))
                 if replaced_key is not None and replaced_key != key:
                     visible.pop(replaced_key, None)
-                visible[key] = event.payload["text"]
+                visible[key] = history_text(event) if reused else event.payload["text"]
                 event_keys[event.event_id] = key
             elif event.type == "task_failed":
                 failures[event.goal_id or event.event_id] = event.payload["text"]

@@ -23,6 +23,7 @@ import httpx
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
+from meta_agent.orchestration.capabilities import require_for_run
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +247,7 @@ async def add_prescriptions(
     results: list[dict[str, Any]] = []
     for payload in payloads:
         try:
+            require_for_run(ctx, "clinical.prescription.create")
             response = await client.post(url, headers=headers, json=payload, timeout=15.0)
             response.raise_for_status()
             results.append({"Type": payload["Type"], "body": response.json()})

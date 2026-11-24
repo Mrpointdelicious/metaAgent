@@ -22,7 +22,8 @@ from meta_agent.contracts import (
     TaskSpec,
     ValidatedPlan,
 )
-from meta_agent.orchestration.identity import TrustedScope, hospital_ops_allowed
+from meta_agent.orchestration.capabilities import denial, require
+from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.planning.capabilities import capability_specs
 from meta_agent.planning.parser import CONDITIONAL, NEGATIVE, REPORT_NEGATION
 
@@ -47,6 +48,7 @@ class PlanCompiler:
         request_id: str,
         *,
         anchor_fresh: bool = False,
+        excluded=(),
     ) -> Compilation:
         plan = ValidatedPlan(
             request_id=request_id,
@@ -169,9 +171,7 @@ class PlanCompiler:
                 result.dispositions[gid] = ("unsupported", "该领域接口暂未接入。")
                 continue
             if g.kind == "hospital_query" and g.domain == "hospital":
-                # 与 tools.tool_allowed / HospitalAdapter 同一口径：默认对所有角色开放，
-                # hospital_ops_open_to_all_roles=false 时回滚为仅 operator。
-                if not hospital_ops_allowed(self.settings, scope.role):
+                if denial(scope, self.settings, "hospital.query", excluded=excluded):
                     result.dispositions[gid] = ("unsupported", "医院运营查询需要运营人员身份。")
                     continue
                 if g.hospital is None:
@@ -184,6 +184,16 @@ class PlanCompiler:
                 task.retry_limit = 0
                 if hospital.output_mode != "analysis":
                     task.timeout_ms = int(1000 * self.settings.report_timeout_seconds)
+                continue
+            operation = {
+                "scene_action": "scene.act",
+                "doctor_query": "doctors.search",
+                "knowledge_query": "knowledge.search",
+                "chat": "answer.compose",
+            }.get(g.kind, "patient.read")
+            reason = denial(scope, self.settings, operation, excluded=excluded)
+            if reason in {"role_denied", "client_denied", "knowledge_scope_required"}:
+                result.dispositions[gid] = ("unsupported", "当前角色或接入方不支持这项任务。")
                 continue
             if g.kind == "iretour" and g.domain == "iretour":
                 if not scope.has_patient:
@@ -426,7 +436,7 @@ class PlanCompiler:
             result.dispositions = {
                 gid: ("clarification", "本轮任务超出执行预算，请分批处理。") for gid in ids
             }
-        self.validate(plan, scope, memory)
+        self.validate(plan, scope, memory, excluded=excluded)
         return result
 
     @staticmethod
@@ -472,7 +482,9 @@ class PlanCompiler:
             return "report_available"
         return None
 
-    def validate(self, plan: ValidatedPlan, scope: TrustedScope, memory: ConversationState) -> None:
+    def validate(
+        self, plan: ValidatedPlan, scope: TrustedScope, memory: ConversationState, *, excluded=()
+    ) -> None:
         tasks = {task.task_id: task for task in plan.tasks}
         if len(tasks) != len(plan.tasks):
             raise DomainError("duplicate_task", "任务编号重复。", outcome="clarification")
@@ -503,6 +515,9 @@ class PlanCompiler:
                     "scope_required", "缺少该能力需要的可信身份。", outcome="clarification"
                 )
             deps = ancestors(task.task_id, set())
+            require(
+                scope, self.settings, task.capability, excluded=excluded, arguments=task.arguments
+            )
             args = dict(task.arguments)
             for binding in task.bindings:
                 if binding.source_kind == "evidence_index":

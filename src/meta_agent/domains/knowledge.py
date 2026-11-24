@@ -15,6 +15,7 @@ from pydantic import Field, ValidationError
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, StrictModel, TaskResult, TaskSpec
 from meta_agent.domains.facts import FactBuilder
+from meta_agent.roles import Role
 
 
 class Section(StrictModel):
@@ -31,6 +32,7 @@ class Document(StrictModel):
     source: str = Field(min_length=1, max_length=1000)
     approved: bool = False
     approved_by: str = ""
+    roles: frozenset[Role] = frozenset()
     sections: list[Section] = Field(min_length=1, max_length=200)
 
 
@@ -74,7 +76,7 @@ def rank(query: str, sections: list[tuple[Document, Section]]) -> list[tuple[flo
 
 class KnowledgeAdapter:
     async def execute(self, task: TaskSpec, args: dict, ctx: RunContext) -> TaskResult:
-        if ctx.settings.knowledge_sources:
+        if ctx.settings.knowledge_sources or ctx.scope.role == "student":
             from meta_agent.domains.remote_knowledge import RemoteKnowledgeAdapter
 
             return await RemoteKnowledgeAdapter().execute(task, args, ctx)
@@ -96,7 +98,10 @@ class KnowledgeAdapter:
         sections = [
             (doc, section)
             for doc in corpus.documents
-            if doc.approved and doc.approved_by.strip() and doc.domain == args["domain"]
+            if doc.approved
+            and doc.approved_by.strip()
+            and doc.domain == args["domain"]
+            and ctx.scope.role in doc.roles
             for section in doc.sections
         ]
         found = rank(args["query"], sections)

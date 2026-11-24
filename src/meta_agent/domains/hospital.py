@@ -5,13 +5,15 @@
 
 import datetime as dt
 import re
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
 from meta_agent.contracts import DomainError, HospitalRequest, TaskResult, utcnow
 from meta_agent.domains.facts import FactBuilder, aware_date, pointer_part
 from meta_agent.domains.rehab import PatientEnvelope
-from meta_agent.orchestration.identity import hospital_ops_allowed
+from meta_agent.medical_tools.contracts import HOSPITAL_METRICS
+from meta_agent.orchestration.capabilities import require_for_run
 
 LABELS = {
     "hospital_name": "医院",
@@ -91,13 +93,9 @@ def _resolve_window(date_mode, start_date, end_date, today):
 
 class HospitalAdapter:
     async def directory(self, task, args, ctx):
-        if not hospital_ops_allowed(ctx.settings, ctx.scope.role):
-            raise DomainError(
-                "operator_required", "机构目录需要运营人员身份。", outcome="unsupported"
-            )
-        async with ctx.tool_slot():
-            entries = await ctx.backend.directory()
-        name = args.get("name", "").strip().casefold()
+        require_for_run(ctx, "hospital.directory")
+        entries = (await ctx.call("query_hospital_directory", {}))["directory"]
+        name = (args.get("name") or "").strip().casefold()
         entries = [entry for entry in entries if name in entry["hospital_name"].casefold()]
         evidence = await ctx.repository.save_evidence(
             ctx.scope.scope_hash,
@@ -113,14 +111,15 @@ class HospitalAdapter:
         )
 
     async def execute(self, task, args, ctx):
-        if not hospital_ops_allowed(ctx.settings, ctx.scope.role):
-            raise DomainError(
-                "operator_required", "医院运营查询需要运营人员身份。", outcome="unsupported"
-            )
+        require_for_run(ctx, "hospital.metrics", args)
         request = HospitalRequest.model_validate(args)
-        if request.hospital_id is not None or request.hospital_ids or request.hospital_name:
-            async with ctx.tool_slot():
-                entries = await ctx.backend.directory()
+        if ctx.scope.role == "operator":
+            request.hospital_id = ctx.scope.resource_grant.hospital_id
+        if request.hospital_name or (
+            ctx.scope.role != "operator"
+            and (request.hospital_id is not None or request.hospital_ids)
+        ):
+            entries = (await ctx.call("query_hospital_directory", {}))["directory"]
             ids = {entry["hospital_id"] for entry in entries}
             if request.hospital_name and request.hospital_id is None:
                 matches = [
@@ -163,7 +162,10 @@ class HospitalAdapter:
             raise DomainError(
                 "hospital_required", "请明确两个不同的医院编号。", outcome="clarification"
             )
-        body = await ctx.call("query_hospital_operations", request.model_dump(exclude_none=True))
+        arguments = request.model_dump(exclude_none=True)
+        if ctx.scope.role == "operator":
+            arguments.pop("hospital_name", None)
+        body = await ctx.call("query_hospital_operations", arguments)
         try:
             envelope = PatientEnvelope.model_validate({"meta": {}, **body})
         except ValidationError as exc:
@@ -213,18 +215,15 @@ class HospitalAdapter:
         report = envelope.data.get("report")
         if request.output_mode != "analysis":
             expiry = aware_date(report.get("expires_at")) if isinstance(report, dict) else None
-            if (
-                not isinstance(report, dict)
-                or not report.get("artifact_ref")
-                or not report.get("image_url")
-            ):
+            image_url = hospital_report_urls(body)
+            if not image_url or not report.get("artifact_ref"):
                 result.status, result.code, result.message = (
                     "partial",
                     "artifact_unavailable",
                     "运营数据已返回，报表暂不可用。",
                 )
             elif (expiry and expiry <= utcnow()) or not await ctx.backend.artifact_available(
-                report["image_url"]
+                image_url
             ):
                 result.status, result.code, result.message = (
                     "partial",
@@ -234,7 +233,7 @@ class HospitalAdapter:
             else:
                 result.outputs["artifact"] = {
                     "artifact_ref": report["artifact_ref"],
-                    "url": report["image_url"],
+                    "url": image_url,
                     "expires_at": expiry.isoformat() if expiry else None,
                     "evidence_id": evidence.evidence_id,
                 }
@@ -253,40 +252,6 @@ RENDER_SECTIONS = {
     "analysis": "运营分析",
 }
 
-RENDER_FIELDS = {
-    "overview": [
-        ("patient_count", "注册患者", "人"),
-        ("doctor_count", "医生", "人"),
-        ("daily_active_count", "当前活跃患者", "人"),
-    ],
-    "consultation": [
-        ("consultation_people", "区间问诊人数", "人"),
-        ("consultation_times", "区间问诊次数", "次"),
-    ],
-    "rooms": [
-        ("consultation_rooms", "问诊室", "间"),
-        ("assessment_rooms", "评估室", "间"),
-        ("training_rooms", "训练室", "间"),
-        ("total_rooms", "诊室合计", "间"),
-    ],
-    "assessment_training": [
-        ("assessment_count", "评估次数", "次"),
-        ("scale_assessment_count", "量表评估", "次"),
-        ("paradigm_assessment_count", "范式评估", "次"),
-        ("offline_training_count", "离线训练", "次"),
-        ("device_training_count", "设备训练", "次"),
-        ("corridor_training_count", "通道训练", "次"),
-    ],
-    "records": [
-        ("real_consultation_count", "真人问诊", "次"),
-        ("ai_consultation_count", "AI 问诊", "次"),
-        ("remote_consultation_count", "远程会诊", "次"),
-        ("medical_record_count", "就诊记录", "条"),
-        ("prescription_template_count", "处方模板", "条"),
-        ("report_count", "报告", "份"),
-    ],
-}
-
 
 def hospital_report_urls(response: dict) -> str | None:
     """校验并返回报表图片 image_url；不是合法医院运营报表制品则返回 None。
@@ -297,7 +262,9 @@ def hospital_report_urls(response: dict) -> str | None:
     if not isinstance(response, dict):
         return None
     data = response.get("data")
-    if response.get("status") != "success" or not isinstance(data, dict):
+    if response.get("status") not in {"success", "available", "partial"} or not isinstance(
+        data, dict
+    ):
         return None
     report = data.get("report")
     if not isinstance(report, dict):
@@ -305,7 +272,7 @@ def hospital_report_urls(response: dict) -> str | None:
     image_url = report.get("image_url")
     if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
         return None
-    if "/api/ai/hospital-operations/report-artifacts/" not in image_url:
+    if "/ai/hospital-operations/report-artifacts/" not in urlsplit(image_url).path:
         return None
     return image_url
 
@@ -353,48 +320,21 @@ def render_hospital_markdown(response: dict) -> str | None:
         hospital = snap.get("hospital") if isinstance(snap.get("hospital"), dict) else {}
         name = str(hospital.get("hospital_name") or "")
         lines.extend(["**" + name + "**", "", "| 指标 | 接口返回值 |", "|---|---:|"])
-        projected: set[str] = set()
-        for sec, fields in RENDER_FIELDS.items():
+        table_start = len(lines)
+        for sec, fields in HOSPITAL_METRICS.items():
             if section not in ("all", "analysis") and sec != section:
                 continue
             values = snap.get(sec)
             if not isinstance(values, dict):
                 continue
-            projected.add(sec)
             for key, label, unit in fields:
                 value = values.get(key)
                 if type(value) not in (int, float):
                     continue
                 lines.append(f"| {label} | {value:,} {unit} |")
-        summaries: list[str] = []
-        if "overview" in projected:
-            v = snap.get("overview") or {}
-            summaries.append(
-                f"注册患者 {v.get('patient_count', 0):,} 人，医生 {v.get('doctor_count', 0):,} 人，"
-                f"当前活跃患者 {v.get('daily_active_count', 0):,} 人。"
-            )
-        if "consultation" in projected:
-            v = snap.get("consultation") or {}
-            summaries.append(
-                f"所选日期区间内问诊 {v.get('consultation_people', 0):,} 人、"
-                f"{v.get('consultation_times', 0):,} 次。"
-            )
-        if "rooms" in projected:
-            v = snap.get("rooms") or {}
-            summaries.append(f"当前诊室合计 {v.get('total_rooms', 0):,} 间。")
-        if not summaries and "assessment_training" in projected:
-            v = snap.get("assessment_training") or {}
-            summaries.append(
-                f"详情快照记录评估 {v.get('assessment_count', 0):,} 次、"
-                f"离线训练 {v.get('offline_training_count', 0):,} 次。"
-            )
-        if not summaries and "records" in projected:
-            v = snap.get("records") or {}
-            summaries.append(
-                f"详情快照记录就诊记录 {v.get('medical_record_count', 0):,} 条、"
-                f"报告 {v.get('report_count', 0):,} 份。"
-            )
-        lines.extend(["", "**简要说明：**" + "".join(summaries), ""])
+        if len(lines) == table_start:
+            lines.extend(["", "本次查询没有返回可用的指标数值。"])
+        lines.append("")
 
     if scope == "comparison":
         comparison = data.get("comparison")
@@ -420,7 +360,7 @@ def render_hospital_markdown(response: dict) -> str | None:
                         "|---|---:|---:|---:|",
                     ]
                 )
-                allowed = {key for fields in RENDER_FIELDS.values() for key, _, _ in fields}
+                allowed = {key for fields in HOSPITAL_METRICS.values() for key, _, _ in fields}
                 allowed.update(
                     (
                         "daily_active_rate",
@@ -445,8 +385,4 @@ def render_hospital_markdown(response: dict) -> str | None:
                 lines.extend(["", "差值高低不直接代表运营质量的好坏。"])
 
     lines.extend(["", "数字按接口原值展示；0 表示接口返回 0。"])
-    if hospital_report_urls(response):
-        lines.extend(["", "可继续输入：换机构、改成上个月、和另一家对比。"])
-    else:
-        lines.extend(["", "可继续输入：换机构、改成上个月、和另一家对比、生成报告。"])
     return "\n".join(lines)

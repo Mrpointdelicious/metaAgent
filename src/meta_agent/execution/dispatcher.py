@@ -16,6 +16,7 @@ from meta_agent.domains.iretour import IReTourWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.rehab import RehabAdapter
 from meta_agent.domains.scene import SceneAdapter
+from meta_agent.orchestration.capabilities import require_for_run
 from meta_agent.planning.capabilities import capability_specs
 
 
@@ -41,6 +42,7 @@ class DomainDispatcher:
     ) -> TaskResult:
 
         capability = task.capability
+        require_for_run(ctx, capability, arguments)
         spec = capability_specs(ctx.settings).get(capability)
         if spec is None or not spec.enabled or spec.effect != task.effect:
             raise DomainError("capability_disabled", "能力未启用或执行类型不匹配。")

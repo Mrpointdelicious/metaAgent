@@ -11,6 +11,32 @@ from typing import Any, Literal
 from pydantic import Field, StrictStr, field_validator
 
 from meta_agent.contracts import DomainError, StrictModel
+from meta_agent.orchestration.resources import ResourceGrant
+from meta_agent.roles import USER_ROLES
+
+FRONTEND_IDENTITIES = {
+    "患者": "patient",
+    "patient": "patient",
+    "医生": "clinician",
+    "doctor": "clinician",
+    "clinician": "clinician",
+    "学生": "student",
+    "student": "student",
+}
+
+
+def user_role_from_inputs(inputs: dict[str, Any]) -> str:
+    if "role" in inputs:
+        role = inputs["role"]
+        if role in USER_ROLES:
+            return role
+    elif "identity" in inputs:
+        identity = inputs["identity"]
+        if isinstance(identity, str) and identity in FRONTEND_IDENTITIES:
+            return FRONTEND_IDENTITIES[identity]
+    else:
+        return "patient"
+    raise ValueError("可信用户角色无效")
 
 
 class PatientIdentity(StrictModel):
@@ -27,16 +53,6 @@ class PatientIdentity(StrictModel):
         ):
             raise ValueError("project_user_id 必须为正整数字符串")
         return value
-
-
-def hospital_ops_allowed(settings: Any, role: str) -> bool:
-    """医院运营数据（含机构目录）的角色门控。
-
-    默认对所有角色开放（产品要求患者也能查）；把
-    `hospital_ops_open_to_all_roles` 设为 false 可回滚为仅 operator 可见。
-    机构目录是运营查询的前置（要拿 hospital_id），必须与查询同口径。
-    """
-    return bool(getattr(settings, "hospital_ops_open_to_all_roles", True)) or role == "operator"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +75,10 @@ class TrustedScope:
     agent_kind: str = "default"
     consultation_context: str = ""
     consultation_id: str = ""
+    resource_grant: ResourceGrant | None = field(default=None, repr=False)
+    client_flow: str = ""
+    allowed_tools: frozenset[str] | None = field(default=None, repr=False)
+    policy_scope: str = ""
 
     @property
     def has_patient(self) -> bool:
@@ -83,6 +103,8 @@ class TrustedScope:
                 self.patient_ref,
                 self.scope_fingerprint,
                 self.client_id,
+                *([self.resource_grant.scope_key()] if self.resource_grant else []),
+                *([self.policy_scope] if self.policy_scope else []),
             ],
             ensure_ascii=False,
             separators=(",", ":"),
@@ -199,22 +221,16 @@ def trusted_scope_from_inputs(
     if LEGACY_PATIENT_KEYS.intersection(inputs):
         raise ValueError("旧患者身份格式已移除，请传 patient_identity 和 identity_context_token")
     tenant = str(inputs.get("tenant_id", inputs.get("tenantId", default_tenant_id))).strip()
-    role = inputs.get(
-        "role",
-        {
-            "医生": "clinician",
-            "doctor": "clinician",
-            "clinician": "clinician",
-            "患者": "patient",
-        }.get(inputs.get("identity"), "patient"),
-    )
-    if not tenant or not end_user_id.strip() or role not in {"patient", "clinician", "operator"}:
+    role = user_role_from_inputs(inputs)
+    if not tenant or not end_user_id.strip():
         raise ValueError("可信用户、租户或角色无效")
     identity = inputs.get("patient_identity")
     token = inputs.get("identity_context_token", "")
     if identity is not None:
         identity = PatientIdentity.model_validate(identity)
-        if not isinstance(token, str) or not token or len(token) > 8192 or role != "patient":
+        if role != "patient":
+            raise ValueError("只有患者角色可以携带患者身份")
+        if not isinstance(token, str) or not token or len(token) > 8192:
             raise ValueError("患者上下文缺少有效登录凭证")
     elif token:
         raise ValueError("登录凭证必须与 patient_identity 一同提供")
@@ -230,6 +246,9 @@ def trusted_scope_from_inputs(
     if version is not None and (isinstance(version, bool) or not str(version).isdigit()):
         raise ValueError("scene_version 必须是非负整数")
     space = space_id_from_inputs(inputs)
+    consultation = inputs.get("consultation_id", "")
+    if not isinstance(consultation, str) or len(consultation) > 256:
+        raise ValueError("consultation_id 无效")
     return TrustedScope(
         tenant,
         end_user_id.strip(),
@@ -241,4 +260,5 @@ def trusted_scope_from_inputs(
         scope,
         token,
         position=str(inputs.get("pos") or "").strip(),
+        consultation_id=consultation,
     )

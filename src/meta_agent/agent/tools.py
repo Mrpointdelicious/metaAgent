@@ -51,20 +51,18 @@ from meta_agent.domains.hospital import HospitalAdapter
 from meta_agent.domains.irego import IReGoWorkflow
 from meta_agent.domains.knowledge import KnowledgeAdapter
 from meta_agent.domains.scene_instruction import SceneInstructionAdapter
+from meta_agent.integrations.knowledge import sources_for_scope
 from meta_agent.integrations.knowledge import tool_schema as knowledge_tool_schema
-from meta_agent.orchestration.identity import hospital_ops_allowed
-from meta_agent.tools.ai_webapi import (
-    ASSESSMENT_REPORT_ENDPOINTS,
-    IRECOG_REPORT_ENDPOINTS,
-    IRETOUR_REPORT_ENDPOINTS,
-)
+from meta_agent.memory.schemas import TOOL_NAME as MEMORY_TOOL_NAME
+from meta_agent.orchestration.capabilities import denial, require_for_run
 
 logger = logging.getLogger(__name__)
 
 CURRENT_RUN: ContextVar = ContextVar("single_agent_run")
-LAYER_TOOLS = {"get_patient_profile", "get_patient_consultation", "get_patient_rehab"}
 
-BASIC_COMMAND_TOOLS = frozenset({"search_knowledge", "resolve_scene_instruction", "navigate_scene"})
+BASIC_COMMAND_TOOLS = frozenset(
+    {"search_knowledge", "resolve_scene_instruction", "navigate_scene", MEMORY_TOOL_NAME}
+)
 
 TOOL_SPECS = {
     "resolve_scene_instruction": (EmptyArgs, "预览本轮场景指令的匹配结果，不交付动作。"),
@@ -180,41 +178,19 @@ TOOL_SPECS = {
 
 def tool_allowed(ctx, name):
     client = getattr(ctx, "client", None)
-    if client is not None:
-        # 白名单优先于黑名单：功能令牌只暴露本流程需要的工具。
-        if client.allowed_tools is not None and name not in client.allowed_tools:
-            return False
-        if name in client.excluded_tools:
-            return False
-    if name == "open_chat_history":
-        return True
-    if name == "resolve_scene_instruction":
-        return ctx.settings.scene_enabled
-    if name in {"query_hospital_directory", "query_hospital_operations"}:
-        # 运营数据默认对所有角色开放（产品要求患者也能查）。机构目录是运营查询的
-        # 前置（要拿 hospital_id），两者必须同口径放行，否则患者会卡在「没有机构编号」。
-        return hospital_ops_allowed(ctx.settings, ctx.scope.role)
-    if name in IRETOUR_REPORT_ENDPOINTS and not ctx.settings.iretour_reports_enabled:
-        return False
-    if name in IRECOG_REPORT_ENDPOINTS and not ctx.settings.irecog_reports_enabled:
-        return False
-    if name in ASSESSMENT_REPORT_ENDPOINTS and not ctx.settings.assessment_reports_enabled:
-        return False
-    if name in LAYER_TOOLS or "iretour" in name or "irecog" in name or "assessment" in name:
-        return ctx.scope.has_patient
-    if "irego" in name:
-        return ctx.scope.has_patient
-    if name == "navigate_scene":
-        return ctx.settings.scene_enabled and ctx.settings.scene_actions_enabled
-    if name == "search_doctors":
-        return ctx.settings.doctors_enabled and ctx.scope.role != "clinician"
-    return name == "search_knowledge"
+    return (
+        (name in TOOL_SPECS or name == MEMORY_TOOL_NAME)
+        and (not client or client.allowed_tools is None or name in client.allowed_tools)
+        and denial(ctx.scope, ctx.settings, name, excluded=client.excluded_tools if client else ())
+        is None
+        and not (name == MEMORY_TOOL_NAME and ctx.preference_unavailable)
+    )
 
 
 def available_tools(ctx, tools):
     selected = [tool for tool in tools if tool_allowed(ctx, tool.name)]
-    if ctx.settings.knowledge_sources:
-        sources = ctx.settings.knowledge_sources
+    sources = sources_for_scope(ctx.settings.knowledge_sources, ctx.scope)
+    if sources:
         description = (
             "检索知识证据，用于解释与一般建议。根据问题选择领域和逻辑知识源。"
             "领域选择规则：医院/科室/楼层/布局/场景介绍与导览（如「介绍三楼」「三楼有哪些科室」）"
@@ -426,6 +402,7 @@ async def invoke_tool(ctx, name, args):
             raise DomainError(
                 "tool_not_allowed", "当前身份或配置未启用这项工具。", outcome="unsupported"
             )
+        require_for_run(ctx, name, args)
         if name in {
             "resolve_scene_instruction",
             "open_chat_history",

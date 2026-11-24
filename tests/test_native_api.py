@@ -42,7 +42,9 @@ def test_blocking_native_facts_and_idempotency(client, auth_headers):
 
 def test_streaming_native_sequence(client, auth_headers):
     response = client.post(
-        "/v1/chat", headers=auth_headers, json=payload("你好", response_mode="streaming", inputs={})
+        "/v1/chat",
+        headers=auth_headers,
+        json=payload("你好", response_mode="streaming", inputs={"role": "patient"}),
     )
     assert response.status_code == 200
     events = [
@@ -61,6 +63,7 @@ def test_scope_protects_status_and_cancel(client, auth_headers):
     for changed in (
         patient_inputs("462"),
         {"role": "clinician"},
+        {"identity": "学生"},
         patient_inputs("461", tenantId="another"),
     ):
         for endpoint in ("/status", "/cancel"):
@@ -102,7 +105,7 @@ def test_optional_patient_and_mixed_identity(client, auth_headers):
     response = client.post(
         "/v1/chat",
         headers=auth_headers,
-        json=payload("查询在线医生", inputs={"spaceId": "demo-space"}),
+        json=payload("查询在线医生", inputs={"role": "patient", "spaceId": "demo-space"}),
     )
     assert response.json()["status"] == "succeeded"
     assert response.json()["metrics"]["tool_calls"] == 1
@@ -110,7 +113,9 @@ def test_optional_patient_and_mixed_identity(client, auth_headers):
         "/v1/chat",
         headers=auth_headers,
         json=payload(
-            "查一下患者信息", "req-2", inputs={"patientId": {"type": "mixed", "value": "461"}}
+            "查一下患者信息",
+            "req-2",
+            inputs={"role": "patient", "patientId": {"type": "mixed", "value": "461"}},
         ),
     )
     assert response.status_code == 422

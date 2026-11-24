@@ -30,14 +30,17 @@ from meta_agent.contracts import (
     identifier,
 )
 from meta_agent.domains.patient_identity import brief_from_context_response
-from meta_agent.domains.routing import route_from_inputs
+from meta_agent.domains.routing import CLINICAL_BRANCHES
+from meta_agent.events.dify import history_text
 from meta_agent.events.stream import EventEmitter
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.infrastructure.locks import ThreadLockRegistry
 from meta_agent.infrastructure.repository import Repository
+from meta_agent.orchestration.capabilities import bind_access_scope
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.planning.compiler import PlanCompiler
-from meta_agent.planning.parser import IntentPlanner
+from meta_agent.planning.parser import IntentPlanner, operator_decision
+from meta_agent.roles import ROLE_AGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +119,40 @@ class ApplicationService:
         if self.runtime_guard:
             await self.runtime_guard()
         if request.client:
-            request = replace(request, scope=replace(request.scope, client_id=request.client.name))
+            request = replace(
+                request,
+                scope=replace(
+                    request.scope,
+                    client_id=request.client.name,
+                    allowed_tools=request.client.allowed_tools,
+                    client_flow=request.client.flow,
+                ),
+            )
+        request = replace(
+            request,
+            scope=bind_access_scope(
+                request.scope,
+                self.settings,
+                request.client.excluded_tools if request.client else (),
+            ),
+        )
+        profile = ROLE_AGENTS.for_role(request.scope.role)
+        if profile.role in self.settings.disabled_agent_roles:
+            raise DomainError("agent_unavailable", profile.unavailable, outcome="unavailable")
+        flow_inputs = {}
+        client_flow = getattr(request.client, "flow", "")
+        if client_flow == "ai_prescription":
+            token = request.raw_inputs.get("token") or request.raw_inputs.get("webyuntoken")
+            if token is not None:
+                if not isinstance(token, str) or len(token) > 8192:
+                    raise DomainError("invalid_request", "处方接入令牌无效。")
+                flow_inputs["token"] = token
+        elif client_flow == "ai_summary":
+            flow_inputs = {
+                key: request.raw_inputs[key]
+                for key in ("records", "dialogue", "data", "messages", "chat_records")
+                if key in request.raw_inputs
+            }
         scope = request.scope.scope_hash
         digest = fingerprint(
             {
@@ -126,6 +162,8 @@ class ApplicationService:
                 "space": request.scope.space_id,
                 "scene_version": request.scope.scene_version,
                 "business_context": fingerprint(consultation_inputs(request.raw_inputs)),
+                **({"flow": client_flow} if client_flow else {}),
+                **({"transcript": fingerprint(flow_inputs)} if client_flow == "ai_summary" else {}),
                 "routing": {
                     k: request.raw_inputs.get(k)
                     for k in ("pos", "consultation_id", "source_app", "caller_conversation_id")
@@ -135,6 +173,8 @@ class ApplicationService:
         async with self.locks.hold("request:" + fingerprint([scope, request.request_id])):
             existing = await self.repository.request_run(scope, request.request_id)
             if existing:
+                if not self._readable_run(existing):
+                    raise DomainError("conversation_not_found", "旧问诊运行缺少可核验的授权。")
                 if existing.request_hash != digest:
                     raise DomainError("idempotency_conflict", "同一请求编号已用于不同内容。")
                 if existing.status == "running" and existing.run_id not in self.active:
@@ -171,6 +211,12 @@ class ApplicationService:
                 scope_key=scope,
                 conversation_id=request.conversation_id,
                 raw_inputs=public_inputs(request.raw_inputs),
+                metrics={
+                    "agent_id": profile.agent_id,
+                    "profile_version": profile.version,
+                    "agent_role": profile.role,
+                    "branch": selected_scope.agent_kind,
+                },
             )
             await self.repository.save_run(record)
             await self.repository.map_request(record)
@@ -195,7 +241,7 @@ class ApplicationService:
                 on_result=self._on_result,
                 runtime_guard=self.runtime_guard,
                 client=request.client,
-                business_inputs=consultation_inputs(request.raw_inputs),
+                flow_inputs=flow_inputs,
             )
             run = ApplicationRun(record, emitter, context=ctx)
             self.active[record.run_id] = run
@@ -213,6 +259,12 @@ class ApplicationService:
         try:
             async with asyncio.timeout(ctx.remaining):
                 async with self.request_limiter, self.locks.hold("conversation:" + thread):
+                    if ctx.scope.resource_grant and not ctx.scope.resource_grant.valid_for(
+                        ctx.scope
+                    ):
+                        raise DomainError(
+                            "resource_denied", "本轮业务授权已失效。", outcome="unsupported"
+                        )
                     ctx.memory = await self.repository.conversation(thread)
                     await self._dispatch(ctx)
                     await self._save_memory(ctx, thread)
@@ -262,15 +314,15 @@ class ApplicationService:
                 self.active.pop(ctx.record.run_id, None)
 
     async def _dispatch(self, ctx: RunContext) -> None:
-        """按客户端档案或 inputs 路由到对应分支流程；所有分支（含 default）都注册在 self.flows。"""
-        client = getattr(ctx, "client", None)
-        branch = route_from_inputs(ctx.record.raw_inputs, forced=getattr(client, "flow", "") or "")
-        ctx.record.metrics["branch"] = branch.name
-        flow = self.flows.get(branch.name)
+        """执行会话选择阶段已按身份和位置绑定的分支，不从脱敏后的输入重新选路。"""
+        branch = ctx.scope.agent_kind
+        if branch not in ctx.profile.flows:
+            raise DomainError("flow_denied", "当前角色不允许使用该场景。", outcome="unsupported")
+        flow = self.flows.get(branch)
         if flow is None:  # 装配缺失时的最后保护，正常不会发生。
             raise DomainError(
                 "no_flow_registered",
-                f"分支 {branch.name} 未注册流程。",
+                f"分支 {branch} 未注册流程。",
                 outcome="unavailable",
             )
         await flow.execute(ctx)
@@ -330,11 +382,15 @@ class ApplicationService:
     async def plan(self, ctx: RunContext) -> None:
         await ctx.emitter.emit("progress", {"stage": "planning", "text": "正在确认本轮目标。"})
         brief = ctx.patient_brief
-        decision = await self.planner.parse(
-            ctx.query,
-            ctx.memory,
-            ctx.llm_budget,
-            patient_brief=brief.display_text if brief and brief.is_patient else None,
+        decision = (
+            operator_decision(ctx.query)
+            if ctx.profile.fallback == "institution_query"
+            else await self.planner.parse(
+                ctx.query,
+                ctx.memory,
+                ctx.llm_budget,
+                patient_brief=brief.display_text if brief and brief.is_patient else None,
+            )
         )
         ctx.record.decision = decision
         ctx.goals = {goal.goal_id: goal for goal in decision.goals}
@@ -358,7 +414,11 @@ class ApplicationService:
             else:
                 # No tool evidence: only bounded conversational/capability language is allowed.
                 text = (
-                    "你好，我可以协助查询训练、医生和场景信息。"
+                    (
+                        "你好，我可以协助查询本机构获授权的运营指标。"
+                        if ctx.profile.role == "operator"
+                        else "你好，我可以协助查询训练、医生和场景信息。"
+                    )
                     if decision.decision == "respond"
                     else "该领域或操作暂未支持。"
                 )
@@ -375,7 +435,13 @@ class ApplicationService:
         )
         fresh = evidence is not None and evidence.source_version == anchor.source_version
         ctx.compilation = self.compiler.compile(
-            decision, ctx.query, ctx.scope, ctx.memory, ctx.record.request_id, anchor_fresh=fresh
+            decision,
+            ctx.query,
+            ctx.scope,
+            ctx.memory,
+            ctx.record.request_id,
+            anchor_fresh=fresh,
+            excluded=ctx.client.excluded_tools if ctx.client else (),
         )
         ctx.record.plan = ctx.compilation.plan
         for gid, (outcome, message) in ctx.compilation.dispositions.items():
@@ -488,7 +554,7 @@ class ApplicationService:
         answers = "\n".join(e.payload["text"] for e in ctx.answer_events.values())
         if not answers:
             answers = "\n".join(
-                e.payload["text"]
+                history_text(e)
                 for e in ctx.record.events
                 if e.type in {"answer_part", "clarification"}
             )
@@ -532,6 +598,10 @@ class ApplicationService:
             {
                 "run_id": ctx.record.run_id,
                 "status": ctx.record.status,
+                "role": ctx.profile.role,
+                "agent_id": ctx.profile.agent_id,
+                "profile_version": ctx.profile.version,
+                "flow": ctx.scope.agent_kind,
                 "tool_calls": ctx.tool_calls,
                 "llm_calls": ctx.llm_budget.calls,
                 "elapsed_ms": ctx.record.metrics["elapsed_ms"],
@@ -546,8 +616,20 @@ class ApplicationService:
             self.settings.audit_ttl_seconds,
         )
 
-    async def cancel(self, scope: str, run_id: str) -> RunRecord | None:
+    @staticmethod
+    def _readable_run(record: RunRecord) -> bool:
+        pos = str(record.raw_inputs.get("pos", ""))
+        return bool(record.metrics.get("profile_version")) or (
+            record.metrics.get("branch") not in CLINICAL_BRANCHES
+            and not ("问诊" in pos and "房间" in pos)
+        )
+
+    async def accessible_run(self, scope: str, run_id: str) -> RunRecord | None:
         record = await self.repository.run(scope, run_id)
+        return record if record and self._readable_run(record) else None
+
+    async def cancel(self, scope: str, run_id: str) -> RunRecord | None:
+        record = await self.accessible_run(scope, run_id)
         if record is None:
             return None
         run = self.active.get(run_id)

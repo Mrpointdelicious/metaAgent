@@ -19,6 +19,7 @@ from meta_agent.medical_tools.gateway import MedicalToolGateway
 from meta_agent.medical_tools.registry import registry, require_enabled
 from meta_agent.tools import ai_webapi
 from meta_agent.tools.ai_webapi import AIWebApiClient
+from tests.helpers.identity import public_tool_context
 from tests.helpers.settings import AppTestSettings
 
 DOCTOR_BODY = {
@@ -106,7 +107,9 @@ def test_gateway_routes_doctors_to_local_platform_endpoint():
         client = AIWebApiClient(_settings(), transport=_transport(seen))
         gateway = MedicalToolGateway(_settings(), backend=client)
         try:
-            body = await gateway.post("search_doctors", {"spaceId": "67ecd511"})
+            body = await gateway.post(
+                "search_doctors", {"spaceId": "67ecd511"}, public_tool_context("67ecd511")
+            )
         finally:
             await client.close()
         paths = [httpx.URL(url).path for url in seen]
@@ -123,11 +126,11 @@ def test_gateway_falls_back_to_synthetic_backend():
 
     async def check():
         backend = SyntheticBackend()
-        gateway = MedicalToolGateway(_settings(), backend=backend)
-        await gateway.post("search_doctors", {"spaceId": "space"})
+        gateway = MedicalToolGateway(_settings(hospital_directory_public=True), backend=backend)
+        await gateway.post("search_doctors", {"spaceId": "space"}, public_tool_context("space"))
         assert [name for name, _ in backend.calls] == ["search_doctors"]
         assert await gateway.artifact_available("http://x/y.png") is True
-        assert await gateway.directory() == backend.directory_entries
+        assert await gateway.directory(public_tool_context()) == backend.directory_entries
 
     asyncio.run(check())
 
@@ -139,7 +142,7 @@ def test_dry_run_never_touches_upstream():
         client = AIWebApiClient(settings, transport=_transport(seen))
         gateway = MedicalToolGateway(settings, backend=client)
         try:
-            await gateway.post("search_doctors", {"spaceId": "space"})
+            await gateway.post("search_doctors", {"spaceId": "space"}, public_tool_context("space"))
         finally:
             await client.close()
         assert seen == []

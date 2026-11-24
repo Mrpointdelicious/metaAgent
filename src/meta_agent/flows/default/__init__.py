@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from meta_agent.agent.results import collect_agent_results
+from meta_agent.application.composer import safe_text
 
 from . import post_process as post_process_module
 
@@ -30,10 +31,17 @@ class Flow:
 
     async def execute(self, ctx: RunContext) -> None:
         app = self._application
-        if app.agent_runtime:
+        if app.agent_runtime or ctx.profile.fallback == "unavailable":
             # agent 只选路 + 调接口；答复文本作为返回值交给后处理，不直接下发。
-            answer = await app.agent_runtime.execute(ctx, emit_answer=False)
+            if app.agent_runtime:
+                answer = await app.agent_runtime.execute(ctx, emit_answer=False)
+            else:
+                ctx.record.status = "unavailable"
+                ctx.record.goal_statuses["agent"] = "unavailable"
+                answer = ctx.profile.unavailable
             collected = await collect_agent_results(ctx)
+            if "scene.act" not in ctx.profile.capabilities:
+                answer = safe_text(answer)
             result = post_process_module.post_process(ctx, answer, collected)
             # 前端要的是后处理后的 answer 字段文本（"[Answer:]..."），不是整个 dict。
             text = result.get("answer") if isinstance(result, dict) else result

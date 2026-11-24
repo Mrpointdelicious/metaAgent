@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from meta_agent.flows.default.post_process import post_process
 
 SPACE = "67ecd511-5532-405d-9b70-1cd1c0532eed"
-WEB = "[web]http://192.168.8.160:9090/chatPage/?user=168&spaceId=" + SPACE
+WEB = "[web]http://192.168.8.160:9090/chatPage/?user=168&spaceId=" + SPACE + "&role=patient"
 HISTORY_MESSAGE = "已为您打开历史对话记录。"
 
 

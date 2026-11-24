@@ -9,7 +9,7 @@ from pydantic import ConfigDict, Field
 
 from meta_agent.application.legacy_conversations import load_legacy_conversation
 from meta_agent.contracts import DomainError, StrictModel, fingerprint, identifier, utcnow
-from meta_agent.domains.routing import ConversationKind, route_from_inputs
+from meta_agent.domains.routing import CLINICAL_BRANCHES, ConversationKind, route_from_inputs
 from meta_agent.infrastructure.locks import ThreadLockRegistry
 from meta_agent.orchestration.identity import space_id_from_inputs
 
@@ -19,6 +19,7 @@ class ConversationBinding(StrictModel):
     conversation_id: str
     owner: str
     authorization_scope: str
+    access_version: int = 0
     agent_kind: ConversationKind
     consultation_context: str = ""
     consultation_id: str = ""
@@ -58,8 +59,6 @@ def consultation_inputs(inputs):
     for key, aliases in (
         ("patientphone", ("patientphone", "patientPhone", "patient_phone", "phone")),
         ("requesterphone", ("requesterphone", "requesterPhone", "requester_phone", "phone")),
-        # Dify 侧「新建处方」应用把 webyun 令牌当开始变量传入；缺失时流程自己登录取。
-        ("token", ("token", "webyuntoken")),
     ):
         value = next((inputs[name] for name in aliases if inputs.get(name) not in (None, "")), None)
         if value is not None:
@@ -77,6 +76,8 @@ class ConversationSelector:
             "conversation_bindings_v2", owner_key(scope), conversation_id
         )
         if data:
+            if data.get("agent_kind") in CLINICAL_BRANCHES and not data.get("access_version"):
+                return None
             # Read bindings written before the temporary provider was withdrawn.
             data = {
                 key: value for key, value in data.items() if key != "authorized_patient_binding"
@@ -106,6 +107,7 @@ class ConversationSelector:
             conversation_id=conversation_id,
             owner=owner_key(scope),
             authorization_scope=scope.scope_hash,
+            access_version=1,
             agent_kind="default",
             position=str(meta["inputs"].get("pos", "")),
             created_at=meta["created_at"],
@@ -131,55 +133,18 @@ class ConversationSelector:
             for meta in await self.repository.list_conversations(scope.end_user_id):
                 await self.lookup(scope, meta["conversation_id"])
 
-    async def history_scope(self, scope, conversation_id=""):
-        """Recover a unique recorded role within this user/tenant/gateway only."""
-        candidates = []
-        legacy = (
-            await self.repository.list_conversations(scope.end_user_id)
-            if self.repository.settings.legacy_conversation_client == scope.client_id
-            else []
-        )
-        for role in ("patient", "clinician", "operator"):
-            candidate = replace(scope, role=role)
-            ids = (
-                [conversation_id]
-                if conversation_id
-                else [
-                    meta["conversation_id"]
-                    for meta in await self.repository.list_conversations(owner_key(candidate))
-                ]
-                + [meta["conversation_id"] for meta in legacy]
-            )
-            for cid in ids:
-                binding = await self.get(candidate, cid)
-                if binding is not None:
-                    matches = binding.authorization_scope == candidate.scope_hash
-                else:
-                    matches = (
-                        await load_legacy_conversation(self.repository, candidate, cid) is not None
-                    )
-                if matches:
-                    candidates.append(candidate)
-                    break
-        if len(candidates) > 1:
-            raise DomainError(
-                "history_identity_required",
-                "该用户存在多个角色的历史，请提供当前 role 或 identity。",
-            )
-        return candidates[0] if candidates else scope
-
     async def select(self, request):
         inputs, scope = request.raw_inputs, request.scope
         if request.client is not None:
             scope = replace(scope, client_id=request.client.name)
         try:
-            # 客户端令牌可固定功能分支；会话类型必须与实际执行分支一致，
-            # 否则同一 token 的续聊会被判成另一种会话而反复新建。
-            kind = route_from_inputs(inputs, forced=getattr(request.client, "flow", "") or "").name
+            kind = route_from_inputs(
+                inputs, forced=getattr(request.client, "flow", "") or "", role=scope.role
+            ).name
         except ValueError as exc:
             raise DomainError("invalid_position", str(exc)) from exc
         position = inputs.get("pos", "").strip()
-        business_id = inputs.get("consultation_id", "")
+        business_id = inputs.get("consultation_id", scope.consultation_id)
         source_app = inputs.get("source_app", "")
         caller_id = inputs.get("caller_conversation_id", "")
         if any(
@@ -191,13 +156,26 @@ class ConversationSelector:
         if source_app and not position:
             raise DomainError("bridge_position_required", "桥接请求必须提供当前位置。")
         scope = replace(scope, position=position, consultation_id=business_id)
+        grant = scope.resource_grant
+        if grant and (
+            not grant.valid_for(scope)
+            or any(
+                grant.lookup_inputs().get(key) != value
+                for key, value in consultation_inputs(inputs).items()
+            )
+        ):
+            raise DomainError(
+                "resource_denied", "目标与已验证的业务授权不一致。", outcome="unsupported"
+            )
         target = consultation_inputs(inputs).get("patientphone", "")
         patient = scope.patient_ref or ""
         if target:
             patient = fingerprint([patient, target])
         context = (
-            fingerprint([position, business_id, patient])
-            if kind in ("consultation_room", "ai_consultation")
+            fingerprint(
+                ["room-access-v1", position, business_id, grant.patient_ref if grant else patient]
+            )
+            if kind in CLINICAL_BRANCHES
             else ""
         )
         owner = owner_key(scope)
@@ -260,6 +238,7 @@ class ConversationSelector:
                 conversation_id=cid,
                 owner=owner,
                 authorization_scope=scope.scope_hash,
+                access_version=1,
                 agent_kind=kind,
                 consultation_context=context,
                 consultation_id=business_id,

@@ -31,6 +31,7 @@ from meta_agent.flows.consultation_room.medical_record import (
     current_time,
 )
 from meta_agent.flows.fixed_task import FixedTaskFlow
+from meta_agent.orchestration.capabilities import denial
 
 from . import knowledge, webyun
 from .params import disease_list, merge_params
@@ -166,7 +167,18 @@ async def _prescriptions(
     need = webyun.missing_types(items)
     ctx.record.metrics["prescription_missing_types"] = ",".join(need)
 
-    if need and ctx.settings.prescription_auto_create:
+    client_identity = getattr(ctx, "client", None)
+    if (
+        need
+        and ctx.settings.prescription_auto_create
+        and denial(
+            ctx.scope,
+            ctx.settings,
+            "clinical.prescription.create",
+            excluded=client_identity.excluded_tools if client_identity else (),
+        )
+        is None
+    ):
         payloads = webyun.build_payloads(params, need, content, rng)
         results = await webyun.add_prescriptions(ctx, client, token, phone, payloads)
         created = sum(1 for item in results if "body" in item)
@@ -255,9 +267,7 @@ async def run_prescription(ctx: RunContext, query: str, model: Any) -> str:
         )
         return EMPTY_ANSWER
 
-    extraction = await _call_model(
-        ctx, model, build_extract_prompt(query, talk, today), "extract"
-    )
+    extraction = await _call_model(ctx, model, build_extract_prompt(query, talk, today), "extract")
     params = merge_params(extraction, ctx.memory.get_variable("params_json", ""), rng)
     ctx.memory.set_variable("talk", talk)
     ctx.memory.set_variable("params_json", params["params_json"])
@@ -272,15 +282,11 @@ async def run_prescription(ctx: RunContext, query: str, model: Any) -> str:
         )
         return EMPTY_ANSWER
 
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.prescription")
     token = (ctx.business_inputs.get("token") or "").strip()
     if not token and not ctx.settings.dry_run:
         token = await _login(client, ctx.settings)
-    phone = (
-        ctx.business_inputs.get("requesterphone")
-        or ctx.business_inputs.get("patientphone")
-        or ctx.settings.webyun_login_phone
-    )
+    phone = ctx.business_inputs.get("requesterphone") or ctx.business_inputs.get("patientphone")
 
     is_multi = params["is_multi_disease"] >= 2
     diseases = (

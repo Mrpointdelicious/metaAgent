@@ -13,6 +13,40 @@ from meta_agent.orchestration.identity import TrustedScope
 
 CONTRACT_VERSION = "medical-tools-v1"
 
+HOSPITAL_METRICS = {
+    "overview": [
+        ("patient_count", "注册患者", "人"),
+        ("doctor_count", "医生", "人"),
+        ("daily_active_count", "当前活跃患者", "人"),
+    ],
+    "consultation": [
+        ("consultation_people", "区间问诊人数", "人"),
+        ("consultation_times", "区间问诊次数", "次"),
+    ],
+    "rooms": [
+        ("consultation_rooms", "问诊室", "间"),
+        ("assessment_rooms", "评估室", "间"),
+        ("training_rooms", "训练室", "间"),
+        ("total_rooms", "诊室合计", "间"),
+    ],
+    "assessment_training": [
+        ("assessment_count", "评估次数", "次"),
+        ("scale_assessment_count", "量表评估", "次"),
+        ("paradigm_assessment_count", "范式评估", "次"),
+        ("offline_training_count", "离线训练", "次"),
+        ("device_training_count", "设备训练", "次"),
+        ("corridor_training_count", "通道训练", "次"),
+    ],
+    "records": [
+        ("real_consultation_count", "真人问诊", "次"),
+        ("ai_consultation_count", "AI 问诊", "次"),
+        ("remote_consultation_count", "远程会诊", "次"),
+        ("medical_record_count", "就诊记录", "条"),
+        ("prescription_template_count", "处方模板", "条"),
+        ("report_count", "报告", "份"),
+    ],
+}
+
 
 class SceneArguments(TypedDict, total=False):
     target: str
@@ -104,6 +138,7 @@ class ToolContext:
     scope: TrustedScope = field(repr=False)
     request_id: str = ""
     conversation_id: str = ""
+    excluded_tools: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

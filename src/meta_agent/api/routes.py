@@ -22,10 +22,17 @@ from meta_agent.api.security import require_service_identity
 from meta_agent.application.conversations import owner_key
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord
-from meta_agent.domains.routing import CLINICAL_BRANCHES, route_from_inputs
+from meta_agent.domains.routing import (
+    CLINICAL_BRANCHES,
+    is_consultation_position,
+    route_from_inputs,
+)
 from meta_agent.events.dify import DifyEventAdapter as SettledDifyAdapter
+from meta_agent.events.dify import history_text
 from meta_agent.events.stream import NativeEventAdapter
+from meta_agent.orchestration.capabilities import bind_access_scope
 from meta_agent.orchestration.identity import trusted_scope_from_inputs
+from meta_agent.orchestration.resources import verify_resource
 
 router = APIRouter()
 
@@ -33,35 +40,64 @@ router = APIRouter()
 async def scope_for(payload: RunAccessRequest, request: Request):
     try:
         inputs = dict(payload.inputs)
-        client = getattr(getattr(request, "state", None), "client", None)
-        # 绑定到临床分支的客户端即使没有「问诊房间」位置，也属于临床上下文。
-        if route_from_inputs(inputs, forced=getattr(client, "flow", "") or "").name in (
-            CLINICAL_BRANCHES
-        ):
+        client = request.state.client
+        settings = request.app.state.container.settings
+        explicit_role = client.name in settings.explicit_role_clients or any(
+            profile.name == client.name for profile in settings.service_clients
+        )
+        if explicit_role and not {"role", "identity"}.intersection(inputs):
+            raise ValueError("请提供本次活动角色")
+        is_clinical = client.flow in CLINICAL_BRANCHES or is_consultation_position(
+            inputs.get("pos", "")
+        )
+        if is_clinical:
             # Existing clinical lookup parameters do not establish patient v2 identity.
             for key in ("patientphone", "patientPhone", "patient_phone"):
                 inputs.pop(key, None)
         scope = trusted_scope_from_inputs(
             inputs,
             payload.user,
-            request.app.state.container.settings.default_tenant_id,
+            settings.default_tenant_id,
+        )
+        route_from_inputs(inputs, forced=client.flow, role=scope.role)
+        scope = bind_access_scope(
+            replace(
+                scope,
+                client_id=client.name,
+                allowed_tools=client.allowed_tools,
+                client_flow=client.flow,
+            ),
+            settings,
+            client.excluded_tools,
         )
         if scope.patient_identity is not None:
-            scope = await request.app.state.container.ai_webapi_client.resolve_patient_identity(
-                scope
+            scope = await request.app.state.container.medical_tools.resolve_patient_identity(
+                scope, excluded=client.excluded_tools
             )
-        if client:
-            scope = replace(scope, client_id=client.name)
+        if "resource_context_token" in inputs:
+            scope = await verify_resource(scope, inputs["resource_context_token"], settings)
         return scope
     except DomainError as exc:
-        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
+        status = (
+            403
+            if exc.code in {"role_access_denied", "resource_denied"}
+            else (503 if exc.code == "resource_verifier_unavailable" else 422)
+        )
+        raise HTTPException(status, {"code": exc.code, "message": exc.message}) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 
 
 def snapshot(record: RunRecord, reused: bool = True) -> dict[str, Any]:
     # Snapshots expose previous progress as data, never as replayable action events.
-    events = [e.model_dump(mode="json") for e in record.events if e.type != "action_ready"]
+    events = []
+    for event in record.events:
+        if event.type == "action_ready":
+            continue
+        row = event.model_dump(mode="json")
+        if event.type == "answer_part":
+            row["payload"]["text"] = history_text(event)
+        events.append(row)
     return {
         "run_id": record.run_id,
         "request_id": record.request_id,
@@ -100,6 +136,10 @@ async def start_chat(payload: NativeChatRequest, request: Request):
             if exc.code == "idempotency_conflict"
             else 404
             if exc.code == "conversation_not_found"
+            else 403
+            if exc.code in {"role_access_denied", "resource_denied"}
+            else 503
+            if exc.code == "agent_unavailable"
             else 422,
             {"code": exc.code, "message": exc.message},
         ) from exc
@@ -237,7 +277,7 @@ async def stream(run: ApplicationRun, request: Request):
 @router.post("/v1/runs/{run_id}/status", dependencies=[Depends(require_service_identity)])
 async def run_status(run_id: str, payload: RunAccessRequest, request: Request):
     scope = await scope_for(payload, request)
-    record = await request.app.state.container.repository.run(scope.scope_hash, run_id)
+    record = await request.app.state.container.application.accessible_run(scope.scope_hash, run_id)
     if record is None:
         raise HTTPException(404, "运行不存在或不属于当前作用域")
     return snapshot(record)
@@ -252,17 +292,10 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     return snapshot(record)
 
 
-async def conversation_history(
-    payload, request, conversation_id="", limit=20, cursor="", *, infer_role=False
-):
+async def conversation_history(payload, request, conversation_id="", limit=20, cursor=""):
     scope = await scope_for(payload, request)
     repository = request.app.state.container.repository
     selector = request.app.state.container.application.conversations
-    if infer_role:
-        try:
-            scope = await selector.history_scope(scope, conversation_id)
-        except DomainError as exc:
-            raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     limit = max(1, min(limit, 100))
     if not conversation_id:
         await selector.migrate_history(scope)
@@ -329,8 +362,11 @@ async def list_conversations(
     tenant_id: str = "",
     role: str | None = None,
     identity: str | None = None,
+    space_id: str = "",
 ):
     inputs = {}
+    if space_id:
+        inputs["space_id"] = space_id
     if role is not None:
         inputs["role"] = role
     if identity is not None:
@@ -342,7 +378,6 @@ async def list_conversations(
         request,
         limit=limit,
         cursor=last_id,
-        infer_role=role is None and identity is None,
     )
 
 
@@ -357,8 +392,11 @@ async def list_messages(
     tenant_id: str = "",
     role: str | None = None,
     identity: str | None = None,
+    space_id: str = "",
 ):
     inputs = {}
+    if space_id:
+        inputs["space_id"] = space_id
     if role is not None:
         inputs["role"] = role
     if identity is not None:
@@ -371,7 +409,6 @@ async def list_messages(
         conversation_id,
         limit,
         first_id or last_id,
-        infer_role=role is None and identity is None,
     )
 
 
