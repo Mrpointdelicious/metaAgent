@@ -24,6 +24,9 @@ from meta_agent.graph.runtime import build_runtime_graph
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
 from meta_agent.llm.models import create_planner_model
+from meta_agent.medical_tools.gateway import MedicalToolGateway
+from meta_agent.memory.repository import InMemoryPreferenceRepository
+from meta_agent.memory.service import PatientMemoryService
 from meta_agent.planning.compiler import PlanCompiler
 from meta_agent.planning.parser import ConservativePlanner, IntentPlanner, StructuredIntentPlanner
 from meta_agent.tools.ai_webapi import AIWebApiClient
@@ -39,10 +42,12 @@ class ServiceContainer:
     repository: Repository
     application: ApplicationService
     ai_webapi_client: AIWebApiClient
+    medical_tools: MedicalToolGateway
     exit_stack: AsyncExitStack
     persistence_status: str
     cleanup_task: asyncio.Task | None = None
     lease_connection: Any = None
+    patient_memory: PatientMemoryService | None = None
 
     async def close(self) -> None:
         await self.application.close()
@@ -106,6 +111,24 @@ async def create_container(settings: Settings) -> ServiceContainer:
         else:
             checkpointer, store = InMemorySaver(), InMemoryStore()
             persistence = "memory"
+        patient_memory = None
+        if settings.patient_memory_enabled:
+            if settings.persistence_backend == "postgres":
+                from psycopg_pool import AsyncConnectionPool
+
+                from meta_agent.memory.postgres import PostgresPreferenceRepository
+
+                pool = await stack.enter_async_context(
+                    AsyncConnectionPool(dsn, min_size=1, max_size=4, open=False)
+                )
+                await pool.wait(timeout=settings.postgres_connect_timeout_seconds)
+                preference_repository = PostgresPreferenceRepository(pool)
+                if settings.auto_setup_persistence:
+                    await preference_repository.setup()
+                await preference_repository.ready()
+            else:
+                preference_repository = InMemoryPreferenceRepository()
+            patient_memory = PatientMemoryService(preference_repository)
         client = AIWebApiClient(settings)
         stack.push_async_callback(client.close)
         repository = Repository(store, settings, checkpointer)
@@ -123,7 +146,12 @@ async def create_container(settings: Settings) -> ServiceContainer:
                     }
                 )
             )
-            agent_runtime = SingleAgentRuntime(agent_model, checkpointer=checkpointer, store=store)
+            agent_runtime = SingleAgentRuntime(
+                agent_model,
+                checkpointer=checkpointer,
+                store=store,
+                memory_service=patient_memory,
+            )
         elif settings.answer_mode == "llm_select":
             model = create_planner_model(
                 settings.model_copy(
@@ -159,9 +187,11 @@ async def create_container(settings: Settings) -> ServiceContainer:
             repository,
             application,
             client,
+            MedicalToolGateway.wrap(client, settings),
             stack,
             persistence,
             lease_connection=lease,
+            patient_memory=patient_memory,
         )
         if lease:
 

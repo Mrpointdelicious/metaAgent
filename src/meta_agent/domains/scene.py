@@ -11,6 +11,7 @@ from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec, fingerprint
 from meta_agent.domains.rehab import list_field, object_field
 from meta_agent.infrastructure.repository import resolve_pointer
+from meta_agent.orchestration.capabilities import require_for_run
 
 COMMAND = re.compile(r"^\[(Telepor|ScenePoint|ClickPoint|GamePoint):\][0-9]+$")
 
@@ -109,6 +110,7 @@ class SceneAdapter:
         )
 
     async def dispatch(self, task: TaskSpec, action_ref: str, ctx: RunContext) -> TaskResult:
+        require_for_run(ctx, "scene.dispatch")
         if ctx.runtime_guard:
             await ctx.runtime_guard()
         if not ctx.settings.scene_actions_enabled:
@@ -178,6 +180,18 @@ class SceneAdapter:
         ):
             raise DomainError("action_source", "动作编码与来源不一致。")
         action_id = "action_" + fingerprint([ctx.record.run_id, action_ref])[:24]
+        if (ctx.scope.agent_kind == "consultation_room" or ctx.scope.role == "clinician") and (
+            not raw.startswith("[Telepor:]")
+            and raw
+            not in ctx.settings.public_scene_controls.get(ctx.scope.space_id, {}).get(
+                ctx.scope.scene_version, ()
+            )
+        ):
+            raise DomainError(
+                "scene_control_not_public",
+                "该点位未发布为公共操作，请使用已授权的业务流程。",
+                outcome="unsupported",
+            )
         if action_id in ctx.record.action_delivery:
             return TaskResult(
                 task_id=task.task_id,

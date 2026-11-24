@@ -3,8 +3,7 @@
 文件功能：AI纪要总结独立流程，与 Dify 工作流「AI纪要总结」逐步对齐。
 
 链路：
-  1. 取数：inputs 带 requesterphone/phone 时，登录 webyun 拉对话记录；
-     取不到就用本次会话内的历史轮次兜底（dry_run 下不访问院内接口）。
+  1. 使用随请求提交的对话记录、经核验的本次就诊摘要或当前会话历史。
   2. 时间归一 + 对话整合（flows/ai_summary/textproc.py，对应两个代码节点）：
      timeStamp / 「起止时间」换算成北京时间，语义过滤后与历史累积拼接，
      顺带算出 exceed_six 供分段用。
@@ -22,12 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 from meta_agent.contracts import DomainError
 from meta_agent.flows.consultation_room.client import ConsultationClient
-from meta_agent.flows.consultation_room.medical_record import (
-    _extract_content,
-    _get_chat_records,
-    _login,
-    _phone,
-)
+from meta_agent.flows.consultation_room.medical_record import _extract_content
 from meta_agent.flows.fixed_task import FixedTaskFlow
 
 from .parse import apply_time_range, parse_summary, render_summary, strip_zero_time_range
@@ -72,29 +66,9 @@ async def _load_records(ctx: RunContext) -> tuple[list[dict[str, Any]], str]:
         records = _as_records(ctx.business_inputs.get(key, ""))
         if records:
             return records, f"inputs.{key}"
-    records = normalize_records(await _chat_records_text(ctx))
-    return records, "chat_records" if records else "session"
-
-
-async def _chat_records_text(ctx: RunContext) -> str:
-    """取院内对话记录接口原文；手机号缺失、dry_run 或接口异常都返回空串。"""
-    phone = _phone(ctx, "requesterphone", "phone", "patientphone")
-    if not phone or ctx.settings.dry_run:
-        return ""
-    try:
-        client = ConsultationClient(ctx)
-        token = await _login(client, ctx.settings)
-        return (await _get_chat_records(client, token, phone)).strip()
-    except DomainError as exc:
-        logger.warning(
-            "summary chat records unavailable, falling back to session turns",
-            extra={
-                "run_id": ctx.record.run_id,
-                "event_type": "summary_chat_records_unavailable",
-                "fields": {"code": exc.code},
-            },
-        )
-        return ""
+    encounter = ConsultationClient(ctx, "clinical.summary").encounter_summary()
+    records = normalize_records(encounter) or ([{"part": encounter}] if encounter.strip() else [])
+    return records, "encounter" if records else "session"
 
 
 def _history_text(ctx: RunContext) -> str:

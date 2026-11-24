@@ -119,7 +119,7 @@ async def _initial_assessment(ctx: RunContext, model: Any) -> str:
             "analysis_model_unavailable", "评估分析模型暂不可用。", outcome="unavailable"
         )
 
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.analysis")
     token = await _login(client, ctx.settings)
 
     medical_body = template_body = visit_body = ""

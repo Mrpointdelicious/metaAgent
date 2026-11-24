@@ -18,6 +18,7 @@ from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError, TaskResult, TaskSpec, fingerprint
 from meta_agent.domains.facts import FactBuilder
 from meta_agent.domains.scene import numeric_envelope
+from meta_agent.orchestration.capabilities import require_for_run
 
 # 明确挂号意图：挂号 / 挂（个|一个|…）号 / 挂某某的号 / 预约 / 就他 / 选第 N 个。
 _BOOKING = re.compile(
@@ -53,6 +54,7 @@ def recommendation_command(ctx: RunContext, data: dict[str, Any]) -> str:
 
 class DoctorAdapter:
     async def select(self, task, args, ctx):
+        require_for_run(ctx, "doctors.search")
         selection = args["selection"].strip()
         if selection not in ctx.query:
             raise DomainError(
@@ -98,6 +100,7 @@ class DoctorAdapter:
         )
 
     async def execute(self, task: TaskSpec, args: dict[str, Any], ctx: RunContext) -> TaskResult:
+        require_for_run(ctx, "doctors.search")
         del args
         key = fingerprint(["doctors", ctx.scope.space_id])
         cached = await ctx.repository.get("cache", ctx.scope.scope_hash, key)

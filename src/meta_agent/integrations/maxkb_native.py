@@ -142,7 +142,12 @@ def project(rows, budget, trace_id):
     return result
 
 
-async def search(source, payload, *, request_id, max_bytes):
+def grants_role(entry, role):
+    roles = entry.get("roles")
+    return isinstance(roles, list) and role in roles
+
+
+async def search(source, payload, *, request_id, max_bytes, catalog_role):
     config = source.maxkb
     space = payload.get("scope", {}).get("space_id")
     if not space or space not in config.allowed_space_ids:
@@ -155,7 +160,7 @@ async def search(source, payload, *, request_id, max_bytes):
         if route.get("enabled")
         and route.get("scope_kind") == "space"
         and route.get("space_id") == space
-        and "operator" in route.get("roles", [])
+        and grants_role(route, catalog_role)
         and route.get("knowledge_type") in DOMAIN_TYPES[domain]
     ]
     if not routes:
@@ -196,11 +201,7 @@ async def search(source, payload, *, request_id, max_bytes):
                     if not meta or not meta.get("published"):
                         continue
                     doc = published["documents"].get(meta["document_id"])
-                    if (
-                        not doc
-                        or not doc.get("published")
-                        or "operator" not in doc.get("roles", [])
-                    ):
+                    if not doc or not doc.get("published") or not grants_role(doc, catalog_role):
                         continue
                     if (
                         meta["knowledge_id"] != knowledge_id

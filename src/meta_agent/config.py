@@ -7,10 +7,19 @@ import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from meta_agent.integrations.knowledge import KnowledgeSourceConfig
+from meta_agent.roles import Role
 
 # 已注册的运行分支；客户端档案只能绑定到这些分支，新增分支时同步这里与 flows 注册表。
 # ai_* 五个分支是功能令牌的独立完整流程（见 flows/fixed_task.py）。
@@ -104,6 +113,14 @@ class Settings(BaseSettings):
     # 第二个前端的独立 Bearer Token（可选）；命中后按 secondary 客户端处理，
     # 工具可见性受 secondary_excluded_tools 约束（默认去掉挂号）。
     service_bearer_token_secondary: str = ""
+    service_bearer_token_operator: SecretStr = SecretStr("")
+    disabled_agent_roles: frozenset[Role] = frozenset()
+    explicit_role_clients: frozenset[Literal["primary", "secondary"]] = frozenset(
+        {"primary", "secondary"}
+    )
+    public_scene_controls: dict[str, dict[int, frozenset[str]]] = Field(default_factory=dict)
+    resource_authorization_url: AnyHttpUrl | None = None
+    resource_authorization_token: SecretStr = SecretStr("")
     # secondary 客户端禁用的工具名集合（默认去掉挂号 search_doctors）。
     secondary_excluded_tools: list[str] = Field(default_factory=lambda: ["search_doctors"])
     # 多接入方令牌表：每个条目把一个 Bearer Token 映射到独立客户端档案与独立流程分支。
@@ -128,6 +145,9 @@ class Settings(BaseSettings):
     # 自定义 Agent 系统提示词；为空时使用内置 SYSTEM_PROMPT。
     # 设置后整体替换内置提示词，便于不重建镜像就调整回答边界/风格。
     agent_system_prompt: str = ""
+    # 长期记忆仅保存非医疗枚举偏好；启用前执行显式数据库迁移。
+    patient_memory_enabled: bool = False
+    patient_memory_timeout_seconds: float = Field(default=3.0, ge=0.1, le=30)
 
     persistence_backend: Literal["memory", "postgres"] = "memory"
     postgres_dsn: str = ""
@@ -221,6 +241,7 @@ class Settings(BaseSettings):
     scene_backend_api_key: str = ""
     scene_backend_api_token: SecretStr = SecretStr("")
     knowledge_corpus_path: str = ""
+    knowledge_access_revision: str = Field(default="1", min_length=1, max_length=128)
     # 多知识源统一契约（knowledge-search-v1）；非空时 search_knowledge 优先走此接入。
     knowledge_sources: list[KnowledgeSourceConfig] = Field(default_factory=list, max_length=20)
     # 兼容旧配置名；知识检索统一使用 search_knowledge，不再启用独立企业问答。
@@ -228,6 +249,7 @@ class Settings(BaseSettings):
     knowledge_context_tokens: int = Field(default=4000, ge=128, le=16000)
     # rag-portfolio 接入：health 全局文献 + 按 spaceId 选择的医院 help/product。
     portfolio_enabled: bool = False
+    portfolio_roles: frozenset[Role] = frozenset()
     portfolio_base_url: str = "http://rag-portfolio-api:8000"
     portfolio_token: SecretStr = SecretStr("")
     portfolio_kb_ids: list[str] = Field(default_factory=list)
@@ -265,9 +287,9 @@ class Settings(BaseSettings):
     # 在线医生改为 agent 本地查询（直连 webyun 在线医生列表），不再调用 AI_WebApi 的
     # search_doctors 端点。设为 false 可回滚到 .NET 实现。
     doctors_local_enabled: bool = True
-    # 医院运营数据（机构目录 + 运营查询）默认对所有角色开放（产品要求患者也能查）；
-    # 设为 false 可回滚到仅 operator 可见。
-    hospital_ops_open_to_all_roles: bool = True
+    # 仅已主动启用旧共享策略的接入允许患者、医生查询运营数据。
+    hospital_ops_open_to_all_roles: bool = False
+    hospital_directory_public: bool = False
     doctor_backend_login_url: str = "http://www.ga-robot.com/webyun/api/Login/Login"
     # 房间外挂号（search_doctors）用 /api/users（在线接诊医生）；
     # 房间内邀请医生走 /api/users/all（在房间中的医生），两者口径不同，不要混用。
@@ -348,16 +370,34 @@ class Settings(BaseSettings):
             "primary": self.service_bearer_token,
             "secondary": self.service_bearer_token_secondary,
         }
+        if "backoffice" in names:
+            raise ValueError("backoffice 是后台运营专用接入方")
+        legacy["backoffice"] = self.service_bearer_token_operator.get_secret_value()
         for name in names:
             if legacy.get(name):
                 raise ValueError(f"service_clients 不能重复使用已配置的 {name} 名称")
         configured_legacy = {token for token in legacy.values() if token}
+        if len(configured_legacy) != sum(bool(token) for token in legacy.values()):
+            raise ValueError("各接入方必须使用独立的令牌")
         if configured_legacy.intersection(tokens):
             raise ValueError("service_clients 的 token 不能与旧令牌重复")
         return self
 
     def runtime_issues(self) -> list[str]:
         issues = []
+        operator_token = self.service_bearer_token_operator.get_secret_value()
+        if operator_token and operator_token in (
+            self.service_bearer_token,
+            self.service_bearer_token_secondary,
+        ):
+            issues.append("运营后台必须使用与前台不同的服务凭证")
+        url = self.resource_authorization_url
+        if bool(url) != bool(self.resource_authorization_token):
+            issues.append("业务授权校验地址和凭证必须同时配置")
+        if url and (
+            url.scheme != "https" or url.username or url.password or url.query or url.fragment
+        ):
+            issues.append("业务授权校验地址必须是无凭证、查询参数和片段的 HTTPS 地址")
         if self.worker_count != 1 or os.environ.get("WEB_CONCURRENCY", "1") != "1":
             issues.append("v1仅支持一个worker；扩容须实现跨进程租约与事件回放")
         for client in self.service_clients:

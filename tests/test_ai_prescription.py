@@ -7,14 +7,17 @@
 import asyncio
 import json
 import random
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 import meta_agent.flows.ai_prescription as prescription
 from meta_agent.flows.ai_prescription import params as params_mod
 from meta_agent.flows.ai_prescription import render, slots, webyun
+from tests.helpers.identity import clinical_flow_scope
 
 EXTRACTION = {
     "疾病": "脑卒中",
@@ -65,6 +68,7 @@ class _Model:
 def _ctx(query="患者脑卒中后走路不稳，想在上海做康复训练，明天下午有号吗？"):
     return SimpleNamespace(
         query=query,
+        scope=clinical_flow_scope("ai_prescription"),
         record=SimpleNamespace(run_id="run_rx", metrics={}, goal_statuses={}, status="running"),
         memory=_Memory(),
         settings=SimpleNamespace(
@@ -286,3 +290,40 @@ def test_flow_requires_model():
     with pytest.raises(Exception) as excinfo:
         asyncio.run(prescription.run_prescription(ctx, ctx.query, None))
     assert "model_unavailable" in str(excinfo.value) or "模型" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("enabled", "granted", "writes"), [(True, True, 1), (True, False, 0), (False, True, 0)]
+)
+def test_prescription_template_creation_requires_toggle_and_encounter_grant(
+    monkeypatch, enabled, granted, writes
+):
+    ctx = _ctx()
+    ctx.settings.dry_run = False
+    ctx.settings.prescription_auto_create = enabled
+    grant = ctx.scope.resource_grant
+    if granted:
+        grant = grant.model_copy(
+            update={"capabilities": grant.capabilities | {"clinical.prescription.create"}}
+        )
+        ctx.scope = replace(ctx.scope, resource_grant=grant)
+    lookup = AsyncMock(return_value=[])
+    create = AsyncMock(return_value=[{"body": {}}])
+    monkeypatch.setattr(webyun, "list_prescriptions", lookup)
+    monkeypatch.setattr(webyun, "build_payloads", lambda *args: [{"Type": "2"}])
+    monkeypatch.setattr(webyun, "add_prescriptions", create)
+    asyncio.run(
+        prescription._prescriptions(
+            ctx,
+            object(),
+            "test",
+            grant.requester_phone.get_secret_value(),
+            "示例",
+            {},
+            {},
+            random.Random(1),
+        )
+    )
+    assert create.await_count == writes
+    assert lookup.await_count == 1 + writes
+    assert ctx.record.metrics["prescription_created"] == writes

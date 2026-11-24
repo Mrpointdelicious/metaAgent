@@ -6,7 +6,7 @@
   1. POST Login/Login（复用 medical_record._login）→ parse_token 提取 token；
   2. GET SysUserInfo/GetUserMedicalInfomationNew（Bearer token + Phone=patientphone）
      → parse_disease 提取疾病（PatientDetails.MedicalHistory 首个逗号前）；
-  3. GET /api/chat-records（Bearer token + phone=requestphone）→ 对话内容；
+  3. 使用仅限当前就诊的可选摘要；
   4. 用 MEDICAL_ORDER_PROMPT 调用 LLM，生成结构化「康复医嘱」文本；
   5. parse_medical_order 把文本解析为 medical_advice_fill 事件，返回 result JSON 字符串。
 """
@@ -24,7 +24,6 @@ from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,
     _get,
-    _get_chat_records,
     _login,
     _phone,
 )
@@ -96,7 +95,7 @@ async def run_medical_order(ctx: RunContext, query: str, model: Any) -> str:
             "medical_order_model_unavailable", "医嘱填写模型暂不可用。", outcome="unavailable"
         )
 
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.order")
     token = await _login(client, ctx.settings)
 
     # 患者病情是可选输入：手机号缺失或病历接口不可用都不阻断，告警后按空继续。
@@ -131,29 +130,7 @@ async def run_medical_order(ctx: RunContext, query: str, model: Any) -> str:
                 },
             )
 
-    # 对话内容是可选输入：手机号缺失或接口不可用都不阻断，告警后按空继续。
-    request_phone = _phone(ctx, "requesterphone", "phone")
-    chat_body = ""
-    if not request_phone:
-        logger.warning(
-            "medical order chat records skipped, request phone missing",
-            extra={
-                "run_id": ctx.record.run_id,
-                "event_type": "medical_order_chat_skipped_missing_phone",
-            },
-        )
-    else:
-        try:
-            chat_body = await _get_chat_records(client, token, request_phone)
-        except DomainError as exc:
-            logger.warning(
-                "medical order chat records unavailable, continuing with empty",
-                extra={
-                    "run_id": ctx.record.run_id,
-                    "event_type": "medical_order_chat_unavailable_continuing",
-                    "fields": {"code": exc.code},
-                },
-            )
+    chat_body = client.encounter_summary()
 
     prompt = _build_prompt(disease, chat_body, query)
 

@@ -12,13 +12,20 @@ from meta_agent.integrations.knowledge import (
     KnowledgeAccessDenied,
     KnowledgeContractError,
     search,
+    sources_for_scope,
     tool_schema,
 )
 
 
 class RemoteKnowledgeAdapter:
     async def execute(self, task, args, ctx):
-        sources = ctx.settings.knowledge_sources
+        sources = sources_for_scope(ctx.settings.knowledge_sources, ctx.scope)
+        if not sources:
+            raise DomainError(
+                "knowledge_source_unavailable",
+                "当前身份未配置可用的知识源。",
+                outcome="unsupported",
+            )
         try:
             Draft202012Validator(tool_schema(sources)).validate(args)
         except ValidationError as exc:
@@ -61,6 +68,7 @@ class RemoteKnowledgeAdapter:
                     payload,
                     request_id=str(ctx.record.request_id),
                     max_bytes=ctx.settings.max_tool_response_bytes,
+                    role=ctx.scope.role,
                 )
         except KnowledgeAccessDenied as exc:
             raise DomainError(

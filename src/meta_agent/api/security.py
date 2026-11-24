@@ -41,6 +41,9 @@ def client_registry(settings) -> list[tuple[bytes, ClientIdentity]]:
                 ClientIdentity("secondary", frozenset(settings.secondary_excluded_tools)),
             )
         )
+    operator_token = settings.service_bearer_token_operator.get_secret_value().strip()
+    if operator_token:
+        entries.append((operator_token.encode(), ClientIdentity("backoffice")))
     for client in settings.service_clients:
         entries.append(
             (

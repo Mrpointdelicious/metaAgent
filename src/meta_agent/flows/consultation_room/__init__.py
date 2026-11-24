@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from meta_agent.contracts import DomainError
 from meta_agent.observability.trace import CURRENT_RUN_ID
+from meta_agent.orchestration.capabilities import require_for_run
 
 from .classifier import parse_classification
 from .prompts import CATEGORIES, CLASSIFIER_PROMPT
@@ -43,6 +44,7 @@ class Flow:
         self._goal_root = goal_root
 
     async def execute(self, ctx: RunContext) -> None:
+        require_for_run(ctx, "clinical.basic")
         model = self._application.agent_runtime.model if self._application.agent_runtime else None
         if model is None:
             raise DomainError(
@@ -74,7 +76,6 @@ class Flow:
 
         ctx.memory.previous_category = category
         ctx.record.metrics["task_category"] = category
-        ctx.record.metrics["task_category_reason"] = reason
         logger.info(
             "consultation room classified",
             extra={

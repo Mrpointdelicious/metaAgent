@@ -27,13 +27,13 @@ from typing import Any
 
 from meta_agent.application.context import RunContext
 from meta_agent.contracts import DomainError
+from meta_agent.orchestration.capabilities import require_for_run
 
 from .client import ConsultationClient, fetch_details
 from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,
     _get,
-    _get_chat_records,
     _login,
     _phone,
     _to_text,
@@ -494,33 +494,11 @@ def _build_scale_recommend_prompt(
 
 async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
     """量表推荐链路：登录 → 对话/病历 → 提取疾病 → 量表列表 → 过滤 → LLM 推荐 → 封装事件。"""
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.scale")
 
     token = await _login(client, ctx.settings)
 
-    # 对话内容（供疾病提取用，可选）：缺失/不可用都按空继续。
-    request_phone = _phone(ctx, "requesterphone", "phone")
-    conversation = ""
-    if not request_phone:
-        logger.warning(
-            "scale conversation skipped, request phone missing",
-            extra={
-                "run_id": ctx.record.run_id,
-                "event_type": "scale_conversation_skipped_missing_phone",
-            },
-        )
-    else:
-        try:
-            conversation = await _get_chat_records(client, token, request_phone)
-        except DomainError as exc:
-            logger.warning(
-                "scale conversation unavailable, continuing with empty",
-                extra={
-                    "run_id": ctx.record.run_id,
-                    "event_type": "scale_conversation_unavailable_continuing",
-                    "fields": {"code": exc.code},
-                },
-            )
+    conversation = client.encounter_summary()
 
     # 病历信息（可选）：提取疾病用，缺失/不可用都按空继续。
     patient_phone = _phone(ctx, "patientphone", "phone")
@@ -625,6 +603,7 @@ async def _run_recommendation(ctx: RunContext, query: str, model: Any) -> str:
 
 async def run_scale_assessment(ctx: RunContext, query: str, model: Any) -> str:
     """执行量表测评完整链路，返回最终 answer 文本（事件 JSON 或固定文案）。"""
+    require_for_run(ctx, "clinical.scale")
     if model is None:
         raise DomainError(
             "scale_assessment_model_unavailable", "量表测评模型暂不可用。", outcome="unavailable"

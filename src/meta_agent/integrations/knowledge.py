@@ -13,6 +13,8 @@ import httpx
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 
+from meta_agent.roles import USER_ROLES, Role
+
 Domain = Literal["health", "product", "help"]
 
 
@@ -59,6 +61,7 @@ class KnowledgeSourceConfig(BaseModel):
     token_env: str = Field(default="", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$|^$")
     timeout_seconds: float = Field(default=20, gt=0, le=40)
     protocol: Literal["knowledge-search-v1", "maxkb"] = "knowledge-search-v1"
+    roles: frozenset[Role] | None = None
     maxkb: NativeMaxKBConfig | None = None
 
     @model_validator(mode="after")
@@ -96,6 +99,17 @@ def validate_contract(name, payload):
     Draft202012Validator(schema).validate(payload)
 
 
+def sources_for_role(sources, role):
+    if role not in USER_ROLES:
+        return []
+    return [
+        source
+        for source in sources
+        if (source.protocol == "maxkb" and (source.roles is None or role in source.roles))
+        or (source.protocol != "maxkb" and role != "student" and role in (source.roles or ()))
+    ]
+
+
 def tool_schema(sources):
     """Project only model-owned request fields; identity and limits stay hidden."""
     properties = contract()["components"]["schemas"]["KnowledgeSearchRequest"]["properties"]
@@ -116,6 +130,13 @@ def tool_schema(sources):
     }
 
 
+def sources_for_scope(sources, scope):
+    return [
+        source for source in sources_for_role(sources, scope.role)
+        if not source.maxkb or getattr(scope, "space_id", None) in source.maxkb.allowed_space_ids
+    ]
+
+
 class KnowledgeContractError(ValueError):
     pass
 
@@ -124,13 +145,21 @@ class KnowledgeAccessDenied(KnowledgeContractError):
     pass
 
 
-async def search(source, payload, *, request_id, max_bytes):
+async def search(source, payload, *, request_id, max_bytes, role):
     """Validate, send, and receive. No retries or fallback to a different knowledge source."""
     validate_contract("KnowledgeSearchRequest", payload)
+    if not sources_for_role([source], role):
+        raise KnowledgeAccessDenied("knowledge_source_not_granted")
     if source.protocol == "maxkb":
         from meta_agent.integrations.maxkb_native import search as native_search
 
-        return await native_search(source, payload, request_id=request_id, max_bytes=max_bytes)
+        return await native_search(
+            source,
+            payload,
+            request_id=request_id,
+            max_bytes=max_bytes,
+            catalog_role=role,
+        )
     token = source.credential()
     if not token:
         raise KnowledgeContractError("knowledge_credential_missing")

@@ -28,6 +28,7 @@ from tests.test_single_agent import activate, tool_call
 SOURCES = [
     {
         "id": "medical",
+        "roles": ["patient"],
         "description": "医学文献",
         "domains": ["health"],
         "url": "https://medical.test/search",
@@ -35,6 +36,7 @@ SOURCES = [
     },
     {
         "id": "alternative",
+        "roles": ["patient"],
         "description": "另一文献库",
         "domains": ["health"],
         "url": "https://other.test/find",
@@ -42,6 +44,7 @@ SOURCES = [
     },
     {
         "id": "hospital",
+        "roles": ["patient"],
         "description": "医院说明",
         "domains": ["help", "product"],
         "scoped_domains": ["help", "product"],
@@ -64,7 +67,7 @@ def response(status="ok"):
 def context(**overrides):
     ctx = SimpleNamespace(
         settings=Settings(_env_file=None, knowledge_sources=SOURCES, **overrides),
-        scope=SimpleNamespace(space_id="hospital-a", scope_hash="scope"),
+        scope=SimpleNamespace(space_id="hospital-a", scope_hash="scope", role="patient"),
         record=SimpleNamespace(request_id=str(uuid4()), metrics={}),
         repository=Repository(InMemoryStore(), Settings(_env_file=None)),
         emitter=SimpleNamespace(persistence_failed=False),
@@ -87,6 +90,7 @@ def mock_http(monkeypatch, handle):
 def test_tool_exposes_configured_sources_without_connection_or_identity_details():
     ctx = SimpleNamespace(
         settings=Settings(_env_file=None, knowledge_sources=SOURCES),
+        scope=SimpleNamespace(role="patient"),
         query="查资料",
         frontend_context={},
     )
@@ -99,6 +103,16 @@ def test_tool_exposes_configured_sources_without_connection_or_identity_details(
         not {"scope", "space_id", "url", "token", "kb_ids", "limits"} & schema["properties"].keys()
     )
     assert "另一文献库" in tool.description and "medical-token" not in str(schema)
+
+
+def test_student_cannot_use_unscoped_knowledge_sources():
+    ctx = context()
+    ctx.scope.role = "student"
+    assert not available_tools(ctx, build_tools())
+    with pytest.raises(DomainError, match="当前身份未配置可用的知识源"):
+        asyncio.run(
+            KnowledgeAdapter().execute(SimpleNamespace(task_id="student"), {"query": "教材"}, ctx)
+        )
 
 
 def test_selects_independent_provider_and_preserves_verifiable_evidence(monkeypatch):

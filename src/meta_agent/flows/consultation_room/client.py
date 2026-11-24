@@ -6,13 +6,27 @@
 import asyncio
 
 from meta_agent.contracts import DomainError
+from meta_agent.orchestration.capabilities import CLINICAL_TASKS, require_for_run
 
 
 class ConsultationClient:
     """Keep the current business adapters while sharing admission and cancellation."""
 
-    def __init__(self, ctx):
+    def __init__(self, ctx, capability):
+        if capability not in CLINICAL_TASKS.values() or capability in {
+            "clinical.basic",
+            "clinical.end",
+        }:
+            raise DomainError(
+                "resource_denied", "此能力不允许读取就诊业务数据。", outcome="unsupported"
+            )
+        require_for_run(ctx, capability)
         self.ctx = ctx
+        self.capability = capability
+
+    def encounter_summary(self):
+        require_for_run(self.ctx, self.capability)
+        return self.ctx.scope.resource_grant.encounter_summary.get_secret_value()
 
     async def _request(self, method, *args, **kwargs):
         ctx = self.ctx
@@ -20,7 +34,9 @@ class ConsultationClient:
             ctx.tool_slot(),
             asyncio.timeout(min(ctx.remaining, ctx.settings.tool_timeout_seconds)),
         ):
+            require_for_run(ctx, self.capability)
             response = await getattr(ctx.backend.client, method)(*args, **kwargs)
+            require_for_run(ctx, self.capability)
             if len(response.content) > 2_000_000:
                 raise DomainError(
                     "response_too_large", "问诊服务返回内容过大。", outcome="unavailable"

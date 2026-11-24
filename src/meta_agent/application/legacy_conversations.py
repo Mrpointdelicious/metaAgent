@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, messages_to_dict
 
 from meta_agent.contracts import ConversationState
 from meta_agent.domains.routing import route_from_inputs
+from meta_agent.orchestration.capabilities import bind_access_scope
 from meta_agent.orchestration.identity import LEGACY_PATIENT_KEYS, trusted_scope_from_inputs
 
 
@@ -32,6 +33,10 @@ async def load_legacy_conversation(repository, scope, conversation_id):
     # deployment, never inferred from whichever client tries the ID first.
     if (
         repository.settings.legacy_conversation_client != scope.client_id
+        or scope.role not in {"patient", "clinician"}
+        or scope.resource_grant is not None
+        or scope.policy_scope
+        or bind_access_scope(scope, repository.settings).policy_scope
         or conversation_id.startswith("conversation_v2_")
         or scope.patient_identity is not None
         or scope.patient_ref is not None

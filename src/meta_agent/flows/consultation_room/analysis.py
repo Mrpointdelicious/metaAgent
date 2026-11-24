@@ -2,8 +2,7 @@
 创建日期：2026-11-16
 文件功能：问诊内评估分析子流程：读取患者病情与对话记录，生成数据解读草稿。
 
-沿用医嘱子流程的取数方式（webyun 登录 → 病历 → 对话记录），不依赖患者 v2 身份，
-因为问诊场景只带 patientphone / requesterphone。生成内容仅为草稿，不写任何临床系统。
+沿用问诊登录和病历接口，使用业务授权方绑定的患者和本次就诊摘要生成只读草稿。
 """
 
 import logging
@@ -18,7 +17,6 @@ from .medical_record import (
     MEDICAL_INFO_URL,
     _extract_content,
     _get,
-    _get_chat_records,
     _login,
     _phone,
 )
@@ -42,7 +40,7 @@ async def run_analysis(ctx: RunContext, query: str, model: Any) -> str:
             "analysis_model_unavailable", "评估分析模型暂不可用。", outcome="unavailable"
         )
 
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.analysis")
     token = await _login(client, ctx.settings)
 
     # 病情与对话都是可选输入：缺失或接口失败只告警，不阻断；两者都空才明确不可用。
@@ -69,20 +67,7 @@ async def run_analysis(ctx: RunContext, query: str, model: Any) -> str:
                 },
             )
 
-    chat_body = ""
-    request_phone = _phone(ctx, "requesterphone", "phone")
-    if request_phone:
-        try:
-            chat_body = await _get_chat_records(client, token, request_phone)
-        except DomainError as exc:
-            logger.warning(
-                "analysis chat records unavailable, continuing",
-                extra={
-                    "run_id": ctx.record.run_id,
-                    "event_type": "consultation_analysis_chat_unavailable",
-                    "fields": {"code": exc.code},
-                },
-            )
+    chat_body = client.encounter_summary()
 
     if not disease and not chat_body:
         raise DomainError(

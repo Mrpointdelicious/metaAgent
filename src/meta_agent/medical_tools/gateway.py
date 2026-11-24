@@ -8,9 +8,13 @@
 - `dry_run`：一律走 AI_WebApi 适配器，由后端返回 demo 数据，不发起业务请求。
 """
 
+from pydantic import ValidationError
+
 from meta_agent.config import Settings
+from meta_agent.contracts import HospitalRequest
 from meta_agent.medical_tools.adapters.ai_webapi import AIWebApiAdapter
 from meta_agent.medical_tools.contracts import ToolAdapter, ToolContext, ToolRequest, ToolResult
+from meta_agent.medical_tools.errors import ToolError
 from meta_agent.medical_tools.registry import require_enabled
 from meta_agent.orchestration.identity import TrustedScope
 
@@ -56,20 +60,64 @@ class MedicalToolGateway:
     async def execute(
         self, name: str, arguments: dict, context: ToolContext | None = None
     ) -> ToolResult:
+        from meta_agent.orchestration.capabilities import require
+
         spec = require_enabled(name, self.settings)
-        # dry_run 由合成后端统一处理，不发起业务请求。
+        if context is None:
+            raise ToolError("scope_required", "业务调用缺少可信运行上下文。", outcome="unsupported")
+        operation = "scene.resolve" if name == "navigate_scene" else name
+        if (
+            name in {"search_doctors", "navigate_scene"}
+            and arguments.get("spaceId") != context.scope.space_id
+        ):
+            raise ToolError(
+                "space_scope_mismatch", "请求的空间不属于本轮上下文。", outcome="unsupported"
+            )
+        if name in context.excluded_tools:
+            raise ToolError("client_denied", "该接入方不允许调用此工具。", outcome="unsupported")
+        require(
+            context.scope,
+            self.settings,
+            operation,
+            excluded=context.excluded_tools,
+            arguments=arguments,
+        )
+        if context.scope.role == "operator" and name == "query_hospital_operations":
+            try:
+                query = HospitalRequest.model_validate(arguments)
+            except ValidationError:
+                raise ToolError("invalid_request", "机构指标查询参数无效。") from None
+            if query.hospital_name:
+                raise ToolError("resource_denied", "机构名称须先在授权目录中核验。")
+            arguments = query.model_dump(exclude_unset=True, exclude_none=True)
+            arguments["hospital_id"] = context.scope.resource_grant.hospital_id
+        # 原有 dry_run 仍统一由合成后端处理，不发起业务请求。
         provider = "ai_webapi" if self.settings.dry_run else spec.provider
-        return await self.adapters[provider].execute(ToolRequest(name, arguments), context)
+        result = await self.adapters[provider].execute(ToolRequest(name, arguments), context)
+        if context.scope.resource_grant:
+            require(
+                context.scope,
+                self.settings,
+                operation,
+                excluded=context.excluded_tools,
+                arguments=arguments,
+            )
+        return result
 
-    async def post(self, name: str, arguments: dict) -> dict:
-        return (await self.execute(name, arguments)).domain_payload()
+    async def post(self, name: str, arguments: dict, context: ToolContext | None = None) -> dict:
+        return (await self.execute(name, arguments, context)).domain_payload()
 
-    async def directory(self) -> list[dict]:
-        return await self.backend.directory()
+    async def resolve_patient_identity(
+        self, scope: TrustedScope, *, excluded=frozenset()
+    ) -> TrustedScope:
+        result = await self.execute(
+            "resolve_patient_identity", {}, ToolContext(scope, excluded_tools=excluded)
+        )
+        return scope.bind(result.domain_payload())
 
     async def artifact_available(self, url: str) -> bool:
         return await self.backend.artifact_available(url)
 
-    async def resolve_patient_identity(self, scope: TrustedScope) -> TrustedScope:
-        body = await self.post("resolve_patient_identity", scope.patient_payload({}))
-        return scope.bind(body)
+    async def directory(self, context: ToolContext) -> list[dict]:
+        result = await self.execute("query_hospital_directory", {}, context)
+        return result.domain_payload()["directory"]

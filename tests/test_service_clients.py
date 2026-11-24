@@ -20,6 +20,7 @@ from meta_agent.api.security import (
 )
 from meta_agent.domains.routing import route_from_inputs
 from meta_agent.flows.consultation_room.subtasks import _summary
+from tests.helpers.identity import clinical_flow_scope
 from tests.helpers.settings import AppTestSettings
 
 FUNCTION_CLIENTS = [
@@ -259,9 +260,10 @@ def test_legacy_client_without_whitelist_keeps_all_tools():
     assert tool_allowed(ctx, "get_patient_profile") is True
 
 
-def _task_flow_ctx(query: str = "帮我处理") -> SimpleNamespace:
+def _task_flow_ctx(query: str, branch="ai_summary", *, summary="") -> SimpleNamespace:
     return SimpleNamespace(
         query=query,
+        scope=clinical_flow_scope(branch, summary=summary),
         memory=SimpleNamespace(turns=[], previous_category=""),
         record=SimpleNamespace(
             run_id="run_flow",
@@ -290,7 +292,7 @@ def test_medical_order_flow_runs_own_pipeline_and_goal(monkeypatch):
     monkeypatch.setattr(ai_medical_order, "run_medical_order", fake_run_medical_order)
     model = _FakeModel("")
     emitter = _FakeEmitter()
-    ctx = _task_flow_ctx("帮患者开医嘱")
+    ctx = _task_flow_ctx("帮患者开医嘱", "ai_medical_order")
     ctx.emitter = emitter
     flow = ai_medical_order.Flow(SimpleNamespace(agent_runtime=SimpleNamespace(model=model)))
 
@@ -385,37 +387,25 @@ def test_summary_flow_accepts_dify_record_array_query():
     assert "功能评估" in summary["all"]
 
 
-def test_summary_flow_pulls_chat_records_when_inputs_carry_phone(monkeypatch):
-    """inputs 带手机号且非 dry_run 时，纪要要用院内真实记录，并把时间换成北京时间。"""
-    import meta_agent.flows.ai_summary as summary
+def test_summary_flow_formats_records_from_verified_encounter():
     from meta_agent.flows.ai_summary import Flow as SummaryFlow
 
-    fetched: list[str] = []
-
-    async def fake_login(client, settings):
-        return "token"
-
-    async def fake_chat_records(client, token, phone):
-        fetched.append(phone)
-        return json.dumps(
-            {
-                "code": 200,
-                "message": "ok",
-                "data": [
-                    {
-                        "timeStamp": "1700000000",
-                        "part": "起止时间：02:10:36-02:12:00 患者说膝盖疼了两周",
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        )
-
-    monkeypatch.setattr(summary, "_login", fake_login)
-    monkeypatch.setattr(summary, "_get_chat_records", fake_chat_records)
+    records = json.dumps(
+        {
+            "code": 200,
+            "message": "ok",
+            "data": [
+                {
+                    "timeStamp": "1700000000",
+                    "part": "起止时间：02:10:36-02:12:00 患者说膝盖疼了两周",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
 
     model = _FakeModel("【部分对话总结】\n[患者]：膝盖疼两周。\n【全部对话总结】\n同上。")
-    ctx = _task_flow_ctx("把这次问诊整理成纪要")
+    ctx = _task_flow_ctx("把这次问诊整理成纪要", summary=records)
     ctx.business_inputs = {"requesterphone": "15932910402", "patientphone": "15932910402"}
     ctx.settings = SimpleNamespace(dry_run=False)
     ctx.emitter = _FakeEmitter()
@@ -423,11 +413,10 @@ def test_summary_flow_pulls_chat_records_when_inputs_carry_phone(monkeypatch):
 
     asyncio.run(flow.execute(ctx))
 
-    assert fetched == ["15932910402"]
     assert "膝盖疼了两周" in model.prompt
     # 02:10:36 UTC → 10:10:36 北京时间
     assert "10:10:36-10:12:00" in model.prompt
-    assert ctx.record.metrics["summary_source"] == "chat_records"
+    assert ctx.record.metrics["summary_source"] == "encounter"
 
 
 def test_summary_flow_skips_clinical_call_in_dry_run(monkeypatch):
@@ -436,10 +425,9 @@ def test_summary_flow_skips_clinical_call_in_dry_run(monkeypatch):
     async def explode(*args, **kwargs):
         raise AssertionError("dry_run 不应访问院内接口")
 
-    import meta_agent.flows.ai_summary as summary
     from meta_agent.flows.ai_summary import Flow as SummaryFlow
 
-    monkeypatch.setattr(summary, "_login", explode)
+    monkeypatch.setattr("meta_agent.flows.consultation_room.client.ConsultationClient.get", explode)
     model = _FakeModel("【部分对话总结】\n本段无有效医疗对话内容。\n【全部对话总结】\n无。")
     ctx = _task_flow_ctx("总结一下")
     ctx.business_inputs = {"requesterphone": "15932910402"}
@@ -467,7 +455,7 @@ def test_consultation_flow_uses_classifier_with_own_goal(monkeypatch):
 
     monkeypatch.setattr(room, "route", fake_route)
     monkeypatch.setattr(_FakeModel, "ainvoke", fake_ainvoke)
-    ctx = _task_flow_ctx("帮我写医嘱")
+    ctx = _task_flow_ctx("帮我写医嘱", "ai_consultation")
     flow = ConsultationFlow(SimpleNamespace(agent_runtime=SimpleNamespace(model=_FakeModel(""))))
 
     asyncio.run(flow.execute(ctx))
@@ -519,6 +507,8 @@ def test_analysis_subtask_emits_draft(monkeypatch):
     emitter = _FakeEmitter()
     ctx = SimpleNamespace(
         query="分析一下",
+        scope=clinical_flow_scope("consultation_room"),
+        settings=AppTestSettings(),
         record=SimpleNamespace(run_id="run_analysis", metrics={}, goal_statuses={}),
         emitter=emitter,
     )
@@ -536,6 +526,8 @@ def test_summary_subtask_emits_draft_without_writing_clinical_data():
     emitter = _FakeEmitter()
     ctx = SimpleNamespace(
         query="总结一下",
+        scope=clinical_flow_scope("consultation_room"),
+        settings=AppTestSettings(),
         memory=SimpleNamespace(turns=[{"user": "我头痛三天了", "assistant": "有无发热？"}]),
         record=SimpleNamespace(run_id="run_summary", metrics={}, goal_statuses={}),
         llm_budget=_FakeBudget(),

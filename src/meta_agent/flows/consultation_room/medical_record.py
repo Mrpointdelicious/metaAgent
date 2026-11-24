@@ -14,8 +14,7 @@
   ontent（Bearer token + userId=UserId）
      → 原始响应 body（补充信息）；
   5. current_time() 生成当前时间（dateTime=YYYY/M/D）；
-  6. GET /api/chat-records（Bearer token + phone=requestphone）
-     → 原始响应 body（对话内容）；
+  6. 使用业务授权方限定于本次就诊的可选摘要；
   7. 用 MEDICAL_RECORD_FILL_PROMPT 调用 LLM，生成「基本信息补充」纯文本；
   8. parse_fill_result 把文本封装为
   medical_record_fill 事件，返回 result JSON 字符串。
@@ -45,7 +44,6 @@ USER_ROLE_URL = "http://192.168.8.71:8085/webyun/api/SysUserInfo/GetUserIdAndRol
 TEMPLATE_CONTENT_URL = (
     "http://192.168.8.71:8085/webyun/api/SysMedical/GetMedicalRecordTemplateContent"
 )
-CHAT_RECORDS_URL = "http://192.168.8.71:4000/api/chat-records"
 TIMEOUT = 15  # 秒
 
 
@@ -410,11 +408,9 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
         ) from exc
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
-        body = exc.response.text[:300] if exc.response is not None else ""
         logger.warning(
-            "medical record login http error status=%s body=%s",
+            "medical record login http error status=%s",
             status,
-            body,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -423,7 +419,6 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
                     "method": "POST",
                     "url": LOGIN_URL,
                     "status": status,
-                    "body_preview": body,
                 },
             },
         )
@@ -504,13 +499,11 @@ async def _get(
         raise DomainError(f"{step}_timeout", f"{label}超时。", outcome="unavailable") from exc
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
-        body = exc.response.text[:300] if exc.response is not None else ""
         logger.warning(
-            "%s http error url=%s status=%s body=%s",
+            "%s http error url=%s status=%s",
             step,
             url,
             status,
-            body,
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
@@ -520,7 +513,6 @@ async def _get(
                     "url": url,
                     "params": masked_params,
                     "status": status,
-                    "body_preview": body,
                 },
             },
         )
@@ -563,7 +555,6 @@ async def _get(
                 "url": url,
                 "params": masked_params,
                 "status": resp.status_code,
-                "body_preview": resp.text[:800],
             },
         },
     )
@@ -606,18 +597,6 @@ async def _get_template_content(client: Any, token: str, user_id: str) -> str:
     return resp.text
 
 
-async def _get_chat_records(client: Any, token: str, phone: str) -> str:
-    resp = await _get(
-        client,
-        CHAT_RECORDS_URL,
-        token=token,
-        params={"phone": phone},
-        step="chat_records",
-        label="对话记录查询",
-    )
-    return resp.text
-
-
 def _build_fill_prompt(
     medical_data: dict[str, Any],
     template_body: str,
@@ -636,7 +615,7 @@ def _build_fill_prompt(
 
 async def run_medical_record(ctx: RunContext, query: str, model: Any) -> str:
     """执行病历填写完整链路，返回最终 result JSON 字符串。"""
-    client = ConsultationClient(ctx)
+    client = ConsultationClient(ctx, "clinical.record")
 
     token = await _login(client, ctx.settings)
 
@@ -659,30 +638,7 @@ async def run_medical_record(ctx: RunContext, query: str, model: Any) -> str:
 
     date_time = current_time()["dateTime"]
 
-    # 对话记录是可选输入：手机号缺失或接口不可用都不阻断病历填写，告警后按空继续，
-    # LLM 仍可依据病历信息 / 补充信息 / 医生修改 / 当前时间完成代写。
-    request_phone = _phone(ctx, "requesterphone", "phone")
-    chat_body = ""
-    if not request_phone:
-        logger.warning(
-            "chat records skipped, request phone missing",
-            extra={
-                "run_id": ctx.record.run_id,
-                "event_type": "chat_records_skipped_missing_phone",
-            },
-        )
-    else:
-        try:
-            chat_body = await _get_chat_records(client, token, request_phone)
-        except DomainError as exc:
-            logger.warning(
-                "chat records unavailable, continuing with empty conversation",
-                extra={
-                    "run_id": ctx.record.run_id,
-                    "event_type": "chat_records_unavailable_continuing",
-                    "fields": {"code": exc.code},
-                },
-            )
+    chat_body = client.encounter_summary()
 
     prompt = _build_fill_prompt(medical_data, template_body, chat_body, query, date_time)
 

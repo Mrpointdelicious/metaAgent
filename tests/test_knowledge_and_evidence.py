@@ -36,6 +36,7 @@ def corpus(approved=True):
                 "source": "synthetic://manual",
                 "approved": approved,
                 "approved_by": "test-fixture",
+                "roles": ["patient"],
                 "sections": [
                     {
                         "section_id": "panel",

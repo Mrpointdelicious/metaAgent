@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from meta_agent.contracts import DomainError, Goal, IReTourRequest, Selector
-from meta_agent.orchestration.identity import TrustedScope, trusted_scope_from_inputs
+from meta_agent.orchestration.identity import trusted_scope_from_inputs
 from meta_agent.tools.ai_webapi import (
     ASSESSMENT_REPORT_ENDPOINTS,
     IRECOG_REPORT_ENDPOINTS,
@@ -18,7 +18,7 @@ from meta_agent.tools.ai_webapi import (
     AIWebApiClient,
 )
 from meta_agent.tools.demo import demo_response
-from tests.helpers.identity import patient_scope
+from tests.helpers.identity import operator_scope, patient_scope
 from tests.helpers.runtime import SeedPlanner, answers, runtime
 from tests.helpers.runtime import request as base_request
 from tests.helpers.settings import AppTestSettings
@@ -233,17 +233,16 @@ def test_tour_reference_mismatch_fails_without_report():
     asyncio.run(check())
 
 
-def test_hospital_query_allowed_for_patient_by_default():
-    """产品口径：患者也能查运营数据（含机构目录）。"""
+def test_legacy_hospital_sharing_can_be_enabled_for_previous_clients():
 
     async def check():
-        async with runtime() as (c, backend):
+        async with runtime(hospital_ops_open_to_all_roles=True) as (c, backend):
             query = "查询医院1的运营情况"
             run = await c.application.execute(request(query))
             assert run.record.status == "succeeded"
             assert "患者数：10" in answers(run.record)
             assert backend.calls[-1][0] == "query_hospital_operations"
-            operator = TrustedScope("tenant", "operator", role="operator")
+            operator = operator_scope()
             run = await c.application.execute(request(query, "r2", scope=operator))
             assert run.record.status == "succeeded"
             assert backend.calls[-1][0] == "query_hospital_operations"
@@ -251,15 +250,14 @@ def test_hospital_query_allowed_for_patient_by_default():
     asyncio.run(check())
 
 
-def test_hospital_query_can_be_restricted_back_to_operator():
-    """回滚开关：hospital_ops_open_to_all_roles=false 时患者重新被拒。"""
+def test_hospital_query_is_restricted_to_operator_by_default():
 
     async def check():
-        async with runtime(hospital_ops_open_to_all_roles=False) as (c, backend):
+        async with runtime() as (c, backend):
             query = "查询医院1的运营情况"
             rejected = await c.application.execute(request(query))
             assert rejected.record.status == "unsupported" and not backend.calls
-            operator = TrustedScope("tenant", "operator", role="operator")
+            operator = operator_scope()
             run = await c.application.execute(request(query, "r2", scope=operator))
             assert run.record.status == "succeeded"
             assert backend.calls[-1][0] == "query_hospital_operations"

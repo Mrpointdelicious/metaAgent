@@ -20,10 +20,15 @@ def _demo_response(endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
             "request_id": "demo",
             "status": "success",
             "data": {
+                "scope": payload.get("scope", "institution"),
+                "section": payload.get("section", "all"),
                 "period": {"start_date": "2026-09-01", "end_date": "2026-09-30"},
                 "hospitals": [
                     {
-                        "hospital": {"hospital_name": "合成演示机构"},
+                        "hospital": {
+                            "hospital_id": payload.get("hospital_id"),
+                            "hospital_name": "合成演示机构",
+                        },
                         "overview": {"patient_count": 10, "doctor_count": 2},
                     }
                 ],

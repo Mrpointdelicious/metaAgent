@@ -29,6 +29,7 @@ from meta_agent.agent.results import collect_agent_results
 from meta_agent.agent.tools import BASIC_COMMAND_TOOLS
 from meta_agent.contracts import DomainError
 from meta_agent.flows.default.post_process import post_process
+from meta_agent.orchestration.capabilities import CLINICAL_TASKS, require_for_run
 
 from .analysis import run_analysis
 from .invite_doctor import run_invite_doctor
@@ -97,6 +98,7 @@ async def _medical_record(
         )
 
     result = await run_medical_record(ctx, ctx.query, model)
+    require_for_run(ctx, "clinical.record")
 
     ctx.record.goal_statuses["consultation_room:病历填写"] = "succeeded"
     ctx.record.metrics["medical_record_filled"] = True
@@ -129,6 +131,7 @@ async def _invite_doctor(
     model = runtime.model if runtime else None
 
     result = await run_invite_doctor(ctx, model)
+    require_for_run(ctx, "clinical.invite")
 
     ctx.record.goal_statuses["consultation_room:邀请医生"] = "succeeded"
     ctx.record.metrics["invite_doctor_done"] = True
@@ -161,6 +164,7 @@ async def _prescription(
     model = runtime.model if runtime else None
 
     result = await run_prescription(ctx, ctx.query, model)
+    require_for_run(ctx, "clinical.prescription")
 
     ctx.record.goal_statuses["consultation_room:处方配置"] = "succeeded"
     ctx.record.metrics["prescription_done"] = True
@@ -193,6 +197,7 @@ async def _scale_assessment(
     model = runtime.model if runtime else None
 
     result = await run_scale_assessment(ctx, ctx.query, model)
+    require_for_run(ctx, "clinical.scale")
 
     ctx.record.goal_statuses["consultation_room:量表测评"] = "succeeded"
     ctx.record.metrics["scale_assessment_done"] = True
@@ -225,6 +230,7 @@ async def _medical_order(
     model = runtime.model if runtime else None
 
     result = await run_medical_order(ctx, ctx.query, model)
+    require_for_run(ctx, "clinical.order")
 
     ctx.record.goal_statuses["consultation_room:医嘱填写"] = "succeeded"
     ctx.record.metrics["medical_order_filled"] = True
@@ -310,6 +316,7 @@ async def _summary(
             "summary_empty", "当前对话内容不足，暂时无法生成纪要。", outcome="unavailable"
         )
 
+    require_for_run(ctx, "clinical.summary")
     ctx.record.goal_statuses["consultation_room:纪要总结"] = "succeeded"
     ctx.record.metrics["summary_generated"] = True
     logger.info(
@@ -342,6 +349,7 @@ async def _analysis(
 
     text = await run_analysis(ctx, ctx.query, model)
 
+    require_for_run(ctx, "clinical.analysis")
     ctx.record.goal_statuses["consultation_room:评估分析"] = "succeeded"
     ctx.record.metrics["analysis_generated"] = True
     logger.info(
@@ -384,5 +392,6 @@ async def route(
 ) -> None:
     """按分类结果分发到对应子流程；未知类别兜底到基础问答与指令。"""
     handler = HANDLERS.get(category) or _basic_or_command
+    require_for_run(ctx, CLINICAL_TASKS.get(category, "clinical.basic"))
     ctx.record.metrics["subtask"] = category
     await handler(ctx, category, reason, application)

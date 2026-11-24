@@ -50,6 +50,8 @@ def register_flows(application: Any) -> None:
         consultation_room,
         default,
     )
+    from meta_agent.orchestration.capabilities import CLINICAL_TASKS, OPERATIONS
+    from meta_agent.roles import ROLE_AGENTS
 
     branches = {
         "default": default,
@@ -62,3 +64,12 @@ def register_flows(application: Any) -> None:
     }
     for name, package in branches.items():
         application.flows[name] = package.Flow(application)
+    if any(not profile.flows <= branches.keys() for profile in ROLE_AGENTS.profiles.values()):
+        raise ValueError("角色方案引用了未注册的场景")
+    known = (
+        set(OPERATIONS.values())
+        | set(CLINICAL_TASKS.values())
+        | {"answer.compose", "clinical.prescription.create"}
+    )
+    if any(not profile.capabilities <= known for profile in ROLE_AGENTS.profiles.values()):
+        raise ValueError("角色方案引用了未注册的能力")

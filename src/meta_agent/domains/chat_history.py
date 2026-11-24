@@ -37,7 +37,7 @@ def is_chat_history_query(query: str) -> bool:
     return any(m in q for m in _CHAT_HISTORY_MARKERS)
 
 
-def build(user_id: str, space_id: str) -> dict[str, str]:
+def build(user_id: str, space_id: str, *, role: str = "patient") -> dict[str, str]:
     """拼聊天页网址，输出与 Dify 代码节点 main() 一致的契约。"""
     uid = str(user_id or "").strip()
     sid = str(space_id or "").strip()
@@ -66,6 +66,7 @@ def build(user_id: str, space_id: str) -> dict[str, str]:
         }
 
     web_url = CHAT_URL + "?user=" + quote(uid, safe="") + "&spaceId=" + quote(sid, safe="")
+    web_url += "&role=" + quote(role, safe="")
     return {
         "tool_kind": TOOL_KIND,
         "success": "true",
@@ -84,7 +85,7 @@ class ChatHistoryAdapter:
     async def execute(self, task: TaskSpec, args: dict[str, Any], ctx: RunContext) -> TaskResult:
         del args
         # user_id 来自输入 user（end_user_id），space_id 来自输入 spaceid（scope.space_id）。
-        out = build(ctx.scope.end_user_id, ctx.scope.space_id or "")
+        out = build(ctx.scope.end_user_id, ctx.scope.space_id or "", role=ctx.scope.role)
         evidence = await ctx.repository.save_evidence(
             ctx.scope.scope_hash, "open_chat_history", ctx.record.request_id, out, CONTRACT_VERSION
         )

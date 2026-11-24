@@ -3,6 +3,9 @@
 当前 Agent/main 整合版本的入口、会话隔离和部署条件见
 [整合接入说明](docs/agent-main-integration.md)。下文历史部署记录不表示本次已切换线上服务。
 
+前台区分患者、医生、学生，后台保留运营人员。学生传 `inputs.role=student` 或 `inputs.identity=学生`；
+四份独立角色策略共享运行时。运营仅能从独立后台凭证进入；临床操作和后台指标查询还需要由业务方核验当前就诊/机构。接入字段、知识发布、严格模式及回退见[四角色 Agent 方案](docs/role-agent-plan.md)。
+
 ## 单 Agent 与三层患者工具（2026-10）
 
 默认 `ORCHESTRATION_MODE=agent` 使用 LangChain `create_agent` 创建的 LangGraph。
@@ -38,7 +41,7 @@ iretourPatientId 和手机号别名均被拒绝。请求先经 AI_WebApi 确认�
 scope_fingerprint，再进入模型运行；运行中凭证仅用于工具调用，不进入模型或历史。
 患者康复默认 all_tenants，可选 current_tenant。事实、记录锚点和报告保留实际记录的
 医院/卫生中心，账号或查询范围改变时隔离历史。业务凭证刷新不改变同一授权范围的会话。
-医院运营仍要求可信角色 operator。详细请求、签发边界和验证见
+医院运营指标默认限于有机构授权的后台 `operator`。患者 v2 请求、签发边界和验证见
 [患者康复 v2 适配及联调](docs/patient-rehab-v2-adaptation-and-integration-20261029.md)。
 
 趋势分析支持 2–20 次，生成图片支持 3–20 次，可用连续序号或最多180天的日期范围。
@@ -115,7 +118,7 @@ uv run python main.py
 ### 多接入方令牌与功能流程
 
 除 `primary` / `secondary` 两个固定令牌外，可用 `META_AGENT__SERVICE_CLIENTS` 配置任意数量的
-功能令牌（单行 JSON 数组）。每个条目是一个独立客户端档案：
+功能令牌（单行 JSON 数组）。每个条目对应一个独立客户端档案。网关在 `inputs` 中同时传入已核验的 `role` 或 `identity`。医生的专用临床流程需要 `consultation_id` 和该次就诊的 `resource_context_token`。各流程所需能力见[四角色 Agent 方案](docs/role-agent-plan.md)。
 
 | 字段 | 作用 |
 | --- | --- |
@@ -156,14 +159,13 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 ```
 
 纪要总结与评估分析都只产出草稿文本，不写病历、医嘱、处方或量表，也不声称已保存或生效。
-评估分析使用问诊原有登录与取数链路，仍要求 `patientphone` / `requesterphone` 等既有问诊字段。
+评估分析沿用问诊的登录与取数接口，患者定位字段来自业务授权方核验的本次就诊。
 
 `ai_summary` 与 Dify「AI纪要总结」工作流逐步对齐，链路固定为四段：
 
 1. **取数**：优先看 `query` 本身是不是对话记录数组（见下）；其次看 `inputs` 的
-   `records` / `dialogue` / `data` / `messages`；再退到 `inputs` 带
-   `requesterphone` / `phone` / `patientphone` 时登录 webyun 拉 `/api/chat-records`；
-   最后退回本次会话轮次。
+   `records` / `dialogue` / `data` / `messages` / `chat_records`，随后使用授权方返回的
+   本次就诊记录或摘要。缺少记录时使用当前会话轮次。
 2. **时间归一**（`textproc.normalize_records`）：把 `timeStamp` 秒/毫秒时间戳、以及正文里
    `起止时间：HH:MM:SS-HH:MM:SS`（按 UTC 理解）统一换成北京时间。
 3. **对话整合**（`textproc.integrate`）：判断本轮输入有无医疗语义，与历史累积拼接，
@@ -225,7 +227,7 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 4. **合并参数**：新值优先、旧 `params_json` 兜底 → 训练模式按 31 条游戏库随机挑游戏 →
    设备映射（单臂 `iReMo`，行走/坐站/平衡 `iReGo`）→ `is_multi_disease`（0/1/≥2）；
 5. **查处方**：`GET GetPrescriptionList?keyword=疾病`，缺 Type（0 线上通用 / 1 线下 /
-   2 评估 / 3 治疗 / 4 用药）时按 `prescription_auto_create` 决定是否 `POST AddPrescription`，
+   2 评估 / 3 治疗 / 4 用药）时仅在 `prescription_auto_create` 已启用且有 `clinical.prescription.create` 授权时调用 `POST AddPrescription`，
    建完重查；知识检索（`knowledge_corpus_path` 的已批准语料）只用于补评估/治疗/用药内容；
 6. **输出**：逐条 `GetPrescriptionInfoById` 取详情 → 线上按量表聚合、线下算空闲时段 →
    `answer` 为 `{"online_prescriptions": [...], "offline_prescriptions": [...], "summary": "..."}`。
@@ -318,7 +320,12 @@ META_AGENT__SERVICE_CLIENTS='[{"name":"summary","token":"app-...","flow":"ai_sum
 
 ```json
 {
-  "inputs": {"tenantId": "hospital-a", "projectPatientId": "3799", "role": "patient"},
+  "inputs": {
+    "tenantId": "hospital-a",
+    "role": "patient",
+    "patient_identity": {"type": "project_user_id", "value": "3799"},
+    "identity_context_token": "<业务后端签发的短期凭证>"
+  },
   "query": "解读最近训练并生成报告图片",
   "response_mode": "streaming",
   "conversation_id": "conversation-001",

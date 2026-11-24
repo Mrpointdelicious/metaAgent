@@ -14,6 +14,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from meta_agent.observability.trace import CURRENT_RUN_ID
+from meta_agent.orchestration.capabilities import require_for_run
+from meta_agent.roles import FIXED_CLINICAL_CAPABILITIES
 
 if TYPE_CHECKING:
     from meta_agent.application.context import RunContext
@@ -50,7 +52,10 @@ class FixedTaskFlow:
         goal = f"{self.branch}:{self.task_name}"
         run_id_token = CURRENT_RUN_ID.set(ctx.record.run_id)
         try:
+            operation = FIXED_CLINICAL_CAPABILITIES[self.branch]
+            require_for_run(ctx, operation)
             text = await self._pipeline(ctx, model)
+            require_for_run(ctx, operation)
             ctx.record.goal_statuses[goal] = "succeeded"
             ctx.record.metrics[self.metrics_key] = True
             logger.info(

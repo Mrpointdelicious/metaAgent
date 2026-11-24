@@ -17,14 +17,11 @@ from meta_agent.domains.patient_identity import PatientBrief
 from meta_agent.events.stream import EventEmitter
 from meta_agent.infrastructure.limiter import PriorityLimiter
 from meta_agent.infrastructure.repository import Repository
+from meta_agent.medical_tools.contracts import ToolContext
 from meta_agent.medical_tools.gateway import MedicalToolGateway
-from meta_agent.orchestration.identity import TrustedScope, validate_patient_envelope
-from meta_agent.tools.ai_webapi import (
-    ASSESSMENT_REPORT_ENDPOINTS,
-    IRECOG_REPORT_ENDPOINTS,
-    IRETOUR_REPORT_ENDPOINTS,
-    PATIENT_ENDPOINTS,
-)
+from meta_agent.medical_tools.registry import require_enabled
+from meta_agent.orchestration.identity import TrustedScope
+from meta_agent.roles import ROLE_AGENTS, RoleAgentProfile
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +50,6 @@ class RunContext:
     interrupted: bool = False
     on_result: Any = None
     runtime_guard: Any = None
-    business_inputs: dict[str, str] = field(default_factory=dict)
     # 分支流程可在调用 agent 前设置，用于对最终回答做后处理（如剥离 reasoning 标记）。
     # 签名：processor(answer: str, ctx: RunContext) -> str | Awaitable[str]。
     answer_post_processor: Any = None
@@ -74,40 +70,41 @@ class RunContext:
 
     # 认证后的接入方身份（ClientIdentity）；决定工具可见性等按客户端差异，None 表示无客户端约束。
     client: Any = None
+    # Runtime-only preference access; never serialized into conversation history or evidence.
+    preference_owner: str | None = None
+    preference_unavailable: bool = False
+    # Whitelisted arguments for the authenticated fixed flow, held for this run only.
+    flow_inputs: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def profile(self) -> RoleAgentProfile:
+        return ROLE_AGENTS.for_role(self.scope.role)
+
+    @property
+    def business_inputs(self):
+        grant = self.scope.resource_grant
+        if not grant or not grant.valid_for(self.scope):
+            return {}
+        return {**self.flow_inputs, **grant.lookup_inputs()}
 
     @property
     def remaining(self) -> float:
         return max(0, self.settings.request_timeout_seconds - (time.monotonic() - self.started))
 
     async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
-        if endpoint in IRECOG_REPORT_ENDPOINTS and not self.settings.irecog_reports_enabled:
-            raise DomainError("capability_disabled", "IReCog报表暂未启用。", outcome="unsupported")
-        if endpoint in ASSESSMENT_REPORT_ENDPOINTS and not self.settings.assessment_reports_enabled:
-            raise DomainError("capability_disabled", "量表报表暂未启用。", outcome="unsupported")
-        if endpoint in IRETOUR_REPORT_ENDPOINTS and not self.settings.iretour_reports_enabled:
-            raise DomainError(
-                "capability_disabled",
-                "IReTour报表暂未启用，仍可查询历史和分析结果。",
-                outcome="unsupported",
-            )
-        if (
-            endpoint == "get_multisource_patient_context"
-            and not self.settings.multisource_patient_context_enabled
-        ):
-            raise DomainError(
-                "capability_disabled", "多源患者上下文暂未启用。", outcome="unsupported"
-            )
+        require_enabled(endpoint, self.settings)
         priority = (
             0 if endpoint == "navigate_scene" else 2 if endpoint.startswith("generate_") else 1
         )
-        if endpoint in PATIENT_ENDPOINTS:
-            payload = self.scope.patient_payload(payload, self.record.conversation_id)
+        context = ToolContext(
+            scope=self.scope,
+            request_id=self.record.request_id,
+            conversation_id=self.record.conversation_id,
+            excluded_tools=self.client.excluded_tools if self.client else frozenset(),
+        )
         async with self.tool_slot(priority):
-            # 统一走医疗工具网关：注册表（未知工具/功能开关）→ 提供方（本地中台 / .NET）。
-            body = await self.gateway.post(endpoint, payload)
-        if endpoint in PATIENT_ENDPOINTS:
-            validate_patient_envelope(self.scope, endpoint, body)
-        return body
+            result = await self.gateway.execute(endpoint, payload, context)
+        return result.domain_payload()
 
     @asynccontextmanager
     async def tool_slot(self, priority: int = 1):

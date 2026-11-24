@@ -14,6 +14,7 @@ dependencies = [
   "jsonschema>=4.23,<5.0",
   "langchain>=1.3,<2.0",
   "langgraph>=1.0,<2.0",
+  "langmem>=0.0.30,<0.1",
   "pydantic>=2.11,<3.0",
   "pydantic-settings>=2.10,<3.0",
   "uvicorn[standard]>=0.35,<1.0",
@@ -55,6 +56,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Preserve the source business prompts verbatim; normal Python checks still apply.
 "src/meta_agent/agent/context.py" = ["E501"]
+"src/meta_agent/roles/prompts.py" = ["E501"]
 "src/meta_agent/flows/consultation_room/prompts.py" = ["E501"]
 "src/meta_agent/flows/ai_medical_order/medical_order_prompt.py" = ["E501"]
 "src/meta_agent/flows/ai_prescription/prompts.py" = ["E501"]

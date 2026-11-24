@@ -62,7 +62,9 @@ def test_space_aliases_preserve_scope_and_public_history(client, auth_headers, a
     scope = trusted_scope_from_inputs(payload["inputs"], payload["user"], "default")
     assert scope.space_id == "space" and scope.role == "clinician"
     history = client.get(
-        "/v1/conversations", headers=auth_headers, params={"user": payload["user"]}
+        "/v1/conversations",
+        headers=auth_headers,
+        params={"user": payload["user"], "role": "clinician"},
     )
     assert history.status_code == 200
     row = history.json()["data"][0]

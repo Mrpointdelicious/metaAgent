@@ -14,12 +14,15 @@ from langchain_core.messages import AIMessage
 from pydantic import Field
 
 from meta_agent.agent.runtime import SingleAgentRuntime
+from meta_agent.agent.tools import available_tools, build_tools, invoke_tool
 from meta_agent.app import create_app
 from meta_agent.application.service import ApplicationRequest
 from meta_agent.contracts import DomainError
 from meta_agent.domains.routing import route_from_inputs
 from meta_agent.flows.consultation_room.client import ConsultationClient
 from meta_agent.orchestration.identity import TrustedScope
+from tests.helpers.identity import clinical_scope
+from tests.helpers.integration import context
 from tests.helpers.runtime import answers, runtime
 from tests.helpers.settings import AppTestSettings
 from tests.test_single_agent import ScriptedModel
@@ -47,6 +50,34 @@ def activate(container, messages):
 
 def category(name="基础问答"):
     return json.dumps({"category": name, "reason": "合成分类"}, ensure_ascii=False)
+
+
+def test_student_stays_in_learning_mode_in_a_room_without_clinical_actions():
+    async def check():
+        async with runtime(agent_system_prompt="仅供旧角色使用") as (container, backend):
+            model = activate(container, ["我可以用教学示例解释病历结构。", "一起复习刚才的内容。"])
+            scope = TrustedScope("tenant", "same-user", role="student")
+            first = await container.application.execute(
+                request("帮我填写病历", "问诊房间", scope=scope)
+            )
+            assert first.record.status == "succeeded"
+            assert first.record.metrics["branch"] == "default"
+            assert first.record.metrics["agent_role"] == "student"
+            assert not first.record.action_delivery
+            assert "学生的康复学习助手" in model.seen[0] and "仅供旧角色使用" not in model.seen[0]
+            assert available_tools(first.context, build_tools()) == []
+            resumed = await container.application.execute(
+                request("继续复习", "大厅", first.record.conversation_id, scope=scope)
+            )
+            assert resumed.record.conversation_id == first.record.conversation_id
+            assert "教学示例解释病历结构" in model.seen[1]
+            tool_context = context(container, scope=scope)
+            for name in ("get_patient_profile", "query_hospital_operations", "navigate_scene"):
+                await invoke_tool(tool_context, name, {})
+                assert list(tool_context.record.results.values())[-1].code == "tool_not_allowed"
+            assert not backend.calls
+
+    asyncio.run(check())
 
 
 def request(query, pos="大厅", cid="", *, rid=None, scope=None, **inputs):
@@ -210,7 +241,7 @@ def test_dify_ids_histories_and_client_domains_are_consistent(path, mode):
                 json={
                     "query": query,
                     "user": "actor",
-                    "inputs": {"pos": pos},
+                    "inputs": {"role": "patient", "pos": pos},
                     "conversation_id": cid,
                     "response_mode": mode,
                 },
@@ -234,14 +265,16 @@ def test_dify_ids_histories_and_client_domains_are_consistent(path, mode):
         assert a != b
         for cid, expected, absent in [(a, "普通私有", "问诊私有"), (b, "问诊私有", "普通私有")]:
             history = client.get(
-                "/v1/messages", headers=headers, params={"user": "actor", "conversation_id": cid}
+                "/v1/messages",
+                headers=headers,
+                params={"user": "actor", "role": "patient", "conversation_id": cid},
             ).json()
             text = json.dumps(history, ensure_ascii=False)
             assert expected in text and absent not in text
         denied = client.get(
             "/v1/messages",
             headers={"Authorization": "Bearer secondary"},
-            params={"user": "actor", "conversation_id": b},
+            params={"user": "actor", "role": "patient", "conversation_id": b},
         )
         assert denied.status_code == 404
 
@@ -254,7 +287,8 @@ def test_prescription_selection_is_limited_to_this_consultation_candidates(chose
             activate(
                 container, [category(), "开始问诊", category("处方配置"), f"选择添加[{chosen}]"]
             )
-            first = await app.execute(request("进入", "问诊房间"))
+            scope = clinical_scope()
+            first = await app.execute(request("进入", "问诊房间", scope=scope))
             memory = first.context.memory
             memory.set_variable("prescription_ids", [71])
             memory.set_variable("prescription_names", ["合成处方"])
@@ -262,7 +296,7 @@ def test_prescription_selection_is_limited_to_this_consultation_candidates(chose
                 first.context.scope.thread_id(first.record.conversation_id), memory
             )
             selected = await app.execute(
-                request("选第一个", "问诊房间", first.record.conversation_id)
+                request("选第一个", "问诊房间", first.record.conversation_id, scope=scope)
             )
             assert selected.record.status == expected
             if expected == "succeeded":
@@ -277,7 +311,7 @@ def test_clinical_http_shares_tool_budget_and_cancellation():
         async with runtime(max_tool_calls=1) as (container, backend):
             app = container.application
             activate(container, [category(), "开始"])
-            run = await app.execute(request("进入", "问诊房间"))
+            run = await app.execute(request("进入", "问诊房间", scope=clinical_scope()))
             ctx = run.context
             entered = asyncio.Event()
             cancelled = asyncio.Event()
@@ -292,7 +326,7 @@ def test_clinical_http_shares_tool_budget_and_cancellation():
 
             async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
                 backend.client = http
-                client = ConsultationClient(ctx)
+                client = ConsultationClient(ctx, "clinical.record")
                 task = asyncio.create_task(client.get("https://clinical.example.test/patient"))
                 await entered.wait()
                 with pytest.raises(DomainError, match="预算"):
@@ -384,6 +418,7 @@ def test_real_clinical_handlers_emit_frontend_events_with_synthetic_http(
                     request(
                         "本轮请求",
                         "问诊房间",
+                        scope=clinical_scope(),
                         patientphone="13000000002",
                         requesterphone="13000000001",
                     )
@@ -423,7 +458,11 @@ def test_dify_delivers_validated_scene_command_once_and_never_replays(mode):
     from tests.helpers.runtime import Backend, scene_response
     from tests.test_single_agent import tool_call
 
-    settings = AppTestSettings(service_bearer_token="primary", scene_actions_enabled=True)
+    settings = AppTestSettings(
+        service_bearer_token="primary",
+        scene_actions_enabled=True,
+        public_scene_controls={"space": {7: {"[ClickPoint:]0"}}},
+    )
     with TestClient(create_app(settings)) as client:
         container = client.app.state.container
         backend = Backend()
@@ -442,7 +481,12 @@ def test_dify_delivers_validated_scene_command_once_and_never_replays(mode):
             "user": "actor",
             "request_id": "scene-once",
             "response_mode": mode,
-            "inputs": {"pos": "问诊房间", "spaceId": "space", "scene_version": 7},
+            "inputs": {
+                "role": "patient",
+                "pos": "问诊房间",
+                "spaceId": "space",
+                "scene_version": 7,
+            },
         }
         headers = {"Authorization": "Bearer primary"}
         first = client.post("/v1/chat-messages", headers=headers, json=body)
@@ -482,7 +526,7 @@ def test_clinical_target_changes_keep_private_history_separate():
                 container, [category(), "第一位患者私有内容", category(), "第二位患者"]
             )
             app = container.application
-            scope = TrustedScope("tenant", "doctor", role="clinician")
+            scope = clinical_scope(phone="13000000001")
             first = await app.execute(
                 request("第一位", "问诊房间", scope=scope, patientphone="13000000001")
             )
@@ -491,7 +535,7 @@ def test_clinical_target_changes_keep_private_history_separate():
                     "第二位",
                     "问诊房间",
                     first.record.conversation_id,
-                    scope=scope,
+                    scope=clinical_scope(visit="visit-b", patient="target-b"),
                     patientphone="13000000002",
                 )
             )
@@ -504,9 +548,7 @@ def test_clinical_target_changes_keep_private_history_separate():
 
 
 @pytest.mark.parametrize("alias", ["patientphone", "patientPhone", "patient_phone"])
-def test_dify_clinical_lookup_works_without_installing_a_new_identity_provider(alias):
-    from meta_agent.flows.consultation_room import medical_record as mr
-
+def test_dify_phone_aliases_alone_never_grant_clinical_access(alias):
     settings = AppTestSettings(service_bearer_token="primary")
     with TestClient(create_app(settings)) as client:
         container = client.app.state.container
@@ -544,18 +586,8 @@ def test_dify_clinical_lookup_works_without_installing_a_new_identity_provider(a
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["metadata"]["status"] == "succeeded"
-        assert json.loads(body["answer"])["event"] == "medical_advice_fill"
-        assert any(
-            r.url.path == httpx.URL(mr.MEDICAL_INFO_URL).path
-            and r.url.params["Phone"] == "13000000002"
-            for r in calls
-        )
-        assert any(
-            r.url.path == httpx.URL(mr.CHAT_RECORDS_URL).path
-            and r.url.params["phone"] == "13000000001"
-            for r in calls
-        )
+        assert body["metadata"]["status"] == "unsupported"
+        assert not calls and "medical_advice_fill" not in body["answer"]
         params = {"user": "doctor", "role": "clinician", "conversation_id": body["conversation_id"]}
         assert client.get("/v1/messages", headers=headers, params=params).status_code == 200
         params["user"] = "another-doctor"

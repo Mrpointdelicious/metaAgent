@@ -45,6 +45,56 @@ def clarification(text: str = "请明确要查询的内容、记录范围或要�
     return IntentDecision(decision="clarify", decision_summary=text)
 
 
+def hospital_plan(query: str) -> IntentDecision:
+    match = re.search(r"(?:医院|机构)(?:编号|ID|id)?\s*(\d+)", query)
+    if not match and not re.search(r"本院|我院|本机构|本医院", query):
+        return clarification("请确认要查询本机构，或提供已授权的机构编号。")
+    report = not REPORT_NEGATION.search(query) and bool(re.search(r"报告|报表|图片|出图", query))
+    window = next(
+        (
+            mode
+            for phrase, mode in (
+                ("上月", "last_month"),
+                ("上个月", "last_month"),
+                ("本月", "this_month"),
+                ("最近7天", "last_7_days"),
+                ("最近30天", "last_30_days"),
+                ("昨天", "yesterday"),
+                ("今天", "today"),
+            )
+            if phrase in query
+        ),
+        None,
+    )
+    return IntentDecision(
+        decision="execute",
+        goals=[
+            Goal(
+                goal_id="g1",
+                kind="hospital_query",
+                domain="hospital",
+                query_span=query,
+                hospital=HospitalRequest(
+                    hospital_id=int(match[1]) if match else None,
+                    date_mode=window,
+                    section="consultation"
+                    if any(word in query for word in ("问诊量", "门诊量"))
+                    else "all",
+                    output_mode="analysis_and_report" if report else "analysis",
+                ),
+            )
+        ],
+    )
+
+
+def operator_decision(query: str) -> IntentDecision:
+    if re.search(r"平台|对比|比较|全院区|所有医院", query):
+        return IntentDecision(decision="unsupported", decision_summary="仅支持当前授权机构。")
+    if not re.search(r"运营|指标|门诊量|问诊量|机构报表", query) or CONDITIONAL.search(query):
+        return clarification("请明确本机构的运营指标和统计期间。")
+    return hospital_plan(query)
+
+
 class ConservativePlanner:
     """明确模式供离线演示/失效兜底；不以单个关键词自动执行自由口语。"""
 
@@ -94,25 +144,7 @@ class ConservativePlanner:
                 return clarification("本轮目标较多，请分批处理。")
             return IntentDecision(decision="execute", goals=goals)
         if "运营" in q and ("医院" in q or "机构" in q):
-            match = re.search(r"(?:医院|机构)(?:编号|ID|id)?\s*(\d+)", q)
-            if not match:
-                return clarification("请提供要查询的医院编号或名称。")
-            report = not REPORT_NEGATION.search(q) and bool(re.search(r"报告|报表|图片|出图", q))
-            return IntentDecision(
-                decision="execute",
-                goals=[
-                    Goal(
-                        goal_id="g1",
-                        kind="hospital_query",
-                        domain="hospital",
-                        query_span=q,
-                        hospital=HospitalRequest(
-                            hospital_id=int(match[1]),
-                            output_mode="analysis_and_report" if report else "analysis",
-                        ),
-                    )
-                ],
-            )
+            return hospital_plan(q)
         explicit_tour = bool(re.search(r"iretour", q, re.I))
         explicit_go = bool(re.search(r"irego", q, re.I))
         followup = bool(re.search(r"刚才|这次|本次|那次|上一次|前一次", q))
