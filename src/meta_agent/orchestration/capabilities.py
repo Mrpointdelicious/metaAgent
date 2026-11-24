@@ -7,7 +7,6 @@ import logging
 from dataclasses import replace
 
 from meta_agent.contracts import DomainError, fingerprint
-from meta_agent.domains.routing import is_consultation_position
 from meta_agent.integrations.knowledge import sources_for_scope
 from meta_agent.medical_tools.registry import (
     ASSESSMENT_REPORT_ENDPOINTS,
@@ -133,6 +132,9 @@ def _client_permits(operation, capability, allowed, excluded):
 
 
 def denial(scope, settings, operation, *, excluded=(), arguments=None):
+    # 回退开关：跳过整套 dev 角色能力校验，回到合并前 main 的不拦截行为。
+    if getattr(settings, "disable_capability_policy", False):
+        return None
     capability = OPERATIONS.get(operation, operation)
     profile = ROLE_AGENTS.for_role(scope.role)
     if scope.role in getattr(settings, "disabled_agent_roles", ()):
@@ -172,8 +174,7 @@ def denial(scope, settings, operation, *, excluded=(), arguments=None):
                 branch == "ai_prescription" and capability == "clinical.prescription.create"
             ):
                 return "consultation_required"
-        if scope.position and not is_consultation_position(scope.position):
-            return "consultation_required"
+        # 合并前 main 不按 pos 限制临床能力；功能令牌在大厅也可走对应流程。
     if capability in {"hospital.directory", "hospital.metrics"} and scope.role != "operator":
         if not (
             capability == "hospital.directory"

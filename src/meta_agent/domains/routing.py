@@ -9,7 +9,6 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from meta_agent.contracts import DomainError
 from meta_agent.orchestration.identity import user_role_from_inputs
 from meta_agent.roles import ROLE_AGENTS
 
@@ -66,13 +65,8 @@ def route_from_inputs(
     """
     room = is_consultation_position(raw_inputs.get("pos", ""))
     if forced:
-        active_role = role
-        if active_role is None and {"role", "identity"}.intersection(raw_inputs):
-            active_role = user_role_from_inputs(raw_inputs)
-        if active_role is not None and forced not in ROLE_AGENTS.for_role(active_role).flows:
-            raise DomainError(
-                "role_access_denied", "当前角色无权使用此功能流程。", outcome="unsupported"
-            )
+        # 合并前 main 口径：功能令牌已绑定流程，直接采用，不按角色 flows 白名单拦截。
+        # 纪要/医嘱/处方/实时分析等独立功能流程不要求患者角色显式授权。
         return Branch(name=forced)
     active_role = role if role is not None else user_role_from_inputs(raw_inputs)
     if room and "consultation_room" in ROLE_AGENTS.for_role(active_role).flows:

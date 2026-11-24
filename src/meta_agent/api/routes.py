@@ -42,9 +42,10 @@ async def scope_for(payload: RunAccessRequest, request: Request):
         inputs = dict(payload.inputs)
         client = request.state.client
         settings = request.app.state.container.settings
-        explicit_role = client.name in settings.explicit_role_clients or any(
-            profile.name == client.name for profile in settings.service_clients
-        )
+        # 功能令牌（纪要/医嘱/处方/实时分析/问诊）沿用合并前 main 的免签逻辑：
+        # 不强制 role/identity，由 trusted_scope_from_inputs 按 identity/requesterphone
+        # 自动推断角色与患者身份。只有 explicit_role_clients（主/副令牌）仍需显式角色。
+        explicit_role = client.name in settings.explicit_role_clients
         if explicit_role and not {"role", "identity"}.intersection(inputs):
             raise ValueError("请提供本次活动角色")
         is_clinical = client.flow in CLINICAL_BRANCHES or is_consultation_position(
@@ -71,9 +72,18 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             client.excluded_tools,
         )
         if scope.patient_identity is not None:
-            scope = await request.app.state.container.medical_tools.resolve_patient_identity(
-                scope, excluded=client.excluded_tools
-            )
+            # 与 5080 老版本一致：v2 凭证走强校验；requesterphone/login_name
+            # 经免签通道绑定。解析失败不阻断，患者类工具由 has_patient 门控。
+            if scope.identity_context_token:
+                scope = await request.app.state.container.medical_tools.resolve_patient_identity(
+                    scope, excluded=client.excluded_tools
+                )
+            else:
+                try:
+                    webapi = request.app.state.container.ai_webapi_client
+                    scope = await webapi.resolve_patient_identity(scope)
+                except DomainError as exc:
+                    scope = replace(scope, identity_note=exc.message or "未找到对应患者。")
         if "resource_context_token" in inputs:
             scope = await verify_resource(scope, inputs["resource_context_token"], settings)
         return scope

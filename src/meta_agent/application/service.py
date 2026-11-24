@@ -314,10 +314,8 @@ class ApplicationService:
                 self.active.pop(ctx.record.run_id, None)
 
     async def _dispatch(self, ctx: RunContext) -> None:
-        """执行会话选择阶段已按身份和位置绑定的分支，不从脱敏后的输入重新选路。"""
+        """按客户端档案或 inputs 路由到对应分支；功能令牌不按角色 flows 白名单拦截。"""
         branch = ctx.scope.agent_kind
-        if branch not in ctx.profile.flows:
-            raise DomainError("flow_denied", "当前角色不允许使用该场景。", outcome="unsupported")
         flow = self.flows.get(branch)
         if flow is None:  # 装配缺失时的最后保护，正常不会发生。
             raise DomainError(

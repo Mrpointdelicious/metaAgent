@@ -295,6 +295,9 @@ class Settings(BaseSettings):
     # 仅已主动启用旧共享策略的接入允许患者、医生查询运营数据。
     hospital_ops_open_to_all_roles: bool = False
     hospital_directory_public: bool = False
+    # 测试/回退开关：跳过 dev 角色能力校验（capabilities.denial），回到合并前 main
+    # 的「不按角色能力拦截」行为。仅用于本地测试台，正式服务必保持 false。
+    disable_capability_policy: bool = False
     doctor_backend_login_url: str = "http://www.ga-robot.com/webyun/api/Login/Login"
     # 房间外挂号（search_doctors）用 /api/users（在线接诊医生）；
     # 房间内邀请医生走 /api/users/all（在房间中的医生），两者口径不同，不要混用。

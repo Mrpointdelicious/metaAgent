@@ -66,9 +66,19 @@ async def _load_records(ctx: RunContext) -> tuple[list[dict[str, Any]], str]:
         records = _as_records(ctx.business_inputs.get(key, ""))
         if records:
             return records, f"inputs.{key}"
-    encounter = ConsultationClient(ctx, "clinical.summary").encounter_summary()
-    records = normalize_records(encounter) or ([{"part": encounter}] if encounter.strip() else [])
-    return records, "encounter" if records else "session"
+    # 合并前 main 不依赖 resource_grant 里的本次就诊摘要；无资源授权时直接回退到
+    # 会话历史，避免 ConsultationClient 访问空的 resource_grant 崩溃。
+    if getattr(getattr(ctx, "scope", None), "resource_grant", None) is not None:
+        try:
+            encounter = ConsultationClient(ctx, "clinical.summary").encounter_summary()
+            records = normalize_records(encounter) or (
+                [{"part": encounter}] if encounter and encounter.strip() else []
+            )
+            if records:
+                return records, "encounter"
+        except (DomainError, AttributeError):
+            pass
+    return [], "session"
 
 
 def _history_text(ctx: RunContext) -> str:

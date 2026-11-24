@@ -221,19 +221,34 @@ def trusted_scope_from_inputs(
     if LEGACY_PATIENT_KEYS.intersection(inputs):
         raise ValueError("旧患者身份格式已移除，请传 patient_identity 和 identity_context_token")
     tenant = str(inputs.get("tenant_id", inputs.get("tenantId", default_tenant_id))).strip()
-    role = user_role_from_inputs(inputs)
-    if not tenant or not end_user_id.strip():
+    # 合并前 main 口径：identity（患者/医生）、role 均可推断角色，缺省按患者。
+    role = inputs.get(
+        "role",
+        {
+            "医生": "clinician",
+            "doctor": "clinician",
+            "clinician": "clinician",
+            "患者": "patient",
+        }.get(inputs.get("identity"), "patient"),
+    )
+    if not tenant or not end_user_id.strip() or role not in {"patient", "clinician", "operator"}:
         raise ValueError("可信用户、租户或角色无效")
     identity = inputs.get("patient_identity")
     token = inputs.get("identity_context_token", "")
+    if token and (not isinstance(token, str) or len(token) > 8192):
+        raise ValueError("登录凭证格式无效")
     if identity is not None:
         identity = PatientIdentity.model_validate(identity)
         if role != "patient":
-            raise ValueError("只有患者角色可以携带患者身份")
-        if not isinstance(token, str) or not token or len(token) > 8192:
-            raise ValueError("患者上下文缺少有效登录凭证")
+            raise ValueError("患者身份只能用于患者角色")
     elif token:
         raise ValueError("登录凭证必须与 patient_identity 一同提供")
+    # 老版本（5080）口径：患者只传 requesterphone，由 scope_for 走 WebApi 免签通道
+    # 解析绑定，不依赖 v2 凭证；这里先把手机号按 login_name 落下。
+    if identity is None and role == "patient" and not token:
+        requester = str(inputs.get("requesterphone") or inputs.get("phone") or "").strip()
+        if requester:
+            identity = PatientIdentity(type="login_name", value=requester)
     scope = inputs.get("data_scope", "all_tenants")
     business = inputs.get("current_business_id")
     if scope not in {"all_tenants", "current_tenant"}:
