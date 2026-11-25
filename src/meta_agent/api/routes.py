@@ -307,6 +307,7 @@ async def conversation_history(
     payload, request, conversation_id="", limit=20, cursor="", *, infer_role=False
 ):
     scope = await scope_for(payload, request)
+    relaxed_history = request.app.state.container.settings.history_scope_relaxed
     if infer_role:
         try:
             scope = await request.app.state.container.application.conversations.history_scope(
@@ -323,7 +324,7 @@ async def conversation_history(
         visible = []
         for meta in metas:
             binding = await selector.get(scope, meta["conversation_id"])
-            if binding and binding.authorization_scope == scope.scope_hash:
+            if binding and (relaxed_history or binding.authorization_scope == scope.scope_hash):
                 visible.append({**meta, "agent_kind": binding.agent_kind})
         visible.sort(key=lambda m: m["updated_at"], reverse=True)
         if cursor:
@@ -346,12 +347,19 @@ async def conversation_history(
             ],
         }
     binding = await selector.lookup(scope, conversation_id)
-    if not binding or binding.authorization_scope != scope.scope_hash:
+    if not binding or (not relaxed_history and binding.authorization_scope != scope.scope_hash):
         raise HTTPException(404, "会话不存在或不属于当前作用域")
     scope = replace(
         scope, agent_kind=binding.agent_kind, consultation_context=binding.consultation_context
     )
-    memory = await repository.conversation(scope.thread_id(conversation_id))
+    thread_id = scope.thread_id(conversation_id)
+    if relaxed_history:
+        # 写入时的 scope 含患者身份/空间参数；前端历史请求只带 user，
+        # 直接按当前 scope 重算 thread_id 会指向空记录，改用索引里的原 thread_id。
+        meta = await repository.conversation_meta(owner_key(scope), conversation_id)
+        if meta and meta.get("thread_id"):
+            thread_id = meta["thread_id"]
+    memory = await repository.conversation(thread_id)
     rows = [
         {
             "id": f"{conversation_id}:{i}",

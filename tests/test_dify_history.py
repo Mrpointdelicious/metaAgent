@@ -182,3 +182,44 @@ def test_implicit_history_role_does_not_cross_gateway_or_patient_scope(
         json={"user": "patient-user", "inputs": payload["inputs"]},
     )
     assert authorized.status_code == 200 and authorized.json()["data"]
+
+
+def test_relaxed_history_lists_patient_scope_conversation_with_only_user(
+    client, settings, auth_headers
+):
+    """测试服口径：Dify 历史页只传 user 时，仍能看到带患者/空间参数写入的会话。"""
+    from tests.helpers.identity import patient_inputs
+
+    payload = chat_payload("带患者身份的问题")
+    payload["user"] = "relaxed-user"
+    payload["inputs"] = patient_inputs("0003kh", identity_type="login_name", spaceid="space-a")
+    cid = client.post("/v1/chat-messages", headers=auth_headers, json=payload).json()[
+        "conversation_id"
+    ]
+    # 严格模式（正式服默认）：仍不可见。
+    assert (
+        client.get(
+            "/v1/conversations", headers=auth_headers, params={"user": "relaxed-user"}
+        ).json()["data"]
+        == []
+    )
+
+    settings.history_scope_relaxed = True
+    listed = client.get(
+        "/v1/conversations", headers=auth_headers, params={"user": "relaxed-user"}
+    ).json()
+    assert [r["id"] for r in listed["data"]] == [cid]
+    messages = client.get(
+        "/v1/messages",
+        headers=auth_headers,
+        params={"user": "relaxed-user", "conversation_id": cid},
+    )
+    assert messages.status_code == 200
+    assert messages.json()["data"][0]["query"] == "带患者身份的问题"
+    # 放宽只针对患者身份/空间差异，不跨用户。
+    assert (
+        client.get(
+            "/v1/conversations", headers=auth_headers, params={"user": "someone-else"}
+        ).json()["data"]
+        == []
+    )
