@@ -82,9 +82,12 @@ class TrustedScope:
 
     @property
     def has_patient(self) -> bool:
+        # 与 5080 老版口径一致：患者身份由 WebApi 免签通道（system_context +
+        # patient_identity）在 resolve_patient_identity 时绑定。绑定成功后 patient_ref /
+        # scope_fingerprint 一定存在，因此以绑定结果为准，不再强制 v2 签名凭证。
+        # 功能令牌只需 requesterphone 即可识别患者；带凭证的调用方仍可走强校验分支。
         return bool(
             self.patient_identity
-            and self.identity_context_token
             and self.patient_ref
             and self.scope_fingerprint
             and self.role == "patient"
@@ -125,19 +128,23 @@ class TrustedScope:
         ).hexdigest()
 
     def patient_payload(self, arguments: dict, conversation_id: str = "") -> dict:
-        if not self.patient_identity or not self.identity_context_token or self.role != "patient":
+        if not self.patient_identity or self.role != "patient":
             raise DomainError(
                 "patient_required", "请通过登录入口确认患者身份。", outcome="unavailable"
             )
+        system_context = {
+            "user": self.end_user_id,
+            "conversation_id": conversation_id,
+            "patient_identity": self.patient_identity.model_dump(),
+            "current_business_id": self.current_business_id,
+        }
+        # 免签通道：WebApi RequireIdentityProof=false 时不需要 token；带凭证的
+        # 调用方仍可透传，走强校验分支。两者互不冲突。
+        if self.identity_context_token:
+            system_context["identity_context_token"] = self.identity_context_token
         return {
             **arguments,
-            "system_context": {
-                "user": self.end_user_id,
-                "conversation_id": conversation_id,
-                "patient_identity": self.patient_identity.model_dump(),
-                "current_business_id": self.current_business_id,
-                "identity_context_token": self.identity_context_token,
-            },
+            "system_context": system_context,
             "data_scope": self.data_scope,
         }
 
