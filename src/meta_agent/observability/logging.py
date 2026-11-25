@@ -6,7 +6,7 @@
 import json
 import logging
 import threading
-from datetime import UTC, datetime
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -42,16 +42,86 @@ SAFE_FIELDS = frozenset(
         "answer",
         "client",
         "stage",
+        # request_summary 摘要字段（开关打开时才是明文，见 Settings.log_payload）
+        # answer/status/flow/elapsed_ms 已在上方白名单，这里只补真正新增的字段。
+        "query",
+        "inputs",
+        "error_code",
+        "error_message",
     }
 )
 
+# 请求摘要里的输入参数白名单：只展示这些字段，且敏感值打码。
+# 凭证类字段一律不写入日志（值替换为 <redacted>），手机号打码中间段。
+_REQUEST_INPUT_FIELDS = (
+    "requesterphone",
+    "requesterPhone",
+    "patientphone",
+    "patientPhone",
+    "identity",
+    "role",
+    "pos",
+    "timestamp",
+    "spaceid",
+    "spaceId",
+    "serialNumber",
+    "sceneVersion",
+    "loginName",
+    "loginname",
+)
+_REDACTED_INPUT_FIELDS = frozenset(
+    {
+        "token",
+        "webyuntoken",
+        "apikey",
+        "apitoken",
+        "maxkbauth",
+        "identity_context_token",
+        "patient_identity",
+        "patientidentity",
+        "signature",
+        "sign",
+    }
+)
+_PHONE_FIELDS = frozenset({"requesterphone", "patientphone", "phone"})
+
+
+def redact_request_inputs(inputs: Any) -> dict[str, Any]:
+    """构造可落盘的输入摘要：白名单字段 + 凭证剔除 + 手机号打码。
+
+    仅用于诊断，不含临床明细；即使 log_payload 打开也不会泄露凭证或完整手机号。
+    """
+    if not isinstance(inputs, dict):
+        return {}
+    result: dict[str, Any] = {}
+    for key in _REQUEST_INPUT_FIELDS:
+        if key not in inputs:
+            continue
+        value = inputs[key]
+        if isinstance(value, (dict, list)) or not isinstance(value, (str, int, float)):
+            continue
+        if key.lower() in _REDACTED_INPUT_FIELDS:
+            result[key] = "<redacted>"
+        elif key.lower() in _PHONE_FIELDS and isinstance(value, str) and len(value) >= 7:
+            result[key] = value[:3] + "****" + value[-4:]
+        else:
+            result[key] = value
+    return result
+
 
 class JsonFormatter(logging.Formatter):
-    """将标准日志记录转换为单行 JSON。"""
+    """将标准日志记录转换为单行 JSON。
+
+    timestamp 使用配置的固定时区偏移（默认北京时间 UTC+8），不再是难核对的 UTC。
+    """
+
+    def __init__(self, timezone_offset_hours: int = 8) -> None:
+        super().__init__()
+        self._tz = timezone(timedelta(hours=timezone_offset_hours))
 
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(self._tz).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -81,6 +151,7 @@ def configure_logging(
     log_file_name: str = "meta_agent.log",
     log_max_bytes: int = 10 * 1024 * 1024,
     log_backup_count: int = 5,
+    timezone_offset_hours: int = 8,
 ) -> None:
     """配置根日志器；调用方不得把患者数据放入日志消息。
 
@@ -88,7 +159,7 @@ def configure_logging(
     并按客户端令牌（client）分文件：meta_agent.<client>.log（同样滚动），
     便于事后按 run_id / event_type / client 排查。
     """
-    formatter = JsonFormatter()
+    formatter = JsonFormatter(timezone_offset_hours)
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(_handler(logging.StreamHandler(), formatter))

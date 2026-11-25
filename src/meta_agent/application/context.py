@@ -55,6 +55,10 @@ class RunContext:
     answer_post_processor: Any = None
     # 子代理（如基础问答与指令）在本轮使用的系统提示词覆盖；None 时用 settings 或默认。
     system_prompt: str | None = None
+    # 请求级诊断快照（仅日志用，不进入 checkpoint/证据/审计）：原始 query 与脱敏输入。
+    # 由 service.start() 填充，_complete() 在请求结束时打一条 request_summary。
+    diagnostic_query: str = ""
+    diagnostic_inputs: dict[str, Any] = field(default_factory=dict)
     # 工具网关缓存（按 backend 实例复用）；backend 被替换时自动重建，见 gateway 属性。
     _gateway: Any = field(default=None, init=False, repr=False, compare=False)
 

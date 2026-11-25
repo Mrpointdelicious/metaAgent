@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -36,6 +37,7 @@ from meta_agent.events.stream import EventEmitter
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.infrastructure.locks import ThreadLockRegistry
 from meta_agent.infrastructure.repository import Repository
+from meta_agent.observability.logging import redact_request_inputs
 from meta_agent.orchestration.capabilities import bind_access_scope
 from meta_agent.orchestration.identity import TrustedScope
 from meta_agent.planning.compiler import PlanCompiler
@@ -242,6 +244,8 @@ class ApplicationService:
                 runtime_guard=self.runtime_guard,
                 client=request.client,
                 flow_inputs=flow_inputs,
+                diagnostic_query=request.query,
+                diagnostic_inputs=redact_request_inputs(request.raw_inputs),
             )
             run = ApplicationRun(record, emitter, context=ctx)
             self.active[record.run_id] = run
@@ -578,6 +582,50 @@ class ApplicationService:
             "task_statuses": {tid: result.status for tid, result in record.results.items()},
         }
 
+    def _log_request_summary(self, ctx: RunContext) -> None:
+        """请求结束时打一条人能读懂的摘要：何时、哪个令牌、问了什么、成没成、答了什么。
+
+        状态类字段（时间/client/flow/status/耗时/工具调用数）总是记录；
+        query/inputs/answer 明文仅当 settings.log_payload=true（本地测试台）才记录，
+        正式服默认关闭以符合"不记录患者原始数据"约定。inputs 已按白名单打码，
+        凭证字段剔除、手机号中间打码。
+        """
+        fields: dict[str, Any] = {
+            "client": getattr(getattr(ctx, "scope", None), "client_id", "primary"),
+            "flow": ctx.scope.agent_kind,
+            "status": ctx.record.status,
+            "elapsed_ms": ctx.record.metrics.get("elapsed_ms"),
+            "tool_calls": ctx.tool_calls,
+            "llm_calls": ctx.llm_budget.calls,
+        }
+        failed = [
+            r for r in ctx.record.results.values() if r.status in {"failed", "unavailable"}
+        ]
+        if failed:
+            fields["error_code"] = failed[0].code
+            fields["error_message"] = failed[0].message
+        if self.settings.log_payload:
+            fields["query"] = ctx.diagnostic_query
+            fields["inputs"] = json.dumps(ctx.diagnostic_inputs, ensure_ascii=False)
+            # answer_part 由 agent / fixed_task / composer 多条路径发出，但只有 composer
+            # 会写入 answer_events；权威来源是 record.events（emitter 统一追加）。
+            parts = []
+            for e in ctx.record.events:
+                if e.type not in {"answer_part", "clarification", "task_failed"}:
+                    continue
+                text = e.payload.get("text", "")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            fields["answer"] = "\n".join(parts)
+        logger.info(
+            "request_summary",
+            extra={
+                "run_id": ctx.record.run_id,
+                "event_type": "request_summary",
+                "fields": fields,
+            },
+        )
+
     async def _complete(self, ctx: RunContext) -> None:
         if ctx.record.status == "running":
             ctx.record.status = aggregate_status(list(ctx.record.goal_statuses.values()))
@@ -589,6 +637,7 @@ class ApplicationService:
             token_count_method="estimated_unless_provider_usage_present",
         )
         await ctx.emitter.emit("completed", self.completion(ctx.record))
+        self._log_request_summary(ctx)
         await self.repository.put(
             "audit",
             "runtime",

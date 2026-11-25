@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     log_file_name: str = "meta_agent.log"
     log_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
     log_backup_count: int = Field(default=5, ge=0, le=100)
+    # 日志时区偏移（小时）：默认北京时间 UTC+8。JSON 日志的 timestamp 一律带此偏移，
+    # 便于按本地时间直接核对；正式服如需 UTC 可设为 0。
+    log_timezone_offset_hours: int = Field(default=8, ge=-12, le=14)
+    # 是否在日志里记录用户 query / 输入参数 / 回复文本（患者原始数据）。
+    # 默认关闭以符合"不记录患者原始数据"约定；本地测试台显式开启便于排查。
+    # 仅在 log_payload=true 时 request_summary 才带 query/inputs/answer 明文字段。
+    log_payload: bool = False
     service_bearer_token: str = ""
     # 第二个前端的独立 Bearer Token（可选）；命中后按 secondary 客户端处理，
     # 工具可见性受 secondary_excluded_tools 约束（默认去掉挂号）。
@@ -134,9 +141,11 @@ class Settings(BaseSettings):
 
     ai_webapi_base_url: str = "http://host.docker.internal:5043/api/ai/patients/tools"
     ai_webapi_bearer_token: str = ""
-    # 患者身份是否强制要求 identity_context_token；过渡期可设为 false 明文放行，后续版本改回 true 恢复校验。
+    # 患者身份是否强制要求 identity_context_token；过渡期可设为 false 明文放行，
+    # 后续版本改回 true 恢复校验。
     patient_identity_require_token: bool = True
-    # 明文模式下，未显式传 patient_identity 时是否允许患者角色从 requesterphone 自动推导 login_name。
+    # 明文模式下，未显式传 patient_identity 时是否允许患者角色从 requesterphone
+    # 自动推导 login_name。
     patient_identity_infer_from_requesterphone: bool = False
     ai_webapi_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     dry_run: bool = True

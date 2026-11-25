@@ -27,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log_file_name=resolved_settings.log_file_name,
             log_max_bytes=resolved_settings.log_max_bytes,
             log_backup_count=resolved_settings.log_backup_count,
+            timezone_offset_hours=resolved_settings.log_timezone_offset_hours,
         )
         issues = resolved_settings.production_issues()
         if issues:
