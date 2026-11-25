@@ -42,12 +42,9 @@ async def scope_for(payload: RunAccessRequest, request: Request):
         inputs = dict(payload.inputs)
         client = request.state.client
         settings = request.app.state.container.settings
-        # 功能令牌（纪要/医嘱/处方/实时分析/问诊）沿用合并前 main 的免签逻辑：
-        # 不强制 role/identity，由 trusted_scope_from_inputs 按 identity/requesterphone
-        # 自动推断角色与患者身份。只有 explicit_role_clients（主/副令牌）仍需显式角色。
-        explicit_role = client.name in settings.explicit_role_clients
-        if explicit_role and not {"role", "identity"}.intersection(inputs):
-            raise ValueError("请提供本次活动角色")
+        # 与合并前 main 口径一致：不强制 role/identity，由 trusted_scope_from_inputs
+        # 按 identity/requesterphone 推断角色与患者身份。历史查询端点只带 user 也属
+        # 合法路径（按记录里的角色列会话），因此不能在此处强制显式角色。
         is_clinical = client.flow in CLINICAL_BRANCHES or is_consultation_position(
             inputs.get("pos", "")
         )
@@ -306,8 +303,17 @@ async def cancel(run_id: str, payload: RunAccessRequest, request: Request):
     return snapshot(record)
 
 
-async def conversation_history(payload, request, conversation_id="", limit=20, cursor=""):
+async def conversation_history(
+    payload, request, conversation_id="", limit=20, cursor="", *, infer_role=False
+):
     scope = await scope_for(payload, request)
+    if infer_role:
+        try:
+            scope = await request.app.state.container.application.conversations.history_scope(
+                scope, conversation_id
+            )
+        except DomainError as exc:
+            raise HTTPException(422, {"code": exc.code, "message": exc.message}) from exc
     repository = request.app.state.container.repository
     selector = request.app.state.container.application.conversations
     limit = max(1, min(limit, 100))
@@ -392,6 +398,7 @@ async def list_conversations(
         request,
         limit=limit,
         cursor=last_id,
+        infer_role=role is None and identity is None,
     )
 
 
@@ -423,6 +430,7 @@ async def list_messages(
         conversation_id,
         limit,
         first_id or last_id,
+        infer_role=role is None and identity is None,
     )
 
 

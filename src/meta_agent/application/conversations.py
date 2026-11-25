@@ -133,6 +133,43 @@ class ConversationSelector:
             for meta in await self.repository.list_conversations(scope.end_user_id):
                 await self.lookup(scope, meta["conversation_id"])
 
+    async def history_scope(self, scope, conversation_id=""):
+        """Recover a unique recorded role within this user/tenant/gateway only."""
+        candidates = []
+        legacy = (
+            await self.repository.list_conversations(scope.end_user_id)
+            if self.repository.settings.legacy_conversation_client == scope.client_id
+            else []
+        )
+        for role in ("patient", "clinician", "operator"):
+            candidate = replace(scope, role=role)
+            ids = (
+                [conversation_id]
+                if conversation_id
+                else [
+                    meta["conversation_id"]
+                    for meta in await self.repository.list_conversations(owner_key(candidate))
+                ]
+                + [meta["conversation_id"] for meta in legacy]
+            )
+            for cid in ids:
+                binding = await self.get(candidate, cid)
+                if binding is not None:
+                    matches = binding.authorization_scope == candidate.scope_hash
+                else:
+                    matches = (
+                        await load_legacy_conversation(self.repository, candidate, cid) is not None
+                    )
+                if matches:
+                    candidates.append(candidate)
+                    break
+        if len(candidates) > 1:
+            raise DomainError(
+                "history_identity_required",
+                "该用户存在多个角色的历史，请提供当前 role 或 identity。",
+            )
+        return candidates[0] if candidates else scope
+
     async def select(self, request):
         inputs, scope = request.raw_inputs, request.scope
         if request.client is not None:
