@@ -29,6 +29,10 @@ ACTION = r"(?:打开|关闭|关掉|开启|点开|前往|进入|退出|返回|回
 NEGATIVE = re.compile(r"不要|别|不用|无需|不许|禁止|不能")
 CONDITIONAL = re.compile(r"如果|假如|若是|只有|(?<!刚)才(?:能|可)?")
 REPORT_NEGATION = re.compile(r"(?:不要|不用|无需|别|禁止)[^，。；;]{0,12}(?:报告|报表|图片|出图)")
+# 步道/旅途是 IReTour 的中文别名；「步行」属于下肢 iReGo，不在别名里。
+TOUR_ALIAS_RE = re.compile(
+    r"iretour|多功能智能康复步道|智能步道|步道机器人|步道|旅途", re.I
+)
 
 
 class IntentPlanner(Protocol):
@@ -145,7 +149,7 @@ class ConservativePlanner:
             return IntentDecision(decision="execute", goals=goals)
         if "运营" in q and ("医院" in q or "机构" in q):
             return hospital_plan(q)
-        explicit_tour = bool(re.search(r"iretour", q, re.I))
+        explicit_tour = bool(TOUR_ALIAS_RE.search(q))
         explicit_go = bool(re.search(r"irego", q, re.I))
         followup = bool(re.search(r"刚才|这次|本次|那次|上一次|前一次", q))
         tour_followup = (
@@ -157,7 +161,7 @@ class ConservativePlanner:
             and bool(re.fullmatch(r"(?:请)?(?:继续|下一页|再一页|上一页)[。\s]*", q))
         )
         if not explicit_go and (explicit_tour or tour_followup or tour_page):
-            base_query = re.sub(r"iretour", "", q, flags=re.I).strip()
+            base_query = TOUR_ALIAS_RE.sub("训练", q).strip()
             if re.search(r"概览|概况|上下文", base_query):
                 base_query = "查看患者概况"
             base_memory = memory.model_copy(deep=True)
@@ -407,6 +411,9 @@ IReCog 已接入：kind=irecog/domain=irecog，业务参数填写 irecog，支�
 线上量表已接入：kind=assessment/domain=assessment，参数填写 assessment，可按 scale_type 筛选。
 两类测评的趋势支持2–20次，跨轮记录引用及历史页码必须保持来源设备，不混用 IReGo/IReTour。
 IReTour 已接入：kind=iretour/domain=iretour，填写 iretour（不要填 irego）。
+步道、智能步道、多功能智能康复步道、步道机器人、旅途都是 IReTour 的别名，一律 kind=iretour；
+不要因为报告里出现步行、坐站、平衡或游戏就改成 irego。
+下肢智能康复机器人/iReGo 才用 kind=irego；「步行」不是「步道」的别名。
 支持 overview/history/session/trend 和 need_artifact。
 IReTour 趋势 activity_scope 默认为 straight_primary；可按明确项目选择其它合法枚举。
 分析2–20次，图片3–20次。

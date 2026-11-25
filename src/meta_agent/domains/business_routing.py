@@ -101,6 +101,9 @@ _SCALE_TIME = re.compile(
     r"|(?:时间|日期|哪天|几点|什么时候|安排|排期|排了|待排|后续|下次).{0,12}(?:量表|测评|评估)"
 )
 
+# 智能步道/旅途是 IReTour，不是下肢机器人 IReGo；别名必须点名到 iretour 工具。
+_TOUR = re.compile(r"iretour|多功能智能康复步道|智能步道|步道机器人|步道|旅途", re.I)
+
 
 @dataclass(frozen=True)
 class BusinessRoute:
@@ -112,6 +115,7 @@ class BusinessRoute:
     uncertain: bool = False
     record_query: bool = False
     scale_time_query: bool = False
+    tour_query: bool = False
     followup: bool = False
     hospital_ops: bool = False
 
@@ -143,7 +147,15 @@ class BusinessRoute:
         if self.history:
             hints.append("历史对话使用open_chat_history；只能读取当前可信会话，不拼接链接。")
         if self.patient:
-            if self.scale_time_query:
+            if self.tour_query:
+                hints.append(
+                    "本轮问的是智能步道/旅途（IReTour）的报告或记录："
+                    "必须调用 get_iretour_patient_history，"
+                    "需要解读时再调 get_iretour_session_analysis，"
+                    "不要用 get_irego_patient_history；"
+                    "下肢机器人（iReGo）的步行、坐站、平衡游戏记录不是步道记录，不能拿来回答。"
+                )
+            elif self.scale_time_query:
                 hints.append(
                     "本轮问的是量表测评时间/量表类型："
                     "必须调用 get_assessment_patient_history 逐条查询，"
@@ -197,6 +209,7 @@ def classify_business_query(query: str) -> BusinessRoute:
             "uncertain",
             "record_query",
             "scale_time_query",
+            "tour_query",
             "followup",
             "hospital_ops",
         ),
@@ -244,6 +257,17 @@ def classify_business_query(query: str) -> BusinessRoute:
             patient = True
             record = True
             scene = False
+        # 步道/旅途是 IReTour 的别名；「打开步道报告」仍按 UI 指令走场景，不在这里拦截。
+        tour_query = (
+            bool(_TOUR.search(clause))
+            and (bool(_RECORD_LIKE.search(clause)) or patient_words)
+            and not hospital_ops
+            and not _UI_OPEN.search(clause)
+        )
+        if tour_query:
+            patient = True
+            record = True
+            scene = False
         navigation = question and bool(
             re.search(r"楼|层|入口|大厅|房间|中心|区域|评估室|训练室", clause)
         )
@@ -255,6 +279,7 @@ def classify_business_query(query: str) -> BusinessRoute:
         flags["uncertain"] |= uncertain
         flags["record_query"] |= record
         flags["scale_time_query"] |= scale_time_query
+        flags["tour_query"] |= tour_query
         flags["hospital_ops"] |= hospital_ops
     if not any(flags.values()) and _FOLLOWUP.match(text):
         # 整句没有任何业务关键词，只是「查」「好」这类承接词：标记为省略追问，

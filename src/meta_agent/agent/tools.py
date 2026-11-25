@@ -80,14 +80,19 @@ TOOL_SPECS = {
         PatientPageArgs,
         "查询当前患者康复计划及IReTour/IReGo训练历史摘要。不知道患者用过哪类设备时先查此工具。",
     ),
-    "get_iretour_patient_context": (EmptyArgs, "查询IReTour训练数据覆盖范围和可用结果数量。"),
+    "get_iretour_patient_context": (
+        EmptyArgs,
+        "查询智能步道/旅途（IReTour）训练数据覆盖范围和可用结果数量；不是下肢机器人 iReGo。",
+    ),
     "get_iretour_patient_history": (
         TourHistoryArgs,
-        "按页查询IReTour训练历史，返回日期、项目、训练及结果状态和session_ref；支持有结果/无结果、项目和状态筛选，上一次或下一页从这里定位。",
+        "按页查询智能步道/旅途（IReTour）训练历史，返回日期、项目、训练及结果状态和session_ref；"
+        "支持有结果/无结果、项目和状态筛选，上一次或下一页从这里定位；"
+        "用户说步道/旅途/多功能智能康复步道时用这个工具，不要用 get_irego_patient_history。",
     ),
     "get_iretour_session_analysis": (
         SessionArgs,
-        "读取IReTour最近可用训练或指定session_ref的实际结果，包含指标与数据限制。",
+        "读取智能步道/旅途（IReTour）最近可用训练或指定session_ref的实际结果，包含指标与数据限制。",
     ),
     "get_iretour_longitudinal_analysis": (
         TourTrendArgs,
@@ -149,7 +154,8 @@ TOOL_SPECS = {
     ),
     "get_irego_patient_history": (
         GoHistoryArgs,
-        "按页查询IReGo训练历史，返回计划、训练状态及session_ref。统一患者身份由系统注入。",
+        "按页查询下肢智能康复机器人（iReGo）训练历史，返回计划、训练状态及session_ref；"
+        "只用于下肢机器人的步行/坐站/平衡游戏记录，不用于智能步道/旅途（IReTour）。",
     ),
     "get_irego_session_analysis": (
         SessionArgs,

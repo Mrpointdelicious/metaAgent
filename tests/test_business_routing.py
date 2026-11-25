@@ -122,6 +122,46 @@ def test_scale_intent_without_time_remains_scene():
         assert route.scene is True, query
 
 
+def test_tour_report_query_uses_iretour_not_irego():
+    """步道/旅途是 IReTour，不能被下肢机器人 iReGo 的报告顶掉。"""
+    for query in ["查步道报告", "旅途报告", "查看智能步道训练历史", "查多功能智能康复步道报告"]:
+        route = classify_business_query(query)
+        assert route.tour_query is True, query
+        assert route.patient is True, query
+        hint = route.guidance()
+        assert "get_iretour_patient_history" in hint, query
+        assert "get_irego_patient_history" in hint, query
+        assert "下肢机器人" in hint, query
+
+
+def test_open_tour_report_remains_scene():
+    """「打开步道报告」是界面指令，不能被当成数据查询。"""
+    route = classify_business_query("打开步道报告")
+    assert route.scene is True
+    assert route.tour_query is False
+    assert route.patient is False
+
+
+def test_conservative_planner_maps_tour_alias_to_iretour():
+    """离线兜底解析器也要把中文步道别名落到 iretour，而不是 irego。"""
+    import asyncio
+
+    from meta_agent.context.budget import LLMBudget
+    from meta_agent.contracts import ConversationState
+    from meta_agent.planning.parser import ConservativePlanner
+
+    decision = asyncio.run(
+        ConservativePlanner().parse("查步道报告", ConversationState(), LLMBudget())
+    )
+    assert decision.decision == "execute"
+    assert len(decision.goals) == 1
+    goal = decision.goals[0]
+    assert goal.kind == "iretour"
+    assert goal.domain == "iretour"
+    assert goal.iretour is not None
+    assert goal.irego is None
+
+
 def test_partial_report_name_is_patient():
     """「下肢报告」「上肢报告」这类按部位叫的报告是查患者数据，不是界面指令。"""
     for query in ["查下肢报告", "查看下肢报告", "查上肢报告", "我的康复报告在哪"]:
