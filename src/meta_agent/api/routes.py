@@ -59,6 +59,10 @@ async def scope_for(payload: RunAccessRequest, request: Request):
             inputs,
             payload.user,
             settings.default_tenant_id,
+            require_identity_token=settings.patient_identity_require_token,
+            infer_from_requesterphone=(
+                settings.patient_identity_infer_from_requesterphone and not is_clinical
+            ),
         )
         route_from_inputs(inputs, forced=client.flow, role=scope.role)
         scope = bind_access_scope(

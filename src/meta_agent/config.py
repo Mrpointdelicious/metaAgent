@@ -134,6 +134,10 @@ class Settings(BaseSettings):
 
     ai_webapi_base_url: str = "http://host.docker.internal:5043/api/ai/patients/tools"
     ai_webapi_bearer_token: str = ""
+    # 患者身份是否强制要求 identity_context_token；过渡期可设为 false 明文放行，后续版本改回 true 恢复校验。
+    patient_identity_require_token: bool = True
+    # 明文模式下，未显式传 patient_identity 时是否允许患者角色从 requesterphone 自动推导 login_name。
+    patient_identity_infer_from_requesterphone: bool = False
     ai_webapi_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     dry_run: bool = True
     orchestration_mode: Literal["agent", "legacy"] = "agent"

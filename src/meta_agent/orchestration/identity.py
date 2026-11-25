@@ -79,15 +79,20 @@ class TrustedScope:
     client_flow: str = ""
     allowed_tools: frozenset[str] | None = field(default=None, repr=False)
     policy_scope: str = ""
+    # 过渡期免签：require_identity_token=false 时置 True，允许无 v2 凭证的患者身份。
+    # Runtime only: excluded from repr, identity hashes and checkpoints.
+    allow_unsigned_patient_identity: bool = field(
+        default=False, repr=False, compare=False, kw_only=True
+    )
 
     @property
     def has_patient(self) -> bool:
-        # 与 5080 老版口径一致：患者身份由 WebApi 免签通道（system_context +
-        # patient_identity）在 resolve_patient_identity 时绑定。绑定成功后 patient_ref /
-        # scope_fingerprint 一定存在，因此以绑定结果为准，不再强制 v2 签名凭证。
-        # 功能令牌只需 requesterphone 即可识别患者；带凭证的调用方仍可走强校验分支。
+        # 与 11-17 旧部署版口径一致：require_identity_token=false 时 allow_unsigned=True，
+        # 患者身份由 WebApi 免签通道（system_context + patient_identity）在
+        # resolve_patient_identity 时绑定；带凭证的调用方仍走强校验分支。
         return bool(
             self.patient_identity
+            and (self.identity_context_token or self.allow_unsigned_patient_identity)
             and self.patient_ref
             and self.scope_fingerprint
             and self.role == "patient"
@@ -128,7 +133,11 @@ class TrustedScope:
         ).hexdigest()
 
     def patient_payload(self, arguments: dict, conversation_id: str = "") -> dict:
-        if not self.patient_identity or self.role != "patient":
+        if (
+            not self.patient_identity
+            or (not self.identity_context_token and not self.allow_unsigned_patient_identity)
+            or self.role != "patient"
+        ):
             raise DomainError(
                 "patient_required", "请通过登录入口确认患者身份。", outcome="unavailable"
             )
@@ -138,7 +147,7 @@ class TrustedScope:
             "patient_identity": self.patient_identity.model_dump(),
             "current_business_id": self.current_business_id,
         }
-        # 免签通道：WebApi RequireIdentityProof=false 时不需要 token；带凭证的
+        # 免签通道（allow_unsigned_patient_identity）不需要 token；带凭证的
         # 调用方仍可透传，走强校验分支。两者互不冲突。
         if self.identity_context_token:
             system_context["identity_context_token"] = self.identity_context_token
@@ -222,8 +231,24 @@ def space_id_from_inputs(inputs: dict[str, Any]) -> str | None:
     return next(iter(values), None)
 
 
+def requester_phone_from_inputs(inputs: dict[str, Any]) -> str | None:
+    """从请求 inputs 中取 requesterphone（兼容常见别名），仅用于免签推断。"""
+    for key in ("requesterphone", "requesterPhone", "requester_phone"):
+        value = inputs.get(key)
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if 0 < len(cleaned) <= 64:
+                return cleaned
+    return None
+
+
 def trusted_scope_from_inputs(
-    inputs: dict[str, Any], end_user_id: str, default_tenant_id: str
+    inputs: dict[str, Any],
+    end_user_id: str,
+    default_tenant_id: str,
+    *,
+    require_identity_token: bool = True,
+    infer_from_requesterphone: bool = False,
 ) -> TrustedScope:
     if LEGACY_PATIENT_KEYS.intersection(inputs):
         raise ValueError("旧患者身份格式已移除，请传 patient_identity 和 identity_context_token")
@@ -242,20 +267,29 @@ def trusted_scope_from_inputs(
         raise ValueError("可信用户、租户或角色无效")
     identity = inputs.get("patient_identity")
     token = inputs.get("identity_context_token", "")
+    if token is None and not require_identity_token:
+        token = ""
     if token and (not isinstance(token, str) or len(token) > 8192):
         raise ValueError("登录凭证格式无效")
     if identity is not None:
         identity = PatientIdentity.model_validate(identity)
-        if role != "patient":
-            raise ValueError("患者身份只能用于患者角色")
+        if role != "patient" or not isinstance(token, str):
+            raise ValueError("患者上下文缺少有效登录凭证")
+        if require_identity_token and not token:
+            raise ValueError("患者上下文缺少有效登录凭证")
     elif token:
         raise ValueError("登录凭证必须与 patient_identity 一同提供")
-    # 老版本（5080）口径：患者只传 requesterphone，由 scope_for 走 WebApi 免签通道
-    # 解析绑定，不依赖 v2 凭证；这里先把手机号按 login_name 落下。
-    if identity is None and role == "patient" and not token:
-        requester = str(inputs.get("requesterphone") or inputs.get("phone") or "").strip()
-        if requester:
-            identity = PatientIdentity(type="login_name", value=requester)
+    # 免签推断：require_token=false 且 infer=true 且无显式身份时，患者角色从
+    # requesterphone 推导 login_name（与旧部署版一致），再由 scope_for 走 WebApi 免签绑定。
+    if (
+        identity is None
+        and not require_identity_token
+        and infer_from_requesterphone
+        and role == "patient"
+    ):
+        phone = requester_phone_from_inputs(inputs)
+        if phone:
+            identity = PatientIdentity(type="login_name", value=phone)
     scope = inputs.get("data_scope", "all_tenants")
     business = inputs.get("current_business_id")
     if scope not in {"all_tenants", "current_tenant"}:
@@ -281,6 +315,7 @@ def trusted_scope_from_inputs(
         business,
         scope,
         token,
+        allow_unsigned_patient_identity=not require_identity_token,
         position=str(inputs.get("pos") or "").strip(),
         consultation_id=consultation,
     )
