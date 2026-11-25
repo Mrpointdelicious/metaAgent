@@ -79,6 +79,8 @@ class RunContext:
     preference_unavailable: bool = False
     # Whitelisted arguments for the authenticated fixed flow, held for this run only.
     flow_inputs: dict[str, Any] = field(default_factory=dict, repr=False)
+    # Fallback clinical lookup inputs used only when disable_capability_policy=True.
+    fallback_business_inputs: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def profile(self) -> RoleAgentProfile:
@@ -87,9 +89,11 @@ class RunContext:
     @property
     def business_inputs(self):
         grant = self.scope.resource_grant
-        if not grant or not grant.valid_for(self.scope):
-            return {}
-        return {**self.flow_inputs, **grant.lookup_inputs()}
+        if grant and grant.valid_for(self.scope):
+            return {**self.flow_inputs, **grant.lookup_inputs()}
+        if self.settings.disable_capability_policy:
+            return {**self.fallback_business_inputs, **self.flow_inputs}
+        return {}
 
     @property
     def remaining(self) -> float:

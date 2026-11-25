@@ -26,8 +26,10 @@ class PatientPageArgs(StrictModel):
 class HistoryArgs(StrictModel):
     page_number: int = Field(default=1, ge=1, le=100000)
     page_size: int = Field(default=10, ge=1, le=50)
-    record_scope: Literal["all", "past", "future", "unfinished", "voided"] = "all"
-    training_state: str = Field(default="all", max_length=40)
+    record_scope: Literal["all", "reports", "plans"] = "all"
+    training_state: Literal[
+        "all", "completed", "not_started", "not_completed", "execution_unknown", "voided"
+    ] = "all"
 
 
 class TourHistoryArgs(HistoryArgs):
@@ -42,13 +44,13 @@ class TourHistoryArgs(HistoryArgs):
 
 
 class GoHistoryArgs(HistoryArgs):
-    project_scope: str = Field(default="all", max_length=40)
+    project_scope: Literal["all", "walking", "sit_stand", "games", "balance"] = "all"
 
 
 class SessionArgs(StrictModel):
     selector: Literal["latest_usable", "session_ref"] = "latest_usable"
     session_ref: str | None = Field(default=None, max_length=1000)
-    detail_level: Literal["compact", "standard"] = "standard"
+    detail_level: Literal["brief", "summary", "standard"] = "standard"
     quality_detail: Literal["summary", "full"] = "summary"
 
     @model_validator(mode="after")
@@ -65,7 +67,7 @@ class TrendArgs(StrictModel):
     end_date: str | None = Field(default=None, max_length=60)
     start_ordinal: int | None = Field(default=None, ge=1)
     end_ordinal: int | None = Field(default=None, ge=1)
-    detail_level: Literal["compact", "standard"] = "standard"
+    detail_level: Literal["summary", "standard"] = "standard"
     quality_detail: Literal["summary", "full"] = "summary"
 
 

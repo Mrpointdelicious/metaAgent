@@ -244,6 +244,11 @@ class ApplicationService:
                 runtime_guard=self.runtime_guard,
                 client=request.client,
                 flow_inputs=flow_inputs,
+                fallback_business_inputs=(
+                    consultation_inputs(request.raw_inputs)
+                    if self.settings.disable_capability_policy
+                    else {}
+                ),
                 diagnostic_query=request.query,
                 diagnostic_inputs=redact_request_inputs(request.raw_inputs),
             )
