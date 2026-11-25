@@ -12,7 +12,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
-from meta_agent.agent.schemas import GoHistoryArgs, TourHistoryArgs
+from meta_agent.agent.schemas import GoHistoryArgs, SessionArgs, TourHistoryArgs, TrendArgs
 from meta_agent.agent.tools import available_tools, build_tools
 from meta_agent.contracts import DomainError
 from meta_agent.tools.ai_webapi import IRETOUR_REPORT_ENDPOINTS, AIWebApiClient
@@ -28,9 +28,23 @@ def test_tour_history_uses_its_own_filter_contract():
     assert args.model_dump()["record_scope"] == "with_result"
     assert TourHistoryArgs(record_scope="without_result").record_scope == "without_result"
     assert TourHistoryArgs(activity_scope="all").activity_scope == "all"
-    assert GoHistoryArgs(record_scope="past").record_scope == "past"
+    assert GoHistoryArgs(record_scope="reports").record_scope == "reports"
+    assert GoHistoryArgs(record_scope="plans", project_scope="walking").project_scope == "walking"
+    for invalid in (
+        {"record_scope": "past"},
+        {"record_scope": "with_result"},
+        {"project_scope": "unknown"},
+        {"training_state": "interrupted"},
+    ):
+        with pytest.raises(ValidationError):
+            GoHistoryArgs(**invalid)
+    assert SessionArgs(detail_level="summary").detail_level == "summary"
+    assert SessionArgs(detail_level="brief").detail_level == "brief"
+    assert TrendArgs(detail_level="summary").detail_level == "summary"
     with pytest.raises(ValidationError):
-        GoHistoryArgs(record_scope="with_result")
+        SessionArgs(detail_level="compact")
+    with pytest.raises(ValidationError):
+        TrendArgs(detail_level="compact")
 
 
 @pytest.mark.parametrize(

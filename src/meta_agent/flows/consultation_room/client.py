@@ -31,7 +31,10 @@ class ConsultationClient:
     def encounter_summary(self):
         if self.capability is not None:
             require_for_run(self.ctx, self.capability)
-        return self.ctx.scope.resource_grant.encounter_summary.get_secret_value()
+        grant = self.ctx.scope.resource_grant
+        if grant is None:
+            return ""
+        return grant.encounter_summary.get_secret_value()
 
     async def _request(self, method, *args, **kwargs):
         ctx = self.ctx

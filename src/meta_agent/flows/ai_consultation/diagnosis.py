@@ -190,7 +190,7 @@ async def run_triage(ctx: RunContext, model: Any) -> str:
     token = ""
     history_value = "null"
     patient_profile: dict[str, str] = {}
-    phone = _phone(ctx, "patientphone", "phone")
+    phone = _phone(ctx, "patientphone", "phone", "requesterphone")
     if phone:
         try:
             token = await _login(client, ctx.settings)
