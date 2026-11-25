@@ -89,6 +89,39 @@ def test_scale_question_not_scene():
         assert route.knowledge is True, query
 
 
+def test_scale_time_query_is_patient_record_query():
+    """量表时间/类型共现必须走逐条历史查询，不能被当成做量表场景或概览查询。"""
+    for query in [
+        "具体的安排时间和量表类型",
+        "量表什么时候做的",
+        "查一下量表测评时间",
+        "蒙特利尔量表是哪天测的",
+        "后面还排了哪些量表",
+    ]:
+        route = classify_business_query(query)
+        assert route.scale_time_query is True, query
+        assert route.patient is True, query
+        assert route.record_query is True, query
+        assert route.scene is False, query
+
+
+def test_scale_time_query_guidance_uses_history_not_context():
+    hint = classify_business_query("具体的安排时间和量表类型").guidance()
+    assert "get_assessment_patient_history" in hint
+    assert "测评时间" in hint
+    assert "量表名称" in hint
+    assert "安排时间" in hint
+    assert "get_assessment_patient_context" in hint  # 明确禁止用概览代替
+
+
+def test_scale_intent_without_time_remains_scene():
+    """没有时间/安排语义时，做量表仍是场景指令，不能被新标记误伤。"""
+    for query in ["我想做ADL量表", "做量表", "做AD8量表"]:
+        route = classify_business_query(query)
+        assert route.scale_time_query is False, query
+        assert route.scene is True, query
+
+
 def test_partial_report_name_is_patient():
     """「下肢报告」「上肢报告」这类按部位叫的报告是查患者数据，不是界面指令。"""
     for query in ["查下肢报告", "查看下肢报告", "查上肢报告", "我的康复报告在哪"]:

@@ -124,11 +124,12 @@ TOOL_SPECS = {
     ),
     "get_assessment_patient_context": (
         EmptyArgs,
-        "查询当前患者线上量表测评覆盖范围、各量表记录数与可读总分数量。",
+        "查询当前患者线上量表测评覆盖范围、各量表记录数与可读总分数量；不含单条测评时间，问时间须另查历史。",
     ),
     "get_assessment_patient_history": (
         AssessmentHistoryArgs,
-        "按页查询线上量表测评历史，返回日期、量表名称、结果状态、源报告总分及assessment_ref；可按scale_type筛选。",
+        "按页查询线上量表测评历史，逐条返回测评时间(recorded_at)、量表名称、结果状态、源报告总分及assessment_ref；"
+        "只含已完成测评，不含医生开单/预约安排时间及后续待排量表；可按scale_type筛选。",
     ),
     "get_assessment_result_analysis": (
         AssessmentSessionArgs,

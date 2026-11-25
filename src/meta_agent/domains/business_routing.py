@@ -94,6 +94,13 @@ _RECORD_LIKE = re.compile(
     r"查一下|查查|帮我查|查看|看看|看一下|调取|统计|几次|多久|多长时间"
 )
 
+# 量表时间提问：必须查逐条历史（测评时间/量表类型），不能用概览计数代替。
+# 只匹配「量表/测评/评估」与「时间/安排/哪天/几点」等共现，避免「做量表」被误判成查询。
+_SCALE_TIME = re.compile(
+    r"(?:量表|测评|评估).{0,12}(?:时间|日期|哪天|几点|什么时候|安排|排期|排了|待排|后续|下次)"
+    r"|(?:时间|日期|哪天|几点|什么时候|安排|排期|排了|待排|后续|下次).{0,12}(?:量表|测评|评估)"
+)
+
 
 @dataclass(frozen=True)
 class BusinessRoute:
@@ -104,6 +111,7 @@ class BusinessRoute:
     patient: bool = False
     uncertain: bool = False
     record_query: bool = False
+    scale_time_query: bool = False
     followup: bool = False
     hospital_ops: bool = False
 
@@ -135,7 +143,17 @@ class BusinessRoute:
         if self.history:
             hints.append("历史对话使用open_chat_history；只能读取当前可信会话，不拼接链接。")
         if self.patient:
-            if self.record_query:
+            if self.scale_time_query:
+                hints.append(
+                    "本轮问的是量表测评时间/量表类型："
+                    "必须调用 get_assessment_patient_history 逐条查询，"
+                    "不要用 get_assessment_patient_context 的覆盖范围/记录数代替具体时间；"
+                    "回答时把每条 recorded_at 明确写成「测评时间」，"
+                    "并列出对应 scale_name（量表名称）。"
+                    "用户问「安排时间/几点做/后面还排了哪些量表」时，说明量表记录只有已完成的测评时间，"
+                    "没有开单、预约或后续排期时间，不把测评时间说成安排时间，也不编造后续量表。"
+                )
+            elif self.record_query:
                 hints.append(
                     "带时间的记录/报告请求是查询患者数据：训练记录/训练报告用康复历史工具"
                     "（get_irego_patient_history），量表测评用 get_assessment_patient_history，"
@@ -178,6 +196,7 @@ def classify_business_query(query: str) -> BusinessRoute:
             "patient",
             "uncertain",
             "record_query",
+            "scale_time_query",
             "followup",
             "hospital_ops",
         ),
@@ -219,6 +238,12 @@ def classify_business_query(query: str) -> BusinessRoute:
             scene = (bool(_COMMAND.search(clause)) or intent in ("0", "1")) and not (
                 history or question or patient or uncertain or hospital_ops
             )
+        # 量表时间/类型共现是数据查询：即使句子里有「做量表」或「打开」也不走场景。
+        scale_time_query = bool(_SCALE_TIME.search(clause)) and not hospital_ops
+        if scale_time_query:
+            patient = True
+            record = True
+            scene = False
         navigation = question and bool(
             re.search(r"楼|层|入口|大厅|房间|中心|区域|评估室|训练室", clause)
         )
@@ -229,6 +254,7 @@ def classify_business_query(query: str) -> BusinessRoute:
         flags["scene"] |= scene
         flags["uncertain"] |= uncertain
         flags["record_query"] |= record
+        flags["scale_time_query"] |= scale_time_query
         flags["hospital_ops"] |= hospital_ops
     if not any(flags.values()) and _FOLLOWUP.match(text):
         # 整句没有任何业务关键词，只是「查」「好」这类承接词：标记为省略追问，
