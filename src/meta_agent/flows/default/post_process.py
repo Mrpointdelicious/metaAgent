@@ -49,6 +49,10 @@ REPORT_TOOLS = {
 
 
 def _report_message(tool: str) -> str:
+    if "assessment" in tool:
+        if "longitudinal" in tool:
+            return "连续量表趋势报告已生成，请查看下方图片。"
+        return "单次量表报告已生成，请查看下方图片。"
     if "longitudinal" in tool:
         return "连续训练趋势报告已生成，请查看下方图片。"
     return "单次训练报告已生成，请查看下方图片。"
