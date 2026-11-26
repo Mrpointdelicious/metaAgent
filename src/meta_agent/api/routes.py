@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from meta_agent.adapters.dify import DifyEventAdapter
 from meta_agent.api.schemas import (
@@ -20,6 +20,8 @@ from meta_agent.api.schemas import (
 )
 from meta_agent.api.security import require_service_identity
 from meta_agent.application.conversations import owner_key
+from fastapi.responses import JSONResponse, Response
+from meta_agent.application.report_history import ReportReadUnavailable, historical_images, read_history_image
 from meta_agent.application.service import ApplicationRequest, ApplicationRun
 from meta_agent.contracts import DomainError, RunRecord
 from meta_agent.domains.routing import (
@@ -358,6 +360,7 @@ async def conversation_history(
             "conversation_id": conversation_id,
             "query": turn["user"],
             "answer": turn["assistant"],
+            "report_bindings": turn.get("report_bindings", {}),
             "inputs": {},
             "created_at": turn.get("created_at", int(binding.created_at) + i),
             "feedback": None,
@@ -370,7 +373,20 @@ async def conversation_history(
     if cursor:
         index = next((i for i, row in enumerate(rows) if row["id"] == cursor), None)
         rows = rows[index + 1 :] if index is not None else []
-    return {"limit": limit, "has_more": len(rows) > limit, "data": rows[:limit]}
+    page = rows[:limit]
+    client = request.app.state.container.ai_webapi_client
+    ref = request.query_params.get("artifact_ref")
+    if ref is not None:
+        try:
+            image = await read_history_image(page, ref, request.query_params.get("message_id"), scope, client, conversation_id)
+        except ReportReadUnavailable:
+            raise HTTPException(503, "报告图片服务暂不可用")
+        if image is None:
+            raise HTTPException(404, "报告图片不可用")
+        return Response(image, media_type="image/png", headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+    historical_images(page, client.report_url)
+    return JSONResponse({"limit": limit, "has_more": len(rows) > limit, "data": page},
+                        headers={"Cache-Control": "private, no-store"})
 
 
 @router.get("/v1/conversations", dependencies=[Depends(require_service_identity)])

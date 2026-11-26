@@ -10,6 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from meta_agent.application.report_history import ReportReadUnavailable
 from meta_agent.config import Settings
 from meta_agent.contracts import DomainError
 
@@ -70,13 +71,23 @@ def normalize_artifact_url(settings: Settings, url: str) -> str:
     非空时，把首段 /api/ 换成该前缀（/api/ai/... -> /aiwebapi/ai/...）；留空则不重写。
     """
     prefix = (getattr(settings, "ai_webapi_artifact_path_prefix", "") or "").strip().strip("/")
-    if not prefix or not isinstance(url, str):
+    if not isinstance(url, str):
         return url
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return url
     if parts.scheme not in {"http", "https"} or parts.username or parts.password:
         return url
     path = parts.path
-    if not path.startswith("/api/"):
+    if port == 15043 and "/ai/patients/report-artifacts/" in path:
+        for base in {"/aiwebapi", "/api", "/" + prefix}:
+            if path.startswith(base + "/ai/patients/report-artifacts/"):
+                path = "/api" + path[len(base):]
+                return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+        return url
+    if not prefix or not path.startswith("/api/"):
         return url
     path = "/" + prefix + "/" + path[len("/api/") :]
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
@@ -117,6 +128,34 @@ class AIWebApiClient:
     async def resolve_patient_identity(self, scope: TrustedScope) -> TrustedScope:
         body = await self.post("resolve_patient_identity", scope.patient_payload({}))
         return scope.bind(body)
+
+    def report_url(self, url):
+        return normalize_artifact_url(self.settings, url)
+
+    async def read_report_image(self, ref, binding, scope, conversation_id):
+        if scope.role != "patient":
+            return None
+        args = {"original_grant": binding}
+        if scope.patient_identity is not None:
+            payload = scope.patient_payload(args, conversation_id)
+        elif scope.allow_unsigned_patient_identity and scope.data_scope == "all_tenants":
+            payload = {**args, "data_scope": scope.data_scope, "system_context": {
+                "user": scope.end_user_id, "conversation_id": conversation_id,
+                "current_business_id": scope.current_business_id,
+            }}
+        else:
+            return None
+        url = self.patient_base.rsplit("/", 1)[0] + "/report-artifacts/" + ref + "/content"
+        try:
+            response = await self.client.post(url, headers=self.headers(), json=payload, timeout=10)
+            if response.status_code >= 500 or response.status_code == 429:
+                raise ReportReadUnavailable()
+            if (response.status_code == 200 and response.headers.get("content-type") == "image/png"
+                    and response.content.startswith(bytes.fromhex("89504e470d0a1a0a"))):
+                return response.content
+        except httpx.HTTPError as exc:
+            raise ReportReadUnavailable() from exc
+        return None
 
     def headers(self, endpoint: str | None = None) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

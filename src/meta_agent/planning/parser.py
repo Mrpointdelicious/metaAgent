@@ -460,7 +460,7 @@ class StructuredIntentPlanner:
         budget: LLMBudget,
         patient_brief: str | None = None,
     ) -> IntentDecision:
-        history = list(memory.turns[-6:])
+        history = [{k: v for k, v in turn.items() if k != "report_bindings"} for turn in memory.turns[-6:]]
         limit = min(
             self.settings.planner_input_tokens,
             self.settings.model_context_tokens - self.settings.planner_max_tokens - 512,

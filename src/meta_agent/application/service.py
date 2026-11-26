@@ -33,6 +33,7 @@ from meta_agent.contracts import (
 from meta_agent.domains.patient_identity import brief_from_context_response
 from meta_agent.domains.routing import CLINICAL_BRANCHES
 from meta_agent.events.dify import history_text
+from meta_agent.application.report_history import report_turn
 from meta_agent.events.stream import EventEmitter
 from meta_agent.execution.scheduler import TaskScheduler
 from meta_agent.infrastructure.locks import ThreadLockRegistry
@@ -567,9 +568,7 @@ class ApplicationService:
             )
         # 每条 turn 记 unix 秒时间戳，供 /v1/messages 排序与游标分页。
         # 不去重：用户真的连续问相同内容也忠实记录；回放导致的重复由数据侧一次性清理。
-        ctx.memory.turns.append(
-            {"user": ctx.query, "assistant": answers, "created_at": int(time.time())}
-        )
+        ctx.memory.turns.append(report_turn(ctx.query, answers, int(time.time())))
         await self.repository.save_conversation(thread, ctx.memory)
         await self.repository.save_conversation_index(
             user=owner_key(ctx.scope),
