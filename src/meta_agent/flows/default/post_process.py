@@ -75,7 +75,6 @@ def _web_page_url(ctx: RunContext) -> str:
     out = build_chat_history_url(
         str(getattr(ctx.scope, "end_user_id", "") or ""),
         str(getattr(ctx.scope, "space_id", "") or ""),
-        role=getattr(ctx.scope, "role", "patient"),
     )
     return out.get("legacy_web") or ""
 

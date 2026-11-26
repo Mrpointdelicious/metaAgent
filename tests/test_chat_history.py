@@ -25,6 +25,13 @@ def test_build_success():
     assert out["error"] == ""
 
 
+def test_build_ignores_legacy_role_arg():
+    out = build("118", SPACE, role="clinician")
+    assert out["web_url"] == URL
+    assert out["legacy_web"] == "[web]" + URL
+    assert "role=" not in out["legacy_web"]
+
+
 def test_build_missing_user():
     out = build("", SPACE)
     assert out["success"] == "false"

@@ -318,6 +318,7 @@ class SingleAgentRuntime:
             if not isinstance(answer, str) or not answer.strip():
                 raise DomainError("agent_no_answer", "本轮未形成回答，请重新提问。")
             answer = model_text(answer)
+            answer = await self._ensure_assessment_report(ctx, answer)
             if scene_fallback:
                 answer = await self._deliver_scene_action(ctx, answer)
             processor = ctx.answer_post_processor
@@ -374,6 +375,13 @@ class SingleAgentRuntime:
     _SCENE_APOLOGY = re.compile(
         "没认出来|没听懂|没识别|没带您|没给您带|无法带您|无法为您|抱歉|对不起|没找到|查不到"
     )
+    # 量表报表意图：模型偶尔只查历史就收尾，服务端据此确定性补跑出图链路。
+    _ASSESSMENT_REPORT_QUERY = re.compile(
+        r"(?:生成|出|做|给我|来一份|看看).{0,12}(?:量表|测评).{0,8}(?:报表|报告|图片|图)"
+    )
+    _ASSESSMENT_REPORT_TOOLS = frozenset(
+        {"generate_assessment_single_report", "generate_assessment_longitudinal_report"}
+    )
 
     async def _deliver_scene_action(self, ctx, answer: str) -> str:
         """模型漏调场景工具时，按原话确定性补执行一次。
@@ -419,3 +427,73 @@ class SingleAgentRuntime:
         if self._SCENE_APOLOGY.search(answer):
             return notice
         return answer if notice in answer else f"{answer}\n{notice}"
+
+    async def _ensure_assessment_report(self, ctx, answer: str) -> str:
+        """模型漏跑量表出图链路时，服务端确定性补跑一次。
+
+        实测同一组 inputs 下模型有时只查两次量表历史就收尾，回答“只有1条能读出
+        成绩但列表里没显示”，没有继续调用 get_assessment_result_analysis 与
+        generate_assessment_single_report。这里不依赖模型决策：只要命中量表报表
+        意图、能力已开启且尚未生成制品，就直接按“最近可读成绩”补跑分析与出图。
+        最终答复由 post_process 根据新制品覆盖为固定短句。
+        """
+        if not self._ASSESSMENT_REPORT_QUERY.search(ctx.query or ""):
+            return answer
+        if not getattr(ctx.settings, "assessment_reports_enabled", False):
+            return answer
+        if not tool_allowed(ctx, "get_assessment_result_analysis") or not tool_allowed(
+            ctx, "generate_assessment_single_report"
+        ):
+            return answer
+        if any(
+            r.outputs.get("tool_name") in self._ASSESSMENT_REPORT_TOOLS
+            and r.status in {"succeeded", "partial"}
+            and r.outputs.get("artifact")
+            for r in ctx.record.results.values()
+        ):
+            return answer
+        try:
+            await invoke_tool(ctx, "get_assessment_result_analysis", {"selector": "latest_usable"})
+            analysis = next(
+                (
+                    r
+                    for r in reversed(list(ctx.record.results.values()))
+                    if r.outputs.get("tool_name") == "get_assessment_result_analysis"
+                ),
+                None,
+            )
+            ref = (analysis.outputs.get("assessment_ref") if analysis else None) or (
+                analysis.outputs.get("session_ref") if analysis else None
+            )
+            if not isinstance(ref, str) or not ref:
+                return answer
+            await invoke_tool(
+                ctx,
+                "generate_assessment_single_report",
+                {"selector": "assessment_ref", "assessment_ref": ref},
+            )
+            generated = any(
+                r.outputs.get("tool_name") == "generate_assessment_single_report"
+                and r.status in {"succeeded", "partial"}
+                and r.outputs.get("artifact")
+                for r in ctx.record.results.values()
+            )
+            if generated:
+                logger.info(
+                    "assessment report fallback delivered",
+                    extra={
+                        "run_id": ctx.record.run_id,
+                        "event_type": "assessment_report_fallback",
+                        "fields": {"assessment_ref": ref},
+                    },
+                )
+        except (DomainError, TimeoutError) as exc:
+            logger.info(
+                "assessment report fallback skipped",
+                extra={
+                    "run_id": ctx.record.run_id,
+                    "event_type": "assessment_report_fallback_skipped",
+                    "fields": {"code": getattr(exc, "code", "tool_timeout")},
+                },
+            )
+        return answer
