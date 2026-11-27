@@ -1,3 +1,8 @@
+"""
+创建日期：2026-11-26
+文件功能：验证历史消息代理的报告图片读取、鉴权和错误响应。
+"""
+
 import httpx
 from fastapi.testclient import TestClient
 

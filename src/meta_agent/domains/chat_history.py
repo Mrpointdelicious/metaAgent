@@ -37,8 +37,13 @@ def is_chat_history_query(query: str) -> bool:
     return any(m in q for m in _CHAT_HISTORY_MARKERS)
 
 
-def build(user_id: str, space_id: str, *, role: str = "patient") -> dict[str, str]:
-    """拼聊天页网址，输出与 Dify 代码节点 main() 一致的契约。"""
+def build(user_id: str, space_id: str, *, role: str | None = None) -> dict[str, str]:
+    """拼聊天页网址，输出与 Dify 代码节点 main() 一致的契约。
+
+    聊天页只按 user + spaceId 打开历史对话，不再附加 role 参数。保留 role 入参
+    只为兼容旧调用方，链接中不会输出该字段。
+    """
+    del role
     uid = str(user_id or "").strip()
     sid = str(space_id or "").strip()
 
@@ -66,7 +71,6 @@ def build(user_id: str, space_id: str, *, role: str = "patient") -> dict[str, st
         }
 
     web_url = CHAT_URL + "?user=" + quote(uid, safe="") + "&spaceId=" + quote(sid, safe="")
-    web_url += "&role=" + quote(role, safe="")
     return {
         "tool_kind": TOOL_KIND,
         "success": "true",
@@ -85,7 +89,7 @@ class ChatHistoryAdapter:
     async def execute(self, task: TaskSpec, args: dict[str, Any], ctx: RunContext) -> TaskResult:
         del args
         # user_id 来自输入 user（end_user_id），space_id 来自输入 spaceid（scope.space_id）。
-        out = build(ctx.scope.end_user_id, ctx.scope.space_id or "", role=ctx.scope.role)
+        out = build(ctx.scope.end_user_id, ctx.scope.space_id or "")
         evidence = await ctx.repository.save_evidence(
             ctx.scope.scope_hash, "open_chat_history", ctx.record.request_id, out, CONTRACT_VERSION
         )

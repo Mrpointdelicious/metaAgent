@@ -1,4 +1,7 @@
-"""Serve historical messages alongside a running single-writer MetaAgent."""
+"""
+创建日期：2026-11-26
+文件功能：转发调用方的历史消息请求，并按原会话授权读取报告图片。
+"""
 
 import os
 from contextlib import asynccontextmanager

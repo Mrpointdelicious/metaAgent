@@ -1,4 +1,7 @@
-"""Keep stable report references in chat and read images from authorized turns."""
+"""
+创建日期：2026-11-26
+文件功能：保存消息中的报告引用和原始授权，供会话历史读取图片。
+"""
 
 import re
 from urllib.parse import parse_qs

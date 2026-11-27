@@ -147,6 +147,10 @@ class Settings(BaseSettings):
     # 明文模式下，未显式传 patient_identity 时是否允许患者角色从 requesterphone
     # 自动推导 login_name。
     patient_identity_infer_from_requesterphone: bool = False
+    # 历史会话可见性：Dify 前端历史页只传 user，不带写入时的患者身份/空间参数。
+    # 默认严格按完整 scope_hash 匹配（正式服口径）；测试服可打开，改为按
+    # owner_key（租户 + user + role + 应用令牌）匹配，不跨用户/角色/应用。
+    history_scope_relaxed: bool = False
     ai_webapi_timeout_seconds: float = Field(default=45.0, gt=0, le=300)
     dry_run: bool = True
     orchestration_mode: Literal["agent", "legacy"] = "agent"

@@ -4,6 +4,7 @@
 """
 
 import asyncio
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -18,7 +19,8 @@ from meta_agent.agent.schemas import (
     IReCogSessionArgs,
 )
 from meta_agent.agent.tools import build_tools
-from meta_agent.contracts import DomainError
+from meta_agent.contracts import AssessmentRequest, DomainError, Selector
+from meta_agent.domains.assessment import AssessmentWorkflow
 from meta_agent.tools.ai_webapi import (
     ASSESSMENT_REPORT_ENDPOINTS,
     IRECOG_REPORT_ENDPOINTS,
@@ -435,3 +437,61 @@ def test_agent_assessment_report_requires_the_fresh_analysis_snapshot(snapshot):
                 assert any(r.code == "invalid_contract" for r in run.record.results.values())
 
     asyncio.run(check())
+
+
+def test_assessment_report_selects_latest_usable_record(monkeypatch):
+    def workflow_with_history(need_artifact):
+        workflow = AssessmentWorkflow()
+        calls = []
+
+        async def fake_read(_ctx, endpoint, args):
+            calls.append((endpoint, dict(args)))
+            if endpoint == "get_assessment_patient_history":
+                records = [
+                    assessment_record("assessment_new_no_score", None),
+                    assessment_record("assessment_old_with_score", 21),
+                ]
+                data = {"page_number": 1, "has_next": False, "records": records}
+            else:
+                ref = args["assessment_ref"]
+                data = {
+                    "records": [assessment_record(ref, 21)],
+                    "source_snapshot": SNAPSHOT,
+                }
+            return SimpleNamespace(
+                tool_name=endpoint,
+                evidence_id=f"{endpoint}-evidence",
+                source_version="1.0.0",
+                payload=envelope(endpoint, "2.0.0", data),
+            )
+
+        async def fake_finish(_task, _request, result, _ctx, **_kwargs):
+            return result
+
+        monkeypatch.setattr(workflow, "_read", fake_read)
+        monkeypatch.setattr(workflow, "_finish_assessment", fake_finish)
+        return workflow, calls
+
+    async def check(need_artifact, expected_ref):
+        workflow, calls = workflow_with_history(need_artifact)
+        ctx = SimpleNamespace(
+            memory=SimpleNamespace(current_record=None),
+            scope=SimpleNamespace(scope_hash="scope"),
+            repository=SimpleNamespace(evidence=None),
+        )
+        request = AssessmentRequest(
+            operation="session",
+            selector=Selector(mode="latest_record"),
+            need_artifact=need_artifact,
+        )
+        result = await workflow.execute(
+            SimpleNamespace(task_id="task"), request.model_dump(), ctx
+        )
+        assert result.outputs["assessment_ref"] == expected_ref
+        analysis_call = next(args for endpoint, args in calls if endpoint == "get_assessment_result_analysis")
+        assert analysis_call["selector"] == "assessment_ref"
+
+    # 只要报表：跳过没有成绩的最近记录，取最近有可读成绩的一条。
+    asyncio.run(check(True, "assessment_old_with_score"))
+    # 只查询/解读：保留真实时间最近的一条，不跳过无成绩记录。
+    asyncio.run(check(False, "assessment_new_no_score"))

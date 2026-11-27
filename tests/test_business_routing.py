@@ -7,6 +7,7 @@
 """
 
 from meta_agent.domains.business_routing import classify_business_query
+from meta_agent.roles.prompts import SYSTEM_PROMPT
 
 
 def test_explicit_scene_motion():
@@ -229,3 +230,9 @@ def test_navigation_unaffected_by_hospital_ops():
     route = classify_business_query("我要去五楼")
     assert route.scene is True
     assert route.hospital_ops is False
+
+
+def test_prompt_requires_record_facts_before_followup():
+    """已有训练记录时必须先报事实，不能反问工具已返回的时间/地点/次数/项目。"""
+    assert "必须先报出工具已确认的具体事实" in SYSTEM_PROMPT
+    assert "不得反问患者工具已经返回的日期、地点、次数或项目" in SYSTEM_PROMPT

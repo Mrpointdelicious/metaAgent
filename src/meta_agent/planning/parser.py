@@ -437,8 +437,8 @@ after_goal_ids 必须恒为空数组，condition 必须恒为 null；禁止生�
 4. "最近4次训练趋势并出图" = operation=trend + selector=latest_count(count=4) + need_artifact=true
 5. "查看患者概况" = operation=overview
 6. "查看训练历史" = operation=history
-7. 最近一次使用 latest_record
-8. 只有明确表达"最近可用/能解读的最近一次"等语义时使用 latest_usable
+7. 最近一次默认 latest_record；线上量表(assessment)要求生成报表/图片时，"最新/最近一次"用 latest_usable，优先最近有可读总分的记录，除非用户明确指定某一次或上一次
+8. 明确表达"最近可用/能解读的最近一次"等语义时使用 latest_usable；量表报表语义同样适用
 9. "刚才这次/这次/本次" 优先 current_ref，但必须由可信会话状态验证
 10. 只要图片不要解释 → output="artifact"；要解释 → output="answer_and_artifact"；不要图片 → "answer"
 带条件（如果/假如/只有…才）或引述的请求无法建模时直接 clarify。

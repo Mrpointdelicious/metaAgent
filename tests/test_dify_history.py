@@ -3,7 +3,11 @@
 文件功能：验证 Dify 兼容的会话列表与消息历史接口。
 """
 
+from unittest.mock import ANY, AsyncMock
+
 import pytest
+
+from meta_agent.application.report_history import report_turn
 
 
 def chat_payload(query, conversation_id=""):
@@ -182,3 +186,79 @@ def test_implicit_history_role_does_not_cross_gateway_or_patient_scope(
         json={"user": "patient-user", "inputs": payload["inputs"]},
     )
     assert authorized.status_code == 200 and authorized.json()["data"]
+
+
+def test_relaxed_history_lists_patient_scope_conversation_with_only_user(
+    client, settings, auth_headers, monkeypatch
+):
+    """测试服口径：Dify 历史页只传 user 时，仍能看到带患者/空间参数写入的会话。"""
+    from tests.helpers.identity import patient_inputs
+
+    ref = "irego_scope_v2_" + "a" * 64
+    grant = "patient_artifact_v2.payload." + "b" * 43
+    report_url = f"https://reports.test/api/ai/patients/report-artifacts/{ref}/content"
+    monkeypatch.setattr(
+        "meta_agent.application.service.report_turn",
+        lambda user, answer, created_at: report_turn(
+            user, f"{answer}\n{report_url}?access_grant={grant}", created_at
+        ),
+    )
+    payload = chat_payload("带患者身份的问题")
+    payload["user"] = "relaxed-user"
+    payload["inputs"] = patient_inputs("0003kh", identity_type="login_name", spaceid="space-a")
+    cid = client.post("/v1/chat-messages", headers=auth_headers, json=payload).json()[
+        "conversation_id"
+    ]
+    # 严格模式（正式服默认）：仍不可见。
+    assert (
+        client.get(
+            "/v1/conversations", headers=auth_headers, params={"user": "relaxed-user"}
+        ).json()["data"]
+        == []
+    )
+
+    settings.history_scope_relaxed = True
+    listed = client.get(
+        "/v1/conversations", headers=auth_headers, params={"user": "relaxed-user"}
+    ).json()
+    assert [r["id"] for r in listed["data"]] == [cid]
+    messages = client.get(
+        "/v1/messages",
+        headers=auth_headers,
+        params={"user": "relaxed-user", "conversation_id": cid},
+    )
+    assert messages.status_code == 200
+    assert messages.json()["data"][0]["query"] == "带患者身份的问题"
+    assert messages.json()["data"][0]["report_artifacts"] == [ref]
+    assert grant not in messages.text
+    # 放宽只针对患者身份/空间差异，不跨用户。
+    assert (
+        client.get(
+            "/v1/conversations", headers=auth_headers, params={"user": "someone-else"}
+        ).json()["data"]
+        == []
+    )
+
+    # Image reads require the original scope and forward the grant stored with the message.
+    fetch_image = AsyncMock(return_value=b"png")
+    monkeypatch.setattr(
+        client.app.state.container.ai_webapi_client, "read_report_image", fetch_image
+    )
+    params = {
+        "conversation_id": cid,
+        "message_id": messages.json()["data"][0]["id"],
+        "artifact_ref": ref,
+    }
+    denied = client.get(
+        "/v1/messages", headers=auth_headers, params={**params, "user": payload["user"]}
+    )
+    assert denied.status_code == 404
+    fetch_image.assert_not_awaited()
+    allowed = client.post(
+        "/v1/messages/query",
+        headers=auth_headers,
+        params=params,
+        json={"user": payload["user"], "inputs": payload["inputs"]},
+    )
+    assert allowed.status_code == 200 and allowed.content == b"png"
+    fetch_image.assert_awaited_once_with(ref, grant, ANY, cid)

@@ -47,6 +47,11 @@ TEMPLATE_CONTENT_URL = (
 TIMEOUT = 15  # 秒
 
 
+def _login_url(settings) -> str:
+    """测试服可通过 doctor_backend_login_url 覆盖内网 webyun 登录地址。"""
+    return (getattr(settings, "doctor_backend_login_url", "") or LOGIN_URL).strip()
+
+
 def _mask_phone(value: Any) -> str:
     """手机号打码：保留前 3 位和后 2 位，中间替换为 ****。"""
     s = str(value)
@@ -373,7 +378,7 @@ async def _login(client: Any, settings) -> str:
                 extra={
                     "run_id": run_id,
                     "event_type": "http_call",
-                    "fields": {"step": "login", "method": "POST", "url": LOGIN_URL},
+                    "fields": {"step": "login", "method": "POST", "url": _login_url(settings)},
                 },
             )
     raise DomainError(
@@ -385,7 +390,7 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
     """单次登录尝试，返回 token；传输层/HTTP 错误直接抛出 DomainError。"""
     try:
         resp = await client.post(
-            LOGIN_URL,
+            _login_url(settings),
             json={
                 "Phone": settings.webyun_login_phone,
                 "Password": settings.webyun_login_password.get_secret_value(),
@@ -400,7 +405,7 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
             extra={
                 "run_id": run_id,
                 "event_type": "http_call",
-                "fields": {"step": "login", "method": "POST", "url": LOGIN_URL, "error": "timeout"},
+                "fields": {"step": "login", "method": "POST", "url": _login_url(settings), "error": "timeout"},
             },
         )
         raise DomainError(
@@ -417,7 +422,7 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
                 "fields": {
                     "step": "login",
                     "method": "POST",
-                    "url": LOGIN_URL,
+                    "url": _login_url(settings),
                     "status": status,
                 },
             },
@@ -435,7 +440,7 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
                 "fields": {
                     "step": "login",
                     "method": "POST",
-                    "url": LOGIN_URL,
+                    "url": _login_url(settings),
                     "error": type(exc).__name__,
                 },
             },
@@ -456,7 +461,7 @@ async def _login_once(client: Any, settings, *, run_id: str | None, attempt: int
             "fields": {
                 "step": "login",
                 "method": "POST",
-                "url": LOGIN_URL,
+                "url": _login_url(settings),
                 "status": resp.status_code,
                 "attempt": attempt,
                 "has_token": bool(token),

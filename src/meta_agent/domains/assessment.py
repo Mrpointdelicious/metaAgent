@@ -190,6 +190,9 @@ class AssessmentWorkflow(IReGoWorkflow):
         elif mode in {"none", "latest_record", "previous_record", "ordinal"}:
             candidates = []
             ref = None
+            # 生成量表图片报表时，“最新一次”按业务语义取最近一条有可读成绩的记录。
+            # 只查/解读量表仍按真实时间取最新，不跳过无成绩记录。
+            prefer_usable = request.need_artifact and mode in {"none", "latest_record"}
             for page in range(1, 4):
                 evidence = await self._read(
                     ctx,
@@ -204,8 +207,10 @@ class AssessmentWorkflow(IReGoWorkflow):
                     for item in list_field(data, "records")
                     if not ((when := aware_date(item.get("recorded_at"))) and when > utcnow())
                 )
-                index = (request.selector.count or 1) - 1 if mode == "ordinal" else 0
-                if mode == "previous_record":
+                index = None
+                if mode == "ordinal":
+                    index = (request.selector.count or 1) - 1
+                elif mode == "previous_record":
                     position = next(
                         (
                             i
@@ -215,12 +220,29 @@ class AssessmentWorkflow(IReGoWorkflow):
                         None,
                     )
                     index = position + 1 if position is not None else len(candidates)
-                if index < len(candidates):
+                elif prefer_usable:
+                    index = next(
+                        (
+                            i
+                            for i, item in enumerate(candidates)
+                            if item.get("reported_score") is not None
+                        ),
+                        None,
+                    )
+                else:
+                    index = 0 if candidates else None
+                if index is not None and index < len(candidates):
                     ref = candidates[index].get("assessment_ref")
                     break
                 if not data.get("has_next"):
                     break
             if not ref:
+                if prefer_usable:
+                    raise DomainError(
+                        "no_usable_assessment",
+                        "最近3页未找到有可读成绩的量表记录，无法生成量表报表。",
+                        outcome="unavailable",
+                    )
                 raise DomainError(
                     "record_not_found", "未找到可分析的量表记录。", outcome="unavailable"
                 )

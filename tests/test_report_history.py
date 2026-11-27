@@ -1,3 +1,8 @@
+"""
+创建日期：2026-11-26
+文件功能：验证历史报告的消息绑定、图片读取和地址转换。
+"""
+
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
